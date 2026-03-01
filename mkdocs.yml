@@ -8,6 +8,8 @@ repo_url: https://github.com/Boosted-Chat/BoostedTravel
 theme:
   name: material
   custom_dir: docs/overrides
+  favicon: assets/favicon.png
+  logo: assets/favicon.png
   palette:
     scheme: slate
     primary: teal
@@ -18,8 +20,8 @@ theme:
   features:
     - navigation.instant
     - navigation.tracking
-    - navigation.tabs
-    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
     - navigation.top
     - content.code.copy
     - search.highlight
@@ -30,11 +32,14 @@ theme:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
-  - API Guide: api-guide.md
-  - Agent Guide: agent-guide.md
-  - CLI Reference: cli-reference.md
-  - Packages: packages.md
+  - Getting started:
+    - Quickstart: getting-started.md
+    - API Guide: api-guide.md
+  - Integrations:
+    - AI Agent Guide: agent-guide.md
+    - Packages & SDKs: packages.md
+  - Reference:
+    - CLI Reference: cli-reference.md
 
 extra:
   generator: false
@@ -62,6 +67,9 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 plugins:
   - search
