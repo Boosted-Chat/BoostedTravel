@@ -1,15 +1,22 @@
 """
-Azul Brazilian Airlines Playwright connector — browser automation to bypass WAF.
+Azul Brazilian Airlines scraper — warm CDP Chrome + navigate + API intercept.
 
 Azul (IATA: AD) is Brazil's third-largest airline with the widest domestic network.
-Website: www.voeazul.com.br — English version at /en/home.
+Website: www.voeazul.com.br — English version at /us/en/home.
+
+Architecture:
+- React SPA frontend with Navitaire/New Skies backend
+- Akamai Bot Manager protects the availability API
+- Booking URL triggers SPA to fire availability API automatically
+- No form automation needed — direct URL navigation
 
 Strategy:
-1. Navigate to voeazul.com.br/en/home
-2. Dismiss Akamai bot challenge + cookie banner
-3. Fill search form (From/To/Departure, One-way)
-4. Intercept API responses (flight search / availability / offers)
-5. Parse JSON → FlightOffer objects
+1. Launch real Chrome via CDP (Akamai blocks bundled Chromium)
+2. Warm context: load homepage to establish Akamai _abck cookie
+3. Per search: navigate to booking URL → SPA fires availability API → intercept response
+4. Parse Navitaire availability format → FlightOffer objects
+
+Performance: ~5-8s first search (Chrome + Akamai), ~3-5s subsequent searches.
 """
 
 from __future__ import annotations
@@ -17,8 +24,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import random
-import re
+import os
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -33,58 +40,183 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
-    {"width": 1280, "height": 720},
-    {"width": 1600, "height": 900},
-]
-_LOCALES = ["en-US", "en-GB", "pt-BR", "en-AU"]
-_TIMEZONES = [
-    "America/Sao_Paulo", "America/New_York", "America/Bahia",
-    "America/Fortaleza", "America/Recife",
-]
+# ── Constants ────────────────────────────────────────────────────────────
 
-_pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
+_AZUL_HOME = "https://www.voeazul.com.br/us/en/home"
+_AVAIL_API = "reservationavailability/api/reservation/availability"
+_MAX_ATTEMPTS = 3
+_API_WAIT = 20  # seconds to wait for availability API per attempt
+
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+]
+_CDP_PORT = 9333
+_USER_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", ".azul_chrome_data"
+)
+
+# ── Module-level warm state ──────────────────────────────────────────────
+
+_chrome_proc: Optional[subprocess.Popen] = None
+_warm_ctx = None          # BrowserContext
+_ctx_ready = False
+_ctx_lock: Optional[asyncio.Lock] = None
 
 
 def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
+    global _ctx_lock
+    if _ctx_lock is None:
+        _ctx_lock = asyncio.Lock()
+    return _ctx_lock
 
 
-async def _get_browser():
-    global _pw_instance, _browser
+def _find_chrome() -> Optional[str]:
+    for p in _CHROME_PATHS:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+async def _launch_chrome() -> subprocess.Popen:
+    """Launch real Chrome with remote debugging."""
+    global _chrome_proc
+    if _chrome_proc and _chrome_proc.poll() is None:
+        return _chrome_proc
+
+    chrome = _find_chrome()
+    if not chrome:
+        raise RuntimeError("Chrome not found — Azul requires real Chrome for Akamai bypass")
+
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    _chrome_proc = subprocess.Popen(
+        [
+            chrome,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--window-size=1366,768",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    await asyncio.sleep(3)
+    logger.info("Azul: Chrome launched on CDP port %d", _CDP_PORT)
+    return _chrome_proc
+
+
+async def _wait_akamai(page, timeout: float = 15) -> bool:
+    """Wait for Akamai teapot challenge to clear."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            text = await page.evaluate("() => document.body.innerText.substring(0, 300)")
+            if "teapot" not in text.lower():
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(1.5)
+    return False
+
+
+async def _ensure_warm_ctx(force: bool = False):
+    """Ensure a warm browser context with Akamai cookies established."""
+    global _warm_ctx, _ctx_ready
+
     lock = _get_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
+        if _ctx_ready and _warm_ctx and not force:
+            try:
+                # Quick health check
+                pages = _warm_ctx.pages
+                if pages is not None:
+                    return _warm_ctx
+            except Exception:
+                _ctx_ready = False
+
+        # Launch Chrome & connect via CDP
+        await _launch_chrome()
+
         from playwright.async_api import async_playwright
-        _pw_instance = await async_playwright().start()
+        pw = await async_playwright().start()
         try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False, channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            browser = await pw.chromium.connect_over_cdp(f"http://localhost:{_CDP_PORT}")
+        except Exception as e:
+            logger.error("Azul: CDP connect failed: %s", e)
+            raise RuntimeError(f"CDP connect failed: {e}")
+
+        # Create fresh context
+        ctx = await browser.new_context(
+            viewport={"width": 1366, "height": 768},
+            locale="en-US",
+            timezone_id="America/Sao_Paulo",
+            service_workers="block",
+        )
+        _warm_ctx = ctx
+
+        # Warm up: load homepage to get Akamai _abck cookie
+        page = await ctx.new_page()
+        try:
+            from playwright_stealth import stealth_async
+            await stealth_async(page)
+        except ImportError:
+            pass
+
+        logger.info("Azul: warming context (homepage for Akamai cookies)...")
+        await page.goto(_AZUL_HOME, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(5)
+
+        # Check for Akamai teapot
+        akamai_ok = await _wait_akamai(page, timeout=15)
+        if not akamai_ok:
+            logger.warning("Azul: Akamai teapot on homepage, retrying...")
+            await asyncio.sleep(8)
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(5)
+            akamai_ok = await _wait_akamai(page, timeout=15)
+            if not akamai_ok:
+                logger.error("Azul: Akamai blocked after retry")
+                _ctx_ready = False
+                await page.close()
+                raise RuntimeError("Akamai blocked")
+
+        # Dismiss cookie/LGPD banners
+        try:
+            await page.evaluate("""() => {
+                document.querySelectorAll(
+                    '[class*="cookie"],[id*="cookie"],[class*="consent"],[id*="consent"],'
+                    + '[class*="onetrust"],[id*="onetrust"],[class*="lgpd"],[class*="privacy"]'
+                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
+                const btns = [...document.querySelectorAll('button')];
+                const accept = btns.find(b =>
+                    /accept|aceitar|got it|ok|agree/i.test(b.textContent));
+                if (accept) accept.click();
+            }""")
         except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Azul: Playwright browser launched (headed Chrome)")
-        return _browser
+            pass
+
+        await page.close()
+        _ctx_ready = True
+        logger.info("Azul: warm context ready (Akamai cookies established)")
+        return _warm_ctx
 
 
 class AzulConnectorClient:
-    """Azul Playwright connector — homepage form search + API interception."""
+    """Azul scraper — warm CDP Chrome + navigate + Navitaire API intercept.
 
-    def __init__(self, timeout: float = 45.0):
+    Uses real Chrome (Akamai blocks bundled Chromium). Browser launched once,
+    reused across searches. ~3-5s per search after warm-up.
+    """
+
+    def __init__(self, timeout: float = 60.0):
         self.timeout = timeout
 
     async def close(self):
@@ -92,358 +224,276 @@ class AzulConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-            color_scheme=random.choice(["light", "dark", "no-preference"]),
-        )
-        try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
 
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                cdp = await context.new_cdp_session(page)
-                await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+                result = await self._attempt_search(req, t0)
+                if result is not None:
+                    return result
+            except Exception as e:
+                logger.warning("Azul: attempt %d/%d error: %s", attempt, _MAX_ATTEMPTS, e)
+                if "closed" in str(e).lower() or "disconnected" in str(e).lower():
+                    global _ctx_ready
+                    _ctx_ready = False
+
+        return self._empty(req)
+
+    async def _attempt_search(
+        self, req: FlightSearchRequest, t0: float
+    ) -> Optional[FlightSearchResponse]:
+        """Single attempt: fresh page in warm context → navigate → intercept API."""
+        ctx = await _ensure_warm_ctx()
+
+        booking_url = self._build_booking_url(req)
+
+        # Fresh page per search (inherits Akamai cookies, clean SPA state)
+        page = await ctx.new_page()
+        try:
+            from playwright_stealth import stealth_async
+            await stealth_async(page)
+        except ImportError:
+            pass
+
+        # Set up API response interception
+        captured: dict = {}
+        api_event = asyncio.Event()
+
+        async def on_response(response):
+            try:
+                if _AVAIL_API not in response.url:
+                    return
+                if response.status != 200:
+                    return
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct:
+                    return
+                body = await response.json()
+                if isinstance(body, dict) and body:
+                    captured["avail"] = body
+                    api_event.set()
             except Exception:
                 pass
 
-            captured_data: dict = {}
-            api_event = asyncio.Event()
+        page.on("response", on_response)
 
-            async def on_response(response):
-                try:
-                    url = response.url.lower()
-                    if response.status == 200 and (
-                        "availability" in url or "/api/flights" in url
-                        or "/api/search" in url or "search/flights" in url
-                        or "flights/search" in url or "fares" in url
-                        or "offers" in url or "low-fare" in url
-                        or "flight-search" in url or "flightsearch" in url
-                        or "shopping" in url or "azul" in url and "booking" in url
-                    ):
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            if data and isinstance(data, (dict, list)):
-                                captured_data["json"] = data
-                                api_event.set()
-                except Exception:
-                    pass
+        dep = req.date_from.strftime("%Y-%m-%d")
+        logger.info("Azul: searching %s→%s on %s (fresh page)", req.origin, req.destination, dep)
 
-            page.on("response", on_response)
+        try:
+            await page.goto(
+                booking_url,
+                wait_until="domcontentloaded",
+                timeout=int(self.timeout * 1000),
+            )
 
-            logger.info("Azul: loading homepage for %s→%s", req.origin, req.destination)
-            await page.goto("https://www.voeazul.com.br/en/home",
-                            wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
-            await asyncio.sleep(4.0)
+            # Check for Akamai teapot (usually passes immediately with warm cookies)
+            akamai_ok = await _wait_akamai(page, timeout=10)
+            if not akamai_ok:
+                logger.warning("Azul: Akamai teapot on search page")
+                return None
 
-            await self._dismiss_cookies(page)
-            await asyncio.sleep(0.5)
-            await self._dismiss_cookies(page)
+            # Wait for availability API response
+            await asyncio.wait_for(api_event.wait(), timeout=_API_WAIT)
 
-            await self._set_one_way(page)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, req.origin, 0)
-            if not ok:
-                logger.warning("Azul: origin fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, req.destination, 1)
-            if not ok:
-                logger.warning("Azul: destination fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_date(page, req)
-            if not ok:
-                logger.warning("Azul: date fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.3)
-
-            await self._click_search(page)
-
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning("Azul: timed out waiting for API response")
-                offers = await self._extract_from_dom(page, req)
-                if offers:
-                    return self._build_response(offers, req, time.monotonic() - t0)
-                return self._empty(req)
-
-            data = captured_data.get("json", {})
-            if not data:
-                return self._empty(req)
-
-            elapsed = time.monotonic() - t0
-            offers = self._parse_response(data, req)
-            return self._build_response(offers, req, elapsed)
-
+        except asyncio.TimeoutError:
+            logger.warning("Azul: availability API timed out")
+            return None
         except Exception as e:
-            logger.error("Azul Playwright error: %s", e)
-            return self._empty(req)
+            logger.warning("Azul: navigation error: %s", e)
+            return None
         finally:
-            await context.close()
-
-    async def _dismiss_cookies(self, page) -> None:
-        for label in [
-            "Accept All", "Accept all", "Accept", "I agree",
-            "Got it", "OK", "Close", "Dismiss", "Aceitar", "Aceitar todos",
-        ]:
             try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=2000)
-                    await asyncio.sleep(0.5)
-                    return
+                page.remove_listener("response", on_response)
             except Exception:
-                continue
-        try:
-            await page.evaluate("""() => {
-                document.querySelectorAll(
-                    '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], '
-                    + '[class*="onetrust"], [id*="onetrust"], [class*="modal-overlay"], '
-                    + '[class*="popup"], [id*="popup"], [class*="privacy"], [class*="lgpd"]'
-                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-                document.body.style.overflow = 'auto';
-            }""")
-        except Exception:
-            pass
-
-    async def _set_one_way(self, page) -> None:
-        for label in ["One-way", "One Way", "One way", "Somente ida", "one-way"]:
+                pass
             try:
-                el = page.get_by_text(label, exact=False).first
-                if el and await el.count() > 0:
-                    await el.click(timeout=3000)
-                    return
+                await page.close()
             except Exception:
-                continue
-        for label in ["One-way", "One Way"]:
-            try:
-                radio = page.get_by_role("radio", name=re.compile(rf"{re.escape(label)}", re.IGNORECASE))
-                if await radio.count() > 0:
-                    await radio.first.click(timeout=2000)
-                    return
-            except Exception:
-                continue
-        try:
-            toggle = page.locator("[data-testid*='one-way'], [data-testid*='oneway'], [class*='one-way']").first
-            if await toggle.count() > 0:
-                await toggle.click(timeout=2000)
-        except Exception:
-            pass
+                pass
 
-    async def _fill_airport_field(self, page, iata: str, index: int) -> bool:
-        origin_labels = ["From", "Origin", "Departure", "Origem", "WHERE FROM"]
-        dest_labels = ["To", "Destination", "Arrival", "Destino", "WHERE TO", "Going to"]
-        labels = origin_labels if index == 0 else dest_labels
-        try:
-            for name in labels:
-                for role in ["combobox", "textbox"]:
-                    field = page.get_by_role(role, name=re.compile(rf"{name}", re.IGNORECASE))
-                    if await field.count() > 0:
-                        await field.first.click(timeout=3000)
-                        await asyncio.sleep(0.3)
-                        await field.first.fill("")
-                        await asyncio.sleep(0.2)
-                        await field.first.fill(iata)
-                        await asyncio.sleep(2.5)
-                        for role2 in ["option", "button", "listitem", "link"]:
-                            try:
-                                option = page.get_by_role(role2, name=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                                if await option.count() > 0:
-                                    await option.click(timeout=3000)
-                                    return True
-                            except Exception:
-                                continue
-                        item = page.locator(
-                            "[class*='suggestion'], [class*='option'], [class*='result'], "
-                            "[class*='autocomplete'] li, [class*='dropdown'] li, "
-                            "[class*='airport'] li, [class*='station'] li"
-                        ).filter(has_text=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                        if await item.count() > 0:
-                            await item.click(timeout=3000)
-                            return True
-                        await page.keyboard.press("Enter")
-                        return True
-        except Exception as e:
-            logger.debug("Azul: field %d error: %s", index, e)
-        try:
-            inputs = page.locator("input[type='text'], input[type='search'], input[placeholder]")
-            if await inputs.count() > index:
-                field = inputs.nth(index)
-                await field.click(timeout=3000)
-                await field.fill("")
-                await asyncio.sleep(0.2)
-                await field.fill(iata)
-                await asyncio.sleep(2.5)
-                await page.keyboard.press("Enter")
-                return True
-        except Exception:
-            pass
-        return False
+        data = captured.get("avail")
+        if data is None:
+            return None
 
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        target = req.date_from
-        try:
-            for name in ["Departure", "Depart", "Date", "When", "Ida", "Data"]:
-                field = page.get_by_role("textbox", name=re.compile(rf"{name}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    break
-            else:
-                date_el = page.locator("[class*='date'], [data-testid*='date'], [id*='date'], [class*='calendar']").first
-                if await date_el.count() > 0:
-                    await date_el.click(timeout=3000)
-            await asyncio.sleep(0.8)
-            target_my = target.strftime("%B %Y")
-            for _ in range(12):
-                content = await page.content()
-                if target_my.lower() in content.lower():
-                    break
-                try:
-                    fwd = page.get_by_role("button", name=re.compile(r"(next|forward|>|›|próximo)", re.IGNORECASE))
-                    if await fwd.count() > 0:
-                        await fwd.first.click(timeout=2000)
-                        await asyncio.sleep(0.4)
-                        continue
-                except Exception:
-                    pass
-                try:
-                    fwd = page.locator("[class*='next'], [aria-label*='next']").first
-                    await fwd.click(timeout=2000)
-                    await asyncio.sleep(0.4)
-                except Exception:
-                    break
-            day = target.day
-            for fmt in [
-                f"{day} {target.strftime('%B')} {target.year}",
-                f"{target.strftime('%B')} {day}, {target.year}",
-                f"{target.strftime('%B')} {day}",
-                target.strftime("%Y-%m-%d"),
-            ]:
-                try:
-                    day_btn = page.locator(f"[aria-label*='{fmt}']").first
-                    if await day_btn.count() > 0:
-                        await day_btn.click(timeout=3000)
-                        return True
-                except Exception:
-                    continue
-            day_btn = page.locator(
-                "table button, .calendar button, [class*='calendar'] button, [class*='datepicker'] button"
-            ).filter(has_text=re.compile(rf"^{day}$")).first
-            if await day_btn.count() > 0:
-                await day_btn.click(timeout=3000)
-                return True
-            day_btn = page.get_by_role("button", name=re.compile(rf"^{day}$")).first
-            await day_btn.click(timeout=3000)
-            return True
-        except Exception as e:
-            logger.warning("Azul: date error: %s", e)
-            return False
+        elapsed = time.monotonic() - t0
+        offers = self._parse_availability(data, req)
+        return self._build_response(offers, req, elapsed)
 
-    async def _click_search(self, page) -> None:
-        for label in ["SEARCH", "Search", "Search Flights", "Buscar", "BUSCAR", "Find flights"]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=5000)
-                    return
-            except Exception:
-                continue
-        try:
-            await page.locator("button[type='submit']").first.click(timeout=3000)
-        except Exception:
-            await page.keyboard.press("Enter")
+    # ── Navitaire availability parsing ───────────────────────────────────
 
-    async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        try:
-            await asyncio.sleep(3)
-            data = await page.evaluate("""() => {
-                if (window.__NEXT_DATA__) return window.__NEXT_DATA__;
-                if (window.__NUXT__) return window.__NUXT__;
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    try { const d = JSON.parse(s.textContent);
-                        if (d && (d.flights || d.journeys || d.fares || d.availability)) return d;
-                    } catch {}
-                }
-                return null;
-            }""")
-            if data:
-                return self._parse_response(data, req)
-        except Exception:
-            pass
-        return []
-
-    def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
-        if isinstance(data, list):
-            data = {"flights": data}
+    def _parse_availability(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         booking_url = self._build_booking_url(req)
         offers: list[FlightOffer] = []
-        flights_raw = (
-            data.get("outboundFlights") or data.get("outbound") or data.get("journeys")
-            or data.get("flights") or data.get("availability", {}).get("trips", [])
-            or data.get("data", {}).get("flights", [])
+
+        trips = data.get("trips") or data.get("data", {}).get("trips") or []
+        for trip in trips:
+            journeys = trip.get("journeysAvailable") or trip.get("journeys") or []
+            for journey in journeys:
+                offer = self._parse_journey(journey, req, booking_url)
+                if offer:
+                    offers.append(offer)
+
+        if offers:
+            return offers
+
+        # Fallback: flatter structures
+        journeys = (
+            data.get("journeysAvailable") or data.get("journeys")
+            or data.get("flights") or data.get("outboundFlights")
+            or data.get("availability", {}).get("trips", [])
             or data.get("data", {}).get("journeys", [])
-            or data.get("lowFareAvailability", {}).get("outboundOptions", [])
-            or data.get("flightList", []) or data.get("tripOptions", []) or []
+            or data.get("flightList", []) or []
         )
-        if isinstance(flights_raw, dict):
-            flights_raw = flights_raw.get("outbound", []) or flights_raw.get("journeys", [])
-        if not isinstance(flights_raw, list):
-            flights_raw = []
-        for flight in flights_raw:
-            offer = self._parse_single_flight(flight, req, booking_url)
+        if isinstance(journeys, dict):
+            journeys = journeys.get("outbound", []) or list(journeys.values())
+        if not isinstance(journeys, list):
+            journeys = []
+
+        for journey in journeys:
+            if not isinstance(journey, dict):
+                continue
+            offer = self._parse_journey(journey, req, booking_url)
             if offer:
                 offers.append(offer)
+
         return offers
 
-    def _parse_single_flight(self, flight: dict, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
-        best_price = self._extract_best_price(flight)
+    def _parse_journey(
+        self, journey: dict, req: FlightSearchRequest, booking_url: str
+    ) -> Optional[FlightOffer]:
+        """Parse a single Navitaire journey into a FlightOffer."""
+        best_price = self._extract_journey_price(journey)
         if best_price is None or best_price <= 0:
             return None
-        segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
+
+        currency = self._extract_currency(journey) or "BRL"
+
+        designator = journey.get("designator", {})
+        segments_raw = journey.get("segments", [])
         segments: list[FlightSegment] = []
+
         if segments_raw and isinstance(segments_raw, list):
             for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
+                segments.append(self._parse_segment(seg, req))
         else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
+            dep_str = (
+                designator.get("departure") or journey.get("departureDateTime")
+                or journey.get("departure") or ""
+            )
+            arr_str = (
+                designator.get("arrival") or journey.get("arrivalDateTime")
+                or journey.get("arrival") or ""
+            )
+            origin = designator.get("origin") or journey.get("origin") or req.origin
+            dest = designator.get("destination") or journey.get("destination") or req.destination
+            flight_no = str(journey.get("flightNumber") or journey.get("flight_no") or "")
+            segments.append(FlightSegment(
+                airline="AD", airline_name="Azul",
+                flight_no=f"AD{flight_no}" if flight_no else "",
+                origin=origin, destination=dest,
+                departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
+                cabin_class="M",
+            ))
+
+        if not segments:
+            return None
+
         total_dur = 0
-        if segments and segments[0].departure and segments[-1].arrival:
-            total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
-        route = FlightRoute(segments=segments, total_duration_seconds=max(total_dur, 0), stopovers=max(len(segments) - 1, 0))
-        flight_key = flight.get("journeyKey") or flight.get("id") or f"{flight.get('departureDate', '')}_{time.monotonic()}"
+        if segments[0].departure and segments[-1].arrival:
+            diff = (segments[-1].arrival - segments[0].departure).total_seconds()
+            total_dur = int(diff) if diff > 0 else 0
+
+        stops = journey.get("stops", max(len(segments) - 1, 0))
+        route = FlightRoute(segments=segments, total_duration_seconds=total_dur, stopovers=stops)
+
+        journey_key = journey.get("journeyKey") or journey.get("id") or ""
+        if not journey_key and segments:
+            journey_key = f"{segments[0].departure.isoformat()}_{segments[0].flight_no}"
+
         return FlightOffer(
-            id=f"ad_{hashlib.md5(str(flight_key).encode()).hexdigest()[:12]}",
-            price=round(best_price, 2), currency=req.currency,
-            price_formatted=f"{best_price:.2f} {req.currency}",
-            outbound=route, inbound=None, airlines=["Azul"], owner_airline="AD",
-            booking_url=booking_url, is_locked=False, source="azul_direct", source_tier="free",
+            id=f"ad_{hashlib.md5(journey_key.encode()).hexdigest()[:12]}",
+            price=round(best_price, 2), currency=currency,
+            price_formatted=f"{best_price:.2f} {currency}",
+            outbound=route, inbound=None,
+            airlines=list(set(s.airline for s in segments)) or ["AD"],
+            owner_airline="AD", booking_url=booking_url,
+            is_locked=False, source="azul_direct", source_tier="free",
+        )
+
+    def _parse_segment(self, seg: dict, req: FlightSearchRequest) -> FlightSegment:
+        """Parse a Navitaire segment (with nested designator/flightDesignator)."""
+        designator = seg.get("designator", {})
+        flight_des = seg.get("flightDesignator", {})
+
+        dep_str = (
+            designator.get("departure") or seg.get("departureDateTime")
+            or seg.get("departure") or seg.get("std") or ""
+        )
+        arr_str = (
+            designator.get("arrival") or seg.get("arrivalDateTime")
+            or seg.get("arrival") or seg.get("sta") or ""
+        )
+        origin = designator.get("origin") or seg.get("origin") or seg.get("departureStation") or req.origin
+        dest = designator.get("destination") or seg.get("destination") or seg.get("arrivalStation") or req.destination
+        carrier = flight_des.get("carrierCode") or seg.get("carrierCode") or seg.get("airline") or "AD"
+        flight_num = str(flight_des.get("flightNumber") or seg.get("flightNumber") or seg.get("number") or "")
+
+        dep = self._parse_dt(dep_str)
+        arr = self._parse_dt(arr_str)
+
+        return FlightSegment(
+            airline=carrier, airline_name="Azul",
+            flight_no=f"{carrier}{flight_num}" if flight_num else "",
+            origin=origin, destination=dest,
+            departure=dep, arrival=arr,
+            cabin_class="M",
         )
 
     @staticmethod
-    def _extract_best_price(flight: dict) -> Optional[float]:
-        fares = flight.get("fares") or flight.get("fareProducts") or flight.get("bundles") or flight.get("fareBundles") or []
+    def _extract_journey_price(journey: dict) -> Optional[float]:
+        """Extract the cheapest fare price from a Navitaire journey."""
         best = float("inf")
+
+        fares = journey.get("fares", [])
         for fare in fares:
-            if isinstance(fare, dict):
-                for key in ["price", "amount", "totalPrice", "basePrice", "fareAmount", "totalAmount"]:
+            if not isinstance(fare, dict):
+                continue
+            for pf in fare.get("passengerFares", []):
+                fa = pf.get("fareAmount")
+                if fa is not None:
+                    try:
+                        v = float(fa)
+                        if 0 < v < best:
+                            best = v
+                    except (TypeError, ValueError):
+                        pass
+                charges = pf.get("serviceCharges", [])
+                total_charge = 0.0
+                for charge in charges:
+                    try:
+                        total_charge += float(charge.get("amount", 0))
+                    except (TypeError, ValueError):
+                        pass
+                if total_charge > 0 and total_charge < best:
+                    best = total_charge
+                pf_val = pf.get("publishedFare")
+                if pf_val is not None:
+                    try:
+                        v = float(pf_val)
+                        if 0 < v < best:
+                            best = v
+                    except (TypeError, ValueError):
+                        pass
+
+        # Flat fare structures
+        if best == float("inf"):
+            for fare in fares:
+                if not isinstance(fare, dict):
+                    continue
+                for key in ["price", "amount", "totalPrice", "total", "fareAmount", "totalAmount"]:
                     val = fare.get(key)
                     if isinstance(val, dict):
-                        val = val.get("amount") or val.get("value")
+                        val = val.get("amount") or val.get("total") or val.get("value")
                     if val is not None:
                         try:
                             v = float(val)
@@ -451,38 +501,33 @@ class AzulConnectorClient:
                                 best = v
                         except (TypeError, ValueError):
                             pass
-        for key in ["price", "lowestFare", "totalPrice", "farePrice", "amount", "lowestPrice"]:
-            p = flight.get(key)
+
+        # Journey-level price fields
+        for key in ["price", "lowestFare", "totalPrice", "amount", "lowestPrice", "farePrice"]:
+            p = journey.get(key)
             if p is not None:
                 try:
-                    v = float(p) if not isinstance(p, dict) else float(p.get("amount", 0))
+                    v = float(p) if not isinstance(p, dict) else float(p.get("amount") or p.get("total", 0))
                     if 0 < v < best:
                         best = v
                 except (TypeError, ValueError):
                     pass
+
         return best if best < float("inf") else None
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
-        dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
-        arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
-        flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
-        origin = seg.get("origin") or seg.get("departureStation") or seg.get("departureAirport") or default_origin
-        destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("arrivalAirport") or default_dest
-        carrier = seg.get("carrierCode") or seg.get("carrier") or seg.get("airline") or "AD"
-        return FlightSegment(
-            airline=carrier, airline_name="Azul", flight_no=flight_no,
-            origin=origin, destination=destination,
-            departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str), cabin_class="M",
-        )
+    @staticmethod
+    def _extract_currency(journey: dict) -> Optional[str]:
+        for fare in journey.get("fares", []):
+            if not isinstance(fare, dict):
+                continue
+            for pf in fare.get("passengerFares", []):
+                for charge in pf.get("serviceCharges", []):
+                    cc = charge.get("currencyCode")
+                    if cc:
+                        return cc
+        return None
 
-    def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
-        offers.sort(key=lambda o: o.price)
-        logger.info("Azul %s→%s returned %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"azul{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency, offers=offers, total_results=len(offers),
-        )
+    # ── Helpers ──────────────────────────────────────────────────────────
 
     @staticmethod
     def _parse_dt(s: Any) -> datetime:
@@ -504,13 +549,30 @@ class AzulConnectorClient:
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
         return (
-            f"https://www.voeazul.com.br/en/booking/search?from={req.origin}"
-            f"&to={req.destination}&departure={dep}&adults={req.adults}&tripType=OW"
+            f"https://www.voeazul.com.br/us/en/home/selecao-voo"
+            f"?c0={req.origin}&c1={req.destination}&d1={dep}"
+            f"&dt=ow&p1=ADT{req.adults}&px={req.adults}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"azul{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(
+            f"azul{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,
+        )
+
+    def _build_response(
+        self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float
+    ) -> FlightSearchResponse:
+        offers.sort(key=lambda o: o.price)
+        logger.info("Azul %s→%s returned %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
+        h = hashlib.md5(
+            f"azul{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
+        return FlightSearchResponse(
+            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
+            currency=offers[0].currency if offers else req.currency,
+            offers=offers, total_results=len(offers),
         )

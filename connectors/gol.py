@@ -1,30 +1,28 @@
 """
-GOL Linhas Aéreas Playwright connector — sessionStorage injection + API interception.
+GOL Linhas Aéreas hybrid scraper — CDP Chrome + Angular navigation.
 
 GOL (IATA: G3) is Brazil's largest low-cost carrier.
 Website: b2c.voegol.com.br — Angular SPA booking flow.
 
-Strategy (token/auth interception approach):
-1. Navigate to b2c.voegol.com.br/compra — Angular boots, creates auth token
-2. Extract sessionStorage UUID (format: {uuid}_@SiteGolB2C:*)
-3. Inject search params into sessionStorage (Angular's expected format)
-4. Navigate to /compra/selecao-de-voo2/ida — Angular resolver fires BFF search
-5. Intercept POST bff-flight.voegol.com.br/flights/search response (200 JSON)
-6. Parse offers → FlightOffer objects
+Strategy (CDP Chrome + Angular navigation):
+1. Launch real Chrome via CDP subprocess (bypasses Akamai Bot Manager)
+2. Navigate to b2c.voegol.com.br/compra once — Angular boots
+3. For each search: inject sessionStorage search params → navigate to results page
+   → Angular resolver fires BFF request → intercept response
+4. Navigate back to /compra for next search
+5. Parse offers → FlightOffer objects
 
-Angular's interceptors handle auth automatically:
-- AuthInterceptor adds Bearer token from create-token API
-- SabreCookieInterceptor adds x-sabre-cookie-encoded header
-- withCredentials: true for cookie-based session
+Persistent page kept alive — first search ~8s (Angular boot), subsequent ~3-5s.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
-import random
+import os
+import shutil
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -39,56 +37,165 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
-]
-_TIMEZONES = [
-    "America/Sao_Paulo", "America/Bahia",
-    "America/Fortaleza", "America/Recife",
-]
-
 _GOL_BASE = "https://b2c.voegol.com.br"
-_GOL_BFF = "bff-flight.voegol.com.br/flights/search"
+_CDP_PORT = 9447
+_USER_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", ".gol_chrome_data")
 
 _pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
+_cdp_browser = None
+_chrome_proc = None
+_persistent_page = None
+_page_lock: Optional[asyncio.Lock] = None
 
 
 def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
+    global _page_lock
+    if _page_lock is None:
+        _page_lock = asyncio.Lock()
+    return _page_lock
+
+
+def _find_chrome() -> str:
+    candidates = [
+        os.environ.get("CHROME_PATH", ""),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        shutil.which("google-chrome") or "",
+        shutil.which("chrome") or "",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    raise RuntimeError("Chrome not found — set CHROME_PATH env var")
+
+
+async def _launch_chrome() -> subprocess.Popen:
+    chrome = _find_chrome()
+    user_data = os.path.abspath(_USER_DATA_DIR)
+    os.makedirs(user_data, exist_ok=True)
+    args = [
+        chrome,
+        f"--remote-debugging-port={_CDP_PORT}",
+        f"--user-data-dir={user_data}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-extensions",
+        "--window-size=1440,900",
+        "about:blank",
+    ]
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    await asyncio.sleep(2)
+    return proc
 
 
 async def _get_browser():
-    global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
+    global _pw_instance, _cdp_browser, _chrome_proc
+    if _cdp_browser and _cdp_browser.is_connected():
+        return _cdp_browser
+    if _chrome_proc is None or _chrome_proc.poll() is not None:
+        _chrome_proc = await _launch_chrome()
+    from playwright.async_api import async_playwright
+    if _pw_instance is None:
         _pw_instance = await async_playwright().start()
+    for attempt in range(8):
         try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False, channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
+            _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{_CDP_PORT}"
             )
+            logger.info("GOL: connected to Chrome via CDP port %d", _CDP_PORT)
+            return _cdp_browser
         except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("GOL: Playwright browser launched (headed Chrome)")
-        return _browser
+            await asyncio.sleep(1)
+    raise RuntimeError(f"Failed to connect to Chrome CDP on port {_CDP_PORT}")
+
+
+async def _ensure_persistent_page():
+    """Get or create a persistent page with Angular SPA loaded."""
+    global _persistent_page
+
+    if _persistent_page and not _persistent_page.is_closed():
+        try:
+            url = _persistent_page.url
+            if "voegol.com.br" in url:
+                return _persistent_page
+        except Exception:
+            pass
+
+    browser = await _get_browser()
+    contexts = browser.contexts
+    if contexts:
+        ctx = contexts[0]
+    else:
+        ctx = await browser.new_context()
+
+    page = await ctx.new_page()
+
+    logger.info("GOL: loading Angular SPA...")
+    await page.goto(f"{_GOL_BASE}/compra", wait_until="domcontentloaded", timeout=30000)
+    await asyncio.sleep(6)
+
+    # Dismiss LGPD/cookie overlays
+    await _dismiss_cookies(page)
+
+    # Verify Angular booted (session UUID exists)
+    for _ in range(10):
+        uuid = await page.evaluate("""() => {
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
+                if (m) return m[1];
+            }
+            return null;
+        }""")
+        if uuid:
+            logger.info("GOL: Angular SPA ready (UUID=%s...)", uuid[:8])
+            break
+        await asyncio.sleep(1)
+
+    _persistent_page = page
+    return page
+
+
+async def _dismiss_cookies(page) -> None:
+    for sel in [
+        "button:has-text('Continuar e fechar')",
+        "button:has-text('Continue and close')",
+    ]:
+        try:
+            el = page.locator(sel).first
+            if await el.count() > 0 and await el.is_visible():
+                await el.click(timeout=2000)
+                await asyncio.sleep(0.5)
+                return
+        except Exception:
+            continue
+    try:
+        await page.evaluate("""() => {
+            document.querySelectorAll(
+                '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], '
+                + '[class*="onetrust"], [id*="onetrust"], [class*="lgpd"]'
+            ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
+            document.body.style.overflow = 'auto';
+        }""")
+    except Exception:
+        pass
+
+
 
 
 class GolConnectorClient:
-    """GOL connector — sessionStorage injection triggers Angular's BFF search."""
+    """GOL scraper — CDP Chrome + Angular navigation."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -98,48 +205,34 @@ class GolConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale="pt-BR",
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-        )
-        try:
+        lock = _get_lock()
+        async with lock:
             try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
+                return await self._attempt_search(req, t0)
+            except Exception as e:
+                logger.error("GOL search error: %s", e)
+                return self._empty(req)
 
-            captured_data: dict = {}
-            api_event = asyncio.Event()
+    async def _attempt_search(
+        self, req: FlightSearchRequest, t0: float
+    ) -> FlightSearchResponse:
+        global _persistent_page
 
-            async def on_response(response):
-                try:
-                    if _GOL_BFF in response.url and response.status == 200:
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            if data and isinstance(data, dict) and "offers" in data:
-                                captured_data["json"] = data
-                                api_event.set()
-                except Exception:
-                    pass
+        page = await _ensure_persistent_page()
 
-            page.on("response", on_response)
-
-            # Step 1: Load Angular app to get auth token + session UUID
-            logger.info("GOL: loading Angular app for %s→%s", req.origin, req.destination)
-            await page.goto(f"{_GOL_BASE}/compra",
-                            wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
-            await asyncio.sleep(5)
-
-            # Dismiss cookie/LGPD overlays
-            await self._dismiss_cookies(page)
-
-            # Step 2: Extract session UUID from sessionStorage
+        # Extract session UUID
+        uuid = await page.evaluate("""() => {
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
+                if (m) return m[1];
+            }
+            return null;
+        }""")
+        if not uuid:
+            logger.warning("GOL: no session UUID, resetting page")
+            _persistent_page = None
+            page = await _ensure_persistent_page()
             uuid = await page.evaluate("""() => {
                 for (let i = 0; i < sessionStorage.length; i++) {
                     const key = sessionStorage.key(i);
@@ -149,70 +242,87 @@ class GolConnectorClient:
                 return null;
             }""")
             if not uuid:
-                logger.warning("GOL: failed to extract session UUID")
                 return self._empty(req)
-            logger.info("GOL: session UUID=%s", uuid[:8])
 
-            # Step 3: Inject search params into sessionStorage
-            dep_date = req.date_from.isoformat()
-            is_roundtrip = req.return_from is not None
-
-            itinerary_parts = [{
-                "from": {"code": req.origin, "useNearbyLocations": False},
-                "to": {"code": req.destination, "useNearbyLocations": False},
-                "when": {"date": f"{dep_date}T00:00:00"},
-            }]
-            if is_roundtrip and req.return_from:
-                ret_date = req.return_from.isoformat()
-                itinerary_parts.append({
-                    "from": {"code": req.destination, "useNearbyLocations": False},
-                    "to": {"code": req.origin, "useNearbyLocations": False},
-                    "when": {"date": f"{ret_date}T00:00:00"},
-                })
-
-            search_payload = {
-                "promocodebanner": False,
-                "destinationCountryToUSA": False,
-                "lastSearchCourtesyTicket": False,
-                "passengerCourtesyType": None,
-                "airSearch": {
-                    "cabinClass": None,
-                    "currency": None,
-                    "pointOfSale": "BR",
-                    "awardBooking": False,
-                    "searchType": "BRANDED",
-                    "promoCodes": [""],
-                    "originalItineraryParts": itinerary_parts,
-                    "itineraryParts": itinerary_parts,
-                    "passengers": {
-                        "ADT": req.adults,
-                        "TEEN": 0,
-                        "CHD": req.children,
-                        "INF": req.infants,
-                        "UNN": 0,
-                    },
-                },
-            }
-            journey_type = "round-trip" if is_roundtrip else "one-way"
-            passengers = {
-                "ADT": req.adults, "TEEN": 0,
-                "CHD": req.children, "INF": req.infants, "UNN": 0,
-            }
-
-            await page.evaluate("""({uuid, search, journey, passengers}) => {
-                sessionStorage.setItem(uuid + '_@SiteGolB2C:search', JSON.stringify(search));
-                sessionStorage.setItem(uuid + '_@SiteGolB2C:search-properties', JSON.stringify({journey: journey}));
-                sessionStorage.setItem(uuid + '_@SiteGolB2C:passengers', JSON.stringify(passengers));
-                sessionStorage.setItem('flightSelectionScreen', JSON.stringify('v2'));
-            }""", {
-                "uuid": uuid,
-                "search": search_payload,
-                "journey": journey_type,
-                "passengers": passengers,
+        # Build sessionStorage search payload
+        dep_date = req.date_from.isoformat()
+        itinerary_parts = [{
+            "from": {"code": req.origin, "useNearbyLocations": False},
+            "to": {"code": req.destination, "useNearbyLocations": False},
+            "when": {"date": f"{dep_date}T00:00:00"},
+        }]
+        is_roundtrip = req.return_from is not None
+        if is_roundtrip and req.return_from:
+            ret_date = req.return_from.isoformat()
+            itinerary_parts.append({
+                "from": {"code": req.destination, "useNearbyLocations": False},
+                "to": {"code": req.origin, "useNearbyLocations": False},
+                "when": {"date": f"{ret_date}T00:00:00"},
             })
-            logger.info("GOL: sessionStorage injected")
 
-            # Step 4: Navigate to results page — Angular resolver fires BFF search
+        search_payload = {
+            "promocodebanner": False,
+            "destinationCountryToUSA": False,
+            "lastSearchCourtesyTicket": False,
+            "passengerCourtesyType": None,
+            "airSearch": {
+                "cabinClass": None,
+                "currency": None,
+                "pointOfSale": "BR",
+                "awardBooking": False,
+                "searchType": "BRANDED",
+                "promoCodes": [""],
+                "originalItineraryParts": itinerary_parts,
+                "itineraryParts": itinerary_parts,
+                "passengers": {
+                    "ADT": req.adults,
+                    "TEEN": 0,
+                    "CHD": req.children,
+                    "INF": req.infants,
+                    "UNN": 0,
+                },
+            },
+        }
+        journey_type = "round-trip" if is_roundtrip else "one-way"
+        passengers = {
+            "ADT": req.adults, "TEEN": 0,
+            "CHD": req.children, "INF": req.infants, "UNN": 0,
+        }
+
+        # Inject search params into sessionStorage
+        await page.evaluate("""({uuid, search, journey, passengers}) => {
+            sessionStorage.setItem(uuid + '_@SiteGolB2C:search', JSON.stringify(search));
+            sessionStorage.setItem(uuid + '_@SiteGolB2C:search-properties', JSON.stringify({journey: journey}));
+            sessionStorage.setItem(uuid + '_@SiteGolB2C:passengers', JSON.stringify(passengers));
+            sessionStorage.setItem('flightSelectionScreen', JSON.stringify('v2'));
+        }""", {
+            "uuid": uuid,
+            "search": search_payload,
+            "journey": journey_type,
+            "passengers": passengers,
+        })
+
+        logger.info("GOL: searching %s→%s via Angular navigation", req.origin, req.destination)
+
+        # Set up BFF response interception
+        captured_data: dict = {}
+        api_event = asyncio.Event()
+
+        async def on_response(response):
+            try:
+                if "bff-flight" in response.url and "search" in response.url and response.status == 200:
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct:
+                        data = await response.json()
+                        if data and isinstance(data, dict) and "offers" in data:
+                            captured_data["json"] = data
+                            api_event.set()
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+        try:
+            # Navigate to results page — Angular resolver fires BFF search
             await page.goto(f"{_GOL_BASE}/compra/selecao-de-voo2/ida",
                             wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
 
@@ -220,92 +330,31 @@ class GolConnectorClient:
             try:
                 await asyncio.wait_for(api_event.wait(), timeout=remaining)
             except asyncio.TimeoutError:
-                logger.warning("GOL: timed out waiting for BFF search response")
+                logger.warning("GOL: timed out waiting for BFF response")
                 return self._empty(req)
-
-            data = captured_data.get("json", {})
-            if not data:
-                return self._empty(req)
-
-            elapsed = time.monotonic() - t0
-            offers = self._parse_response(data, req)
-            return self._build_response(offers, req, elapsed)
-
-        except Exception as e:
-            logger.error("GOL Playwright error: %s", e)
-            return self._empty(req)
         finally:
-            await context.close()
+            page.remove_listener("response", on_response)
 
-    # ── Cookie / LGPD overlay dismissal ─────────────────────────────────────
+        data = captured_data.get("json", {})
+        if not data:
+            return self._empty(req)
 
-    async def _dismiss_cookies(self, page) -> None:
-        # GOL uses LGPD consent banner and OneTrust
-        for sel in [
-            "button:has-text('Continuar e fechar')",
-            "button:has-text('Continue and close')",
-        ]:
-            try:
-                el = page.locator(sel).first
-                if await el.count() > 0 and await el.is_visible():
-                    await el.click(timeout=2000)
-                    await asyncio.sleep(0.5)
-                    return
-            except Exception:
-                continue
-        # Fallback: nuke overlays via DOM
+        # Navigate back to /compra for next search (keeps SPA alive)
         try:
-            await page.evaluate("""() => {
-                document.querySelectorAll(
-                    '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], '
-                    + '[class*="onetrust"], [id*="onetrust"], [class*="lgpd"]'
-                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-                document.body.style.overflow = 'auto';
-            }""")
+            await page.goto(f"{_GOL_BASE}/compra",
+                            wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(1)
         except Exception:
             pass
 
+        elapsed = time.monotonic() - t0
+        offers = self._parse_response(data, req)
+        return self._build_response(offers, req, elapsed)
+
     # ── Response parsing (GOL BFF format) ───────────────────────────────────
-    #
-    # GOL BFF response structure:
-    # {
-    #   "execution": "uuid",
-    #   "offers": [
-    #     {
-    #       "itinerary": {
-    #         "origin": "GRU", "destination": "GIG",
-    #         "departure": "2026-03-20T06:00:00",
-    #         "arrival": "2026-03-20T07:05:00",
-    #         "stops": 0, "totalDuration": 65,
-    #         "operatingAirlineCode": ["G3"], "airlineCode": ["G3"]
-    #       },
-    #       "segments": [
-    #         {
-    #           "origin": "GRU", "destination": "GIG",
-    #           "departure": "...", "arrival": "...",
-    #           "fareBasis": "PNFAAG2J", "duration": 65,
-    #           "flightNumber": 2044,
-    #           "airlineCode": "G3", "operatingAirlineCode": "G3"
-    #         }
-    #       ],
-    #       "fareFamily": [
-    #         {
-    #           "shoppingBasketHashCode": 1433343908,
-    #           "brandId": "LI",  # LI=Light, CL=Classic, FL=Full
-    #           "price": {
-    #             "currency": "BRL", "total": 2197.54,
-    #             "fare": 2163.9, "taxes": 33.64
-    #           }
-    #         }
-    #       ]
-    #     }
-    #   ],
-    #   "alternateDateOffers": [...],
-    #   "error": null
-    # }
 
     def _parse_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
-        raw_offers = data.get("offers", [])
+        raw_offers = data.get("offers") or []
         if not raw_offers:
             return []
 
@@ -339,7 +388,6 @@ class GolConnectorClient:
         if best_price == float("inf") or best_price <= 0:
             return None
 
-        # Parse segments
         segments: list[FlightSegment] = []
         for seg in segments_raw:
             segments.append(FlightSegment(
@@ -366,7 +414,6 @@ class GolConnectorClient:
             stopovers=stops,
         )
 
-        # Build unique ID from flight numbers + departure
         dep = itinerary.get("departure", "")
         flight_nums = "-".join(str(s.get("flightNumber", "")) for s in segments_raw)
         offer_key = f"{dep}_{flight_nums}"

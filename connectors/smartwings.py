@@ -1,24 +1,23 @@
 """
-Smartwings Playwright connector — navigates smartwings.com homepage form
+Smartwings CDP Chrome scraper — navigates smartwings.com homepage form
 then parses the Amadeus FlexPricer results on book.smartwings.com.
 
 Smartwings (IATA: QS) is the Czech Republic's largest airline group,
 operating from Prague (PRG), Brno (BRQ), Ostrava (OSR) and Pardubice (PED)
 to Mediterranean, Middle East and North Africa destinations.
 
-Cloudflare WAF — requires browser session (passes from EU IPs).
+Cloudflare WAF — requires browser session (real Chrome passes better).
 
-Strategy:
-1. Navigate to smartwings.com/en homepage, wait for Cloudflare
-2. Dismiss cookie consent banner
-3. Click "One-way flight" button
-4. Select origin/destination via JS click on [data-iata] elements
-   in the hierarchical country->airport dropdown
-5. Set date via jQuery datepicker
-6. Click Search -> redirects to book.smartwings.com Amadeus FlexPricer
-7. Calendar page (PAGE_ID=FDCT) -> click continue
-8. Flights page (PAGE_ID=FPOW) -> parse .bound-table-flightline elements
-9. Extract flight times, duration, number, and fare prices from DOM
+Strategy (converted Mar 2026):
+1. Launch real system Chrome via CDP (persistent, avoids launch overhead)
+2. Navigate to smartwings.com/en homepage, wait for Cloudflare
+3. Dismiss cookie consent banner
+4. Click "One-way flight" button
+5. Select origin/destination via JS click on [data-iata] elements
+6. Set date via jQuery datepicker
+7. Click Search -> redirects to book.smartwings.com Amadeus FlexPricer
+8. Calendar page → click continue
+9. Flights page → parse .bound-table-flightline elements
 """
 
 from __future__ import annotations
@@ -26,8 +25,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -57,9 +58,20 @@ _TIMEZONES = [
 
 _MAX_ATTEMPTS = 2
 
-# ── Shared browser singleton ──────────────────────────────────────────────
+# ── CDP Chrome singleton ──────────────────────────────────────────────
+_CDP_PORT = 9452
+_USER_DATA_DIR = os.path.join(os.environ.get("TEMP", "/tmp"), "smartwings_cdp_data")
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+]
+
+_chrome_proc: subprocess.Popen | None = None
 _pw_instance = None
-_browser = None
+_cdp_browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -70,33 +82,63 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _find_chrome() -> str:
+    for p in _CHROME_PATHS:
+        if os.path.isfile(p):
+            return p
+    raise FileNotFoundError("Chrome not found")
+
+
+def _launch_chrome():
+    global _chrome_proc
+    if _chrome_proc and _chrome_proc.poll() is None:
+        return
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    chrome = _find_chrome()
+    _chrome_proc = subprocess.Popen(
+        [
+            chrome,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    logger.info("Smartwings: Chrome launched on CDP port %d (pid=%d)", _CDP_PORT, _chrome_proc.pid)
+
+
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
+    """Shared real Chrome via CDP (launched once, reused across searches)."""
+    global _pw_instance, _cdp_browser
     lock = _get_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
+        if _cdp_browser and _cdp_browser.is_connected():
+            return _cdp_browser
+        _launch_chrome()
+        await asyncio.sleep(2)
         from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Smartwings: Playwright browser launched (headed Chrome)")
-        return _browser
+        if not _pw_instance:
+            _pw_instance = await async_playwright().start()
+        for attempt in range(5):
+            try:
+                _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{_CDP_PORT}"
+                )
+                logger.info("Smartwings: connected to Chrome via CDP")
+                return _cdp_browser
+            except Exception:
+                if attempt < 4:
+                    await asyncio.sleep(1)
+        raise RuntimeError(f"Smartwings: cannot connect to Chrome CDP on port {_CDP_PORT}")
 
 
 class SmartwingsConnectorClient:
-    """Smartwings Playwright connector — homepage form + Amadeus FPOW parsing."""
+    """Smartwings Playwright scraper — homepage form + Amadeus FPOW parsing."""
 
     def __init__(self, timeout: float = 60.0):
         self.timeout = timeout
@@ -126,13 +168,9 @@ class SmartwingsConnectorClient:
             timezone_id=random.choice(_TIMEZONES),
             service_workers="block",
         )
+        page = None
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
+            page = await context.new_page()
 
             # ── Step 1: Load homepage & pass Cloudflare ──
             logger.info("Smartwings: loading homepage for %s->%s on %s",
@@ -186,6 +224,7 @@ class SmartwingsConnectorClient:
                     const dp = document.getElementById('datepicker-from');
                     if (dp && window.jQuery) {
                         jQuery('#datepicker-from').datepicker('setDate', dateStr);
+                        jQuery('#datepicker-from').datepicker('hide');
                     } else if (dp) {
                         const nativeSetter = Object.getOwnPropertyDescriptor(
                             window.HTMLInputElement.prototype, 'value'
@@ -193,14 +232,16 @@ class SmartwingsConnectorClient:
                         nativeSetter.call(dp, dateStr);
                         dp.dispatchEvent(new Event('change', { bubbles: true }));
                     }
+                    // Close any open datepicker overlay
+                    document.querySelectorAll('.ui-datepicker').forEach(el => el.style.display = 'none');
                 }""",
                 date_str,
             )
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
 
             # ── Step 6: Click Search → book.smartwings.com ──
             search_btn = page.locator(".search-flight").first
-            await search_btn.click(timeout=5000)
+            await search_btn.click(timeout=10000, force=True)
             logger.info("Smartwings: clicked Search, waiting for Amadeus redirect")
 
             # Wait for book.smartwings.com to load
@@ -245,7 +286,15 @@ class SmartwingsConnectorClient:
             return self._empty(req)
 
         finally:
-            await context.close()
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            try:
+                await context.close()
+            except Exception:
+                pass
 
     # ── Airport selection via data-iata click ──────────────────────────
 

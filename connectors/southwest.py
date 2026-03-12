@@ -1,5 +1,5 @@
 """
-Southwest Airlines Playwright connector -- navigates to southwest.com and searches flights.
+Southwest Airlines Playwright scraper -- navigates to southwest.com and searches flights.
 
 Southwest (IATA: WN) is the largest US low-cost carrier.
 Their search API is at /api/air-booking/ endpoints, protected by heavy bot detection.
@@ -86,7 +86,7 @@ async def _get_browser():
 
 
 class SouthwestConnectorClient:
-    """Southwest Playwright connector -- homepage form search + API interception."""
+    """Southwest Playwright scraper -- homepage form search + API interception."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout

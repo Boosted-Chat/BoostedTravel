@@ -1,5 +1,5 @@
 """
-Spirit Airlines Playwright connector -- navigates to spirit.com and searches flights.
+Spirit Airlines Playwright scraper -- navigates to spirit.com and searches flights.
 
 Spirit (IATA: NK) is a US ultra-low-cost carrier operating domestic and
 Caribbean/Latin America routes. Heavy Akamai/PerimeterX bot protection.
@@ -17,8 +17,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -46,7 +48,9 @@ _TIMEZONES = [
     "America/Los_Angeles", "America/Phoenix",
 ]
 
-_pw_instance = None
+# ── Shared browser singleton via CDP ────────────────────────────────────
+_CDP_PORT = 9463
+_chrome_proc = None
 _browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
@@ -59,32 +63,34 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
+    """Connect to a real Chrome instance via CDP (launched once, reused)."""
+    global _chrome_proc, _browser
     lock = _get_lock()
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
         from playwright.async_api import async_playwright
 
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Spirit: Playwright browser launched (headed Chrome)")
+        chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        user_data = os.path.join(os.environ.get("TEMP", "/tmp"), "chrome-cdp-spirit")
+        _chrome_proc = subprocess.Popen([
+            chrome_path,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={user_data}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+        ])
+        await asyncio.sleep(1.5)
+
+        pw = await async_playwright().start()
+        _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_CDP_PORT}")
+        logger.info("Spirit: Connected to real Chrome via CDP (port %d)", _CDP_PORT)
         return _browser
 
 
 class SpiritConnectorClient:
-    """Spirit Playwright connector -- homepage form search + API interception."""
+    """Spirit Playwright scraper -- homepage form search + API interception."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -96,8 +102,8 @@ class SpiritConnectorClient:
         t0 = time.monotonic()
 
         for attempt in range(3):
-            # Fresh browser for each attempt (PX fingerprints the browser process)
-            browser = await self._launch_fresh_browser()
+            # Fresh context per attempt (real Chrome via CDP defeats PX better)
+            browser = await _get_browser()
             context = await browser.new_context(
                 viewport=random.choice(_VIEWPORTS),
                 locale=random.choice(_LOCALES),
@@ -108,42 +114,15 @@ class SpiritConnectorClient:
                 if result and result.total_results > 0:
                     return result
                 if attempt < 2:
-                    logger.info("Spirit: attempt %d returned no results, retrying with fresh browser", attempt + 1)
+                    logger.info("Spirit: attempt %d returned no results, retrying with fresh context", attempt + 1)
             except Exception as e:
                 logger.warning("Spirit: attempt %d error: %s", attempt + 1, e)
             finally:
                 await context.close()
-                try:
-                    pw_ref = getattr(browser, '_pw_instance', None)
-                    await browser.close()
-                    if pw_ref:
-                        await pw_ref.stop()
-                except Exception:
-                    pass
             await asyncio.sleep(2.0)
 
         logger.warning("Spirit: all attempts exhausted for %s->%s", req.origin, req.destination)
         return self._empty(req)
-
-    @staticmethod
-    async def _launch_fresh_browser():
-        """Launch a fresh headed Chrome (new process, not reused)."""
-        from playwright.async_api import async_playwright
-        pw = await async_playwright().start()
-        try:
-            browser = await pw.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            browser = await pw.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        # Store pw ref on browser for cleanup
-        browser._pw_instance = pw
-        return browser
 
     async def _attempt_search(self, context, req: FlightSearchRequest, t0: float) -> FlightSearchResponse:
         """Single search attempt within a fresh browser context."""

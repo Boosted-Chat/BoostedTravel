@@ -1,5 +1,5 @@
 """
-Flybondi hybrid connector -- curl_cffi SSR extraction (primary) + Playwright fallback.
+Flybondi hybrid scraper -- curl_cffi SSR extraction (primary) + Playwright fallback.
 
 Flybondi (IATA: FO) is an Argentine low-cost carrier operating domestic
 and regional routes from Buenos Aires (EZE/AEP/BUE) and other Argentine cities.
@@ -93,7 +93,7 @@ async def _get_browser():
 
 
 class FlybondiConnectorClient:
-    """Flybondi hybrid connector -- curl_cffi SSR extraction + Playwright fallback."""
+    """Flybondi hybrid scraper -- curl_cffi SSR extraction + Playwright fallback."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout

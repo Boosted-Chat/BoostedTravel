@@ -1,24 +1,24 @@
 """
-Jet2 Playwright connector — direct URL navigation + API interception.
+Jet2 hybrid scraper — cookie-farm + curl_cffi direct page fetch.
 
 Jet2 (IATA: LS) is a British low-cost leisure airline operating from
 14 UK airports to 75+ destinations across Europe and beyond.
 
-Strategy (verified Mar 2026):
-  Jet2.com has NO traditional search form. Instead it uses direct URL routing:
-    /en/cheap-flights/{origin-slug}/{dest-slug}?from=YYYY-MM-DD&to=...&adults=N
+Strategy (hybrid cookie-farm, updated Mar 2026):
+  1. ONCE per ~25 min: Playwright opens jet2.com homepage, accepts cookies.
+     This generates valid Akamai WAF cookies. Extract all cookies via context.cookies().
+  2. For each search: curl_cffi fetches two endpoints with farmed cookies:
+     a) /client/api/search-panels/flight-schedules/outbound?departures={iata}&arrivals={iata}
+        → Returns which dates have flights (no prices)
+     b) /en/cheap-flights/{origin-slug}/{dest-slug}?from=YYYY-MM-DD&...
+        → HTML page with embedded £ prices in calendar cells
+  3. Parse prices from HTML via regex + optional schedule API cross-check
 
-  On page load the site calls internal APIs:
-    - /api/search/airportinformation/allairportinformation  → IATA/slug mapping
-    - /client/api/search-panels/flight-schedules/outbound?departures={iata}&arrivals={iata}
-    - /api/search/flightsearchresults/registerdefaultflightwithgtm?scid=...
+  Result: ~1-3s per search instead of ~20-30s with full Playwright.
 
-  The results page shows a monthly calendar with per-day prices.
-  We intercept the flight-schedules API for data, and parse the DOM calendar
-  as fallback.
-
+  URL routing: /en/cheap-flights/{origin-slug}/{dest-slug}?from=YYYY-MM-DD&to=...&adults=N
   Cookie banner: OneTrust ("Accept All Cookies")
-  Anti-bot: PerimeterX (PX) — handled with stealth + headed Chrome + overlay removal
+  Anti-bot: Akamai Bot Manager — cookies farmed via headed Playwright
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ import time
 from datetime import date, datetime
 from typing import Any, Optional
 
+from curl_cffi import requests as cffi_requests
+
 from models.flights import (
     FlightOffer,
     FlightRoute,
@@ -42,6 +44,10 @@ from models.flights import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Config ─────────────────────────────────────────────────────────────────
+_IMPERSONATE = "chrome124"
+_COOKIE_MAX_AGE = 25 * 60  # Re-farm cookies after 25 minutes
 
 # ── Anti-fingerprint pools ─────────────────────────────────────────────────
 _VIEWPORTS = [
@@ -61,6 +67,11 @@ _TIMEZONES = [
 _pw_instance = None
 _browser = None
 _browser_lock: Optional[asyncio.Lock] = None
+
+# ── Cookie farm state ─────────────────────────────────────────────────────
+_farm_lock: Optional[asyncio.Lock] = None
+_farmed_cookies: list[dict] = []
+_farm_timestamp: float = 0.0
 
 # ── Airport slug cache (IATA → slug, populated from allairportinformation) ─
 _airport_slug_cache: dict[str, str] = {}
@@ -98,6 +109,13 @@ def _get_lock() -> asyncio.Lock:
     if _browser_lock is None:
         _browser_lock = asyncio.Lock()
     return _browser_lock
+
+
+def _get_farm_lock() -> asyncio.Lock:
+    global _farm_lock
+    if _farm_lock is None:
+        _farm_lock = asyncio.Lock()
+    return _farm_lock
 
 
 def _get_slug_lock() -> asyncio.Lock:
@@ -152,7 +170,7 @@ async def _reset_browser():
 
 
 class Jet2ConnectorClient:
-    """Jet2 Playwright connector — direct URL + API interception + DOM calendar."""
+    """Jet2 hybrid scraper — cookie-farm + curl_cffi direct fetch."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -161,6 +179,282 @@ class Jet2ConnectorClient:
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """
+        Search Jet2 flights via cookie-farm + curl_cffi.
+
+        Fast path (~1-3s): curl_cffi fetches the cheap-flights page with farmed cookies.
+        Slow path (~15s): Playwright farms cookies first, then curl_cffi.
+        Fallback: Full Playwright interception if API/HTML fails.
+        """
+        t0 = time.monotonic()
+
+        try:
+            cookies = await self._ensure_cookies()
+            if not cookies:
+                logger.warning("Jet2: cookie farm failed, falling back to Playwright")
+                return await self._playwright_fallback(req, t0)
+
+            offers = await self._api_search(req, cookies)
+
+            # If failed (expired cookies), re-farm once and retry
+            if offers is None:
+                logger.info("Jet2: API search failed, re-farming cookies")
+                cookies = await self._farm_cookies()
+                if cookies:
+                    offers = await self._api_search(req, cookies)
+
+            # If API still fails, fall back to full Playwright
+            if offers is None:
+                logger.warning("Jet2: API search returned no data, falling back to Playwright")
+                return await self._playwright_fallback(req, t0)
+
+            elapsed = time.monotonic() - t0
+            if offers:
+                offers.sort(key=lambda o: o.price)
+
+            logger.info(
+                "Jet2 %s→%s returned %d offers in %.1fs (hybrid API)",
+                req.origin, req.destination, len(offers), elapsed,
+            )
+
+            search_hash = hashlib.md5(
+                f"jet2{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+            return FlightSearchResponse(
+                search_id=f"fs_{search_hash}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=offers[0].currency if offers else "GBP",
+                offers=offers,
+                total_results=len(offers),
+            )
+        except Exception as e:
+            logger.error("Jet2: hybrid search error: %s", e)
+            return await self._playwright_fallback(req, t0)
+
+    # ------------------------------------------------------------------
+    # Cookie farm
+    # ------------------------------------------------------------------
+
+    async def _ensure_cookies(self) -> list[dict]:
+        """Return cached cookies or farm fresh ones."""
+        global _farmed_cookies, _farm_timestamp
+        if _farmed_cookies and (time.monotonic() - _farm_timestamp) < _COOKIE_MAX_AGE:
+            return _farmed_cookies
+        return await self._farm_cookies()
+
+    async def _farm_cookies(self) -> list[dict]:
+        """Load Jet2 homepage in Playwright to farm Akamai cookies."""
+        global _farmed_cookies, _farm_timestamp
+        lock = _get_farm_lock()
+        async with lock:
+            # Double-check after acquiring lock
+            if _farmed_cookies and (time.monotonic() - _farm_timestamp) < _COOKIE_MAX_AGE:
+                return _farmed_cookies
+
+            browser = await _get_browser()
+            context = await browser.new_context(
+                viewport=random.choice(_VIEWPORTS),
+                locale=random.choice(_LOCALES),
+                timezone_id=random.choice(_TIMEZONES),
+            )
+            try:
+                try:
+                    from playwright_stealth import stealth_async
+                    page = await context.new_page()
+                    await stealth_async(page)
+                except ImportError:
+                    page = await context.new_page()
+
+                # Also capture airport info API during homepage load
+                async def on_response(response):
+                    try:
+                        if "allairportinformation" in response.url.lower() and response.status == 200:
+                            ct = response.headers.get("content-type", "")
+                            if "json" in ct:
+                                data = await response.json()
+                                if data:
+                                    self._update_slug_cache(data)
+                    except Exception:
+                        pass
+
+                page.on("response", on_response)
+
+                logger.info("Jet2: farming cookies via homepage load")
+                await page.goto(
+                    "https://www.jet2.com/",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                await asyncio.sleep(2.0)
+
+                # Dismiss OneTrust cookie banner
+                await self._dismiss_overlays(page)
+                await asyncio.sleep(1.5)
+
+                # Extract cookies
+                cookies = await context.cookies()
+                if cookies:
+                    _farmed_cookies = cookies
+                    _farm_timestamp = time.monotonic()
+                    logger.info("Jet2: farmed %d cookies", len(cookies))
+                    return cookies
+                return []
+            except Exception as e:
+                logger.error("Jet2: cookie farm error: %s", e)
+                return []
+            finally:
+                await context.close()
+
+    # ------------------------------------------------------------------
+    # Direct API via curl_cffi
+    # ------------------------------------------------------------------
+
+    async def _api_search(
+        self, req: FlightSearchRequest, cookies: list[dict],
+    ) -> Optional[list[FlightOffer]]:
+        """Fetch Jet2 cheap-flights page via curl_cffi and extract prices."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._api_search_sync, req, cookies)
+
+    def _api_search_sync(
+        self, req: FlightSearchRequest, cookies: list[dict],
+    ) -> Optional[list[FlightOffer]]:
+        """Synchronous curl_cffi: fetch cheap-flights HTML page + extract prices."""
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+
+        # Load farmed cookies
+        for c in cookies:
+            domain = c.get("domain", "")
+            sess.cookies.set(c["name"], c["value"], domain=domain)
+
+        # Resolve slugs
+        origin_slug = self._resolve_slug_sync(req.origin)
+        dest_slug = self._resolve_slug_sync(req.destination)
+        if not origin_slug or not dest_slug:
+            logger.warning("Jet2: could not resolve slugs for %s→%s", req.origin, req.destination)
+            return None
+
+        dep = req.date_from.strftime("%Y-%m-%d")
+        children_param = f"children={req.children}" if req.children > 0 else "children"
+        search_url = (
+            f"https://www.jet2.com/en/cheap-flights/{origin_slug}/{dest_slug}"
+            f"?from={dep}&to={dep}"
+            f"&adults={req.adults}&{children_param}&infants={req.infants}"
+            f"&preselect=false"
+        )
+
+        try:
+            r = sess.get(
+                search_url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-GB,en;q=0.9",
+                    "Referer": "https://www.jet2.com/",
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            logger.error("Jet2: curl_cffi request failed: %s", e)
+            return None
+
+        if r.status_code != 200:
+            logger.warning("Jet2: cheap-flights page returned %d", r.status_code)
+            return None
+
+        # Extract prices from HTML
+        html = r.text
+        if "Access Denied" in html or "PerimeterX" in html:
+            logger.warning("Jet2: Akamai/PX block on cheap-flights page")
+            return None
+
+        offers = self._parse_html_prices(html, req)
+        if offers is not None:
+            return offers
+
+        # Try schedule API as extra signal (no prices, just availability)
+        try:
+            r2 = sess.get(
+                f"https://www.jet2.com/client/api/search-panels/flight-schedules/outbound"
+                f"?departures={req.origin.lower()}&arrivals={req.destination.lower()}&xmsversion=2",
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://www.jet2.com/",
+                },
+                timeout=10,
+            )
+            if r2.status_code == 200:
+                ct = r2.headers.get("content-type", "")
+                if "json" in ct:
+                    sched = r2.json()
+                    year_str = str(req.date_from.year)
+                    month_str = str(req.date_from.month)
+                    day_str = str(req.date_from.day)
+                    year_data = sched.get(year_str, {})
+                    month_data = year_data.get(month_str, {})
+                    days = month_data.get("days", {})
+                    if day_str not in days:
+                        logger.info("Jet2: schedule API says no flight on %s", req.date_from)
+                        return []  # Confirmed: no flights
+        except Exception:
+            pass
+
+        return None  # signal to fall back
+
+    def _parse_html_prices(
+        self, html: str, req: FlightSearchRequest,
+    ) -> Optional[list[FlightOffer]]:
+        """Parse £ prices from the Jet2 cheap-flights calendar HTML."""
+        # Find all £XX or £XX.XX prices in the page
+        all_prices = re.findall(r'£(\d+(?:\.\d{2})?)', html)
+        if not all_prices:
+            return None
+
+        booking_url = self._build_booking_url(req)
+        offers: list[FlightOffer] = []
+        seen_prices: set[float] = set()
+
+        for price_str in all_prices:
+            price = float(price_str)
+            if price <= 0 or price in seen_prices:
+                continue
+            seen_prices.add(price)
+
+            dep_dt = datetime(req.date_from.year, req.date_from.month, req.date_from.day, 0, 0)
+            segment = FlightSegment(
+                airline="LS", airline_name="Jet2",
+                flight_no="",
+                origin=req.origin, destination=req.destination,
+                departure=dep_dt, arrival=dep_dt,
+                cabin_class="M",
+            )
+            route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
+            offer_id = f"ls_{hashlib.md5(f'api_{req.date_from}_{price}'.encode()).hexdigest()[:12]}"
+            offers.append(FlightOffer(
+                id=offer_id,
+                price=round(price, 2),
+                currency="GBP",
+                price_formatted=f"£{price:.2f}",
+                outbound=route,
+                inbound=None,
+                airlines=["Jet2"],
+                owner_airline="LS",
+                booking_url=booking_url,
+                is_locked=False,
+                source="jet2_direct",
+                source_tier="free",
+            ))
+
+        return offers if offers else None
+
+    # ------------------------------------------------------------------
+    # Playwright fallback (full browser flow, used if API fails)
+    # ------------------------------------------------------------------
+
+    async def _playwright_fallback(
+        self, req: FlightSearchRequest, t0: float,
+    ) -> FlightSearchResponse:
+        """Full Playwright interception flow as fallback."""
         last_error = None
         for attempt in range(2):
             if attempt > 0:
@@ -168,7 +462,7 @@ class Jet2ConnectorClient:
                 await _reset_browser()
                 await asyncio.sleep(3.0)
             try:
-                return await self._do_search(req)
+                return await self._do_search(req, t0)
             except Exception as e:
                 last_error = e
                 if "ERR_HTTP2" in str(e) or "ERR_CONNECTION" in str(e):
@@ -177,8 +471,7 @@ class Jet2ConnectorClient:
         logger.error("Jet2: all attempts failed: %s", last_error)
         return self._empty(req)
 
-    async def _do_search(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        t0 = time.monotonic()
+    async def _do_search(self, req: FlightSearchRequest, t0: float) -> FlightSearchResponse:
         browser = await _get_browser()
         context = await browser.new_context(
             viewport=random.choice(_VIEWPORTS),
@@ -440,6 +733,10 @@ class Jet2ConnectorClient:
 
     async def _resolve_slug(self, iata: str) -> Optional[str]:
         """Resolve IATA code to Jet2 URL slug."""
+        return self._resolve_slug_sync(iata)
+
+    def _resolve_slug_sync(self, iata: str) -> Optional[str]:
+        """Resolve IATA code to Jet2 URL slug (sync)."""
         iata = iata.upper().strip()
         # Dynamic cache from allairportinformation API
         if iata in _airport_slug_cache:

@@ -1,20 +1,20 @@
 """
-easyJet Playwright connector — navigates to easyJet's deep-link flight search URL
-and extracts structured data from window.appData.searchResult.
+easyJet CDP Chrome hybrid scraper — persistent browser + form navigation
++ window.appData extraction.
 
 easyJet's API (/funnel/api/query) is behind Akamai WAF — requires browser-level
-session. The direct deep-link URL doesn't reliably trigger the search (BFF
-timeout without prior session cookies). Going through the homepage form works.
+session. Direct deep-link URLs redirect to homepage without a BFF session.
+The search must be initiated via the homepage form to trigger the BFF.
 
-Strategy:
-1. Navigate to easyjet.com/en/ homepage
-2. Fill origin/destination/date in the search form
-3. Click "Show flights" → navigates to /buy/flights
-4. Wait for window.appData.searchResult
-5. Parse journeyPairs → FlightOffers
+Strategy (CDP Chrome + persistent browser):
+1. Launch REAL system Chrome (--remote-debugging-port, --user-data-dir).
+2. Connect via Playwright CDP. Browser context persists across searches.
+3. Each search: new page → homepage → fill form → click search → extract appData.
+4. Parse window.appData.searchResult.journeyPairs → FlightOffers.
 
-Response data:  window.appData.searchResult.journeyPairs[0].outbound.flights
-  → dict keyed by date, each value is a list of flight objects with fares
+Real Chrome bypasses Akamai fingerprinting where bundled Chromium fails.
+Persistent browser context means cookies/sessions carry over between searches,
+avoiding cold-start Akamai challenges after the first search.
 """
 
 from __future__ import annotations
@@ -22,8 +22,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Optional
@@ -44,12 +46,34 @@ _VIEWPORTS = [
     {"width": 1920, "height": 1080},
     {"width": 1280, "height": 720},
 ]
-_LOCALES = ["en-GB", "en-US", "en-IE"]
-_TIMEZONES = ["Europe/London", "Europe/Berlin", "Europe/Paris", "Europe/Madrid"]
+
+_DEBUG_PORT = 9450
+_USER_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".easyjet_chrome_data"
+)
 
 _pw_instance = None
 _browser = None
+_chrome_proc = None
 _browser_lock: Optional[asyncio.Lock] = None
+_context = None
+
+
+def _find_chrome() -> Optional[str]:
+    """Find Chrome executable on the system."""
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
 
 
 def _get_lock() -> asyncio.Lock:
@@ -59,15 +83,91 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+async def _get_context():
+    """Get or create a persistent browser context (shares cookies across searches)."""
+    global _context
+    browser = await _get_browser()
+    if _context:
+        try:
+            # Check context is still alive
+            if _context.pages:
+                return _context
+        except Exception:
+            pass
+    contexts = browser.contexts
+    if contexts:
+        _context = contexts[0]
+    else:
+        _context = await browser.new_context(
+            viewport=random.choice(_VIEWPORTS),
+        )
+    return _context
+
+
 async def _get_browser():
-    """Shared headless Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
+    """Launch real Chrome via subprocess + connect via CDP."""
+    global _pw_instance, _browser, _chrome_proc
     lock = _get_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
+        if _browser:
+            try:
+                if _browser.is_connected():
+                    return _browser
+            except Exception:
+                pass
+
         from playwright.async_api import async_playwright
+
+        if _pw_instance:
+            try:
+                await _pw_instance.stop()
+            except Exception:
+                pass
         _pw_instance = await async_playwright().start()
+
+        chrome_path = _find_chrome()
+        if chrome_path:
+            os.makedirs(_USER_DATA_DIR, exist_ok=True)
+            # Try connecting to already-running Chrome
+            try:
+                _browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://localhost:{_DEBUG_PORT}"
+                )
+                logger.info("easyJet: connected to existing Chrome via CDP")
+                return _browser
+            except Exception:
+                pass
+
+            # Launch new Chrome
+            vp = random.choice(_VIEWPORTS)
+            _chrome_proc = subprocess.Popen(
+                [
+                    chrome_path,
+                    f"--remote-debugging-port={_DEBUG_PORT}",
+                    f"--user-data-dir={_USER_DATA_DIR}",
+                    f"--window-size={vp['width']},{vp['height']}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "about:blank",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            await asyncio.sleep(2.5)
+            try:
+                _browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://localhost:{_DEBUG_PORT}"
+                )
+                logger.info("easyJet: CDP Chrome connected (port %d)", _DEBUG_PORT)
+                return _browser
+            except Exception as e:
+                logger.warning("easyJet: CDP connect failed: %s, falling back", e)
+                if _chrome_proc:
+                    _chrome_proc.terminate()
+                    _chrome_proc = None
+
+        # Fallback: regular Playwright headed
         try:
             _browser = await _pw_instance.chromium.launch(
                 headless=False,
@@ -79,12 +179,45 @@ async def _get_browser():
                 headless=False,
                 args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
             )
-        logger.info("easyJet: Playwright browser launched (headed Chrome)")
+        logger.info("easyJet: Playwright browser launched (headed fallback)")
         return _browser
 
 
+async def _dismiss_cookies(page) -> None:
+    """Remove ensighten / cookie banners and account modals that block interaction."""
+    for label in ["Accept", "Accept all", "Accept All Cookies", "I agree", "Got it", "OK"]:
+        try:
+            btn = page.get_by_role("button", name=label)
+            if await btn.count() > 0:
+                await btn.first.click(timeout=2000)
+                logger.info("easyJet: clicked cookie accept button '%s'", label)
+                await asyncio.sleep(0.5)
+                break
+        except Exception:
+            continue
+
+    try:
+        await page.evaluate("""() => {
+            // Remove cookie banners
+            const ids = ['ensBannerBG', 'ensNotifyBanner', 'onetrust-consent-sdk',
+                          'ensCloseBanner', 'ens-banner-overlay'];
+            ids.forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
+            document.querySelectorAll(
+                '.ens-banner, [class*="cookie-banner"], [class*="consent"], ' +
+                '[class*="CookieBanner"], [id*="cookie"], [id*="consent"], ' +
+                '[class*="overlay"][style*="z-index"]'
+            ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
+            // Remove account modals that intercept pointer events
+            document.querySelectorAll(
+                '.modal-lightbox-wrapper, .account-modal, .modal__dialog-wrapper'
+            ).forEach(el => el.remove());
+        }""")
+    except Exception:
+        pass
+
+
 class EasyjetConnectorClient:
-    """easyJet Playwright connector — homepage form search + window.appData extraction."""
+    """easyJet CDP Chrome scraper — persistent browser + form + window.appData extraction."""
 
     def __init__(self, timeout: float = 30.0):
         self.timeout = timeout
@@ -94,37 +227,21 @@ class EasyjetConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
-        Search easyJet using Playwright homepage form + window.appData extraction.
+        Search easyJet using CDP Chrome persistent browser + homepage form.
 
-        The direct deep-link URL (/buy/flights?dep=...) doesn't reliably trigger
-        the BFF search (times out without prior session cookies). Going through
-        the homepage form works consistently.
-
-        Strategy:
-        1. Navigate to easyjet.com/en/ homepage
-        2. Fill the search form (origin, destination, date, one-way)
-        3. Click "Show flights" → navigates to /buy/flights
-        4. Wait for window.appData.searchResult
+        1. Get persistent browser context (cookies carry over)
+        2. Open new page → navigate to homepage
+        3. Fill search form (origin, destination, date)
+        4. Click "Show flights" → wait for window.appData.searchResult
         5. Parse journeyPairs → FlightOffers
+        6. Close page (context stays alive for next search)
         """
         t0 = time.monotonic()
 
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-        )
+        context = await _get_context()
+        page = await context.new_page()
 
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
-
             logger.info("easyJet: loading homepage for %s→%s", req.origin, req.destination)
             await page.goto(
                 "https://www.easyjet.com/en/",
@@ -133,10 +250,10 @@ class EasyjetConnectorClient:
             )
             await asyncio.sleep(2.0)
 
-            # Dismiss cookie/consent banners (may need to run twice as banner loads async)
-            await self._dismiss_cookies(page)
+            # Dismiss cookie/consent banners
+            await _dismiss_cookies(page)
             await asyncio.sleep(0.5)
-            await self._dismiss_cookies(page)
+            await _dismiss_cookies(page)
 
             # Fill the search form
             ok = await self._fill_search_form(page, req)
@@ -157,9 +274,12 @@ class EasyjetConnectorClient:
                 await page.wait_for_url("**/buy/flights**", timeout=15000)
                 logger.info("easyJet: navigated to %s", page.url)
             except Exception:
-                logger.warning("easyJet: didn't navigate to /buy/flights, current URL: %s", page.url)
+                logger.warning("easyJet: didn't navigate to /buy/flights, URL: %s", page.url)
 
-            # Wait for appData
+            # Dismiss any overlays on the results page
+            await _dismiss_cookies(page)
+
+            # Wait for appData (new page — no stale data to clear)
             remaining = max(self.timeout - (time.monotonic() - t0), 10)
             try:
                 await page.wait_for_function(
@@ -182,6 +302,24 @@ class EasyjetConnectorClient:
                 logger.warning("easyJet: no journeyPairs in response")
                 return self._empty(req)
 
+            # Debug: log structure of journeyPairs
+            for i, pair in enumerate(data["journeyPairs"]):
+                ob = pair.get("outbound", {})
+                flights = ob.get("flights", {})
+                logger.debug(
+                    "easyJet: pair[%d] flight date keys: %s",
+                    i, list(flights.keys()),
+                )
+                for dk, fl in flights.items():
+                    avail_count = sum(
+                        1 for f in fl
+                        if not f.get("soldOut") and f.get("saleableStatus") == "AVAILABLE"
+                    )
+                    logger.debug(
+                        "easyJet: pair[%d] date=%s total=%d available=%d",
+                        i, dk, len(fl), avail_count,
+                    )
+
             currency = data.get("metaData", {}).get("currencyCode", "GBP")
             offers = self._parse_journey_pairs(data["journeyPairs"], req, currency)
 
@@ -189,7 +327,7 @@ class EasyjetConnectorClient:
             offers.sort(key=lambda o: o.price)
 
             logger.info(
-                "easyJet %s→%s returned %d offers in %.1fs (Playwright)",
+                "easyJet %s→%s returned %d offers in %.1fs (CDP Chrome)",
                 req.origin, req.destination, len(offers), elapsed,
             )
 
@@ -206,10 +344,140 @@ class EasyjetConnectorClient:
                 total_results=len(offers),
             )
         except Exception as e:
-            logger.error("easyJet Playwright error: %s", e)
+            logger.error("easyJet CDP error: %s", e)
             return self._empty(req)
         finally:
-            await context.close()
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Form interaction
+    # ------------------------------------------------------------------
+
+    async def _fill_search_form(self, page, req: FlightSearchRequest) -> bool:
+        """Fill the easyJet homepage search form."""
+        ok = await self._fill_airport_field(page, "From", req.origin)
+        if not ok:
+            return False
+        await asyncio.sleep(0.5)
+
+        ok = await self._fill_airport_field(page, "To", req.destination)
+        if not ok:
+            return False
+        await asyncio.sleep(0.5)
+
+        ok = await self._fill_date(page, req)
+        if not ok:
+            return False
+        return True
+
+    async def _fill_airport_field(self, page, label: str, iata: str) -> bool:
+        """Fill an airport textbox and select the matching suggestion."""
+        try:
+            field = page.get_by_role("textbox", name=label)
+            if label == "From":
+                clear_name = "Clear selected departure airport"
+            else:
+                clear_name = "Clear selected destination airport"
+            try:
+                clear_btn = page.get_by_role("button", name=clear_name)
+                if await clear_btn.count() > 0:
+                    await clear_btn.click(timeout=2000)
+                    await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+            await field.click(timeout=3000)
+            await asyncio.sleep(0.3)
+            await field.fill(iata)
+            logger.info("easyJet: typed '%s' in %s field", iata, label)
+            await asyncio.sleep(2.0)
+
+            option = page.get_by_role("radio", name=re.compile(
+                rf"{re.escape(iata)}", re.IGNORECASE
+            )).first
+            await option.click(timeout=5000)
+            logger.info("easyJet: selected %s airport for %s", iata, label)
+            return True
+        except Exception as e:
+            logger.warning("easyJet: %s field error: %s", label, e)
+            return False
+
+    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
+        """Open the date picker and select the outbound date."""
+        target = req.date_from
+        try:
+            # Open the date picker
+            try:
+                date_field = page.get_by_role("textbox", name="Clear selected travel date")
+                if await date_field.count() == 0:
+                    date_field = page.get_by_placeholder("Choose your dates")
+                await date_field.click(timeout=3000)
+            except Exception:
+                when_section = page.locator("text=When").first
+                await when_section.click(timeout=3000)
+            await asyncio.sleep(0.5)
+
+            # Wait for the calendar grid to load (prices may take time)
+            try:
+                await page.wait_for_selector(
+                    '[data-testid="month-title"]', timeout=10000
+                )
+            except Exception:
+                logger.warning("easyJet: calendar grid didn't load in time")
+                return False
+            await asyncio.sleep(0.3)
+
+            # Primary selector: data-testid="day-month-year"
+            testid = f"{target.day}-{target.month}-{target.year}"
+            day_btn = page.locator(f'[data-testid="{testid}"]')
+
+            # Fallback selector: aria-label="Month day, year"
+            aria_label = f"{target.strftime('%B')} {target.day}, {target.year}"
+            day_btn_fallback = page.get_by_role("button", name=aria_label)
+
+            # Navigate months until target day button is rendered
+            for attempt in range(12):
+                if await day_btn.count() > 0 or await day_btn_fallback.count() > 0:
+                    break
+                try:
+                    await page.get_by_role("button", name="Next month").click(timeout=2000)
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    break
+
+            # Try primary, then fallback
+            if await day_btn.count() > 0:
+                await day_btn.click(timeout=5000)
+                logger.info("easyJet: clicked date %s (testid: %s)", target, testid)
+            elif await day_btn_fallback.count() > 0:
+                await day_btn_fallback.click(timeout=5000)
+                logger.info("easyJet: clicked date %s (aria-label fallback)", target)
+            else:
+                # Last resort: JS-based click
+                clicked = await page.evaluate("""(args) => {
+                    const [testid, ariaLabel] = args;
+                    let btn = document.querySelector(`[data-testid="${testid}"]`);
+                    if (!btn) {
+                        btn = Array.from(document.querySelectorAll('button'))
+                            .find(b => b.getAttribute('aria-label') === ariaLabel);
+                    }
+                    if (btn) { btn.click(); return true; }
+                    return false;
+                }""", [testid, aria_label])
+                if clicked:
+                    logger.info("easyJet: clicked date %s (JS fallback)", target)
+                else:
+                    logger.warning("easyJet: could not find date button for %s", target)
+                    return False
+
+            await asyncio.sleep(0.5)
+            return True
+        except Exception as e:
+            logger.warning("easyJet: date error: %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # Parsing
@@ -228,12 +496,18 @@ class EasyjetConnectorClient:
             flights_by_date = outbound.get("flights", {})
 
             # flights is a dict keyed by date string
-            for date_key, flight_list in flights_by_date.items():
-                # Only include flights on the requested date (±1 day window may be returned)
-                if date_key != target_date:
-                    continue
+            matched_dates = [dk for dk in flights_by_date if dk == target_date]
+            if not matched_dates:
+                # No exact match — use all available dates (±window from search)
+                available = list(flights_by_date.keys())
+                logger.warning(
+                    "easyJet: target %s not in flight dates %s, using all",
+                    target_date, available,
+                )
+                matched_dates = available
 
-                for flight in flight_list:
+            for date_key in matched_dates:
+                for flight in flights_by_date[date_key]:
                     offer = self._parse_single_flight(flight, currency, booking_url)
                     if offer:
                         offers.append(offer)
@@ -309,197 +583,18 @@ class EasyjetConnectorClient:
         )
 
     # ------------------------------------------------------------------
-    # Form interaction (selectors verified Mar 2026)
-    # ------------------------------------------------------------------
-
-    async def _dismiss_cookies(self, page) -> None:
-        """Remove ensighten / cookie banners that block clicks."""
-        # Try clicking accept/agree buttons first
-        for label in ["Accept", "Accept all", "Accept All Cookies", "I agree", "Got it", "OK"]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{label}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=2000)
-                    logger.info("easyJet: clicked cookie accept button '%s'", label)
-                    await asyncio.sleep(0.5)
-                    break
-            except Exception:
-                continue
-
-        # Force-remove overlay elements via JS
-        try:
-            await page.evaluate("""() => {
-                const ids = ['ensBannerBG', 'ensNotifyBanner', 'onetrust-consent-sdk',
-                              'ensCloseBanner', 'ens-banner-overlay'];
-                ids.forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
-                document.querySelectorAll(
-                    '.ens-banner, [class*="cookie-banner"], [class*="consent"], ' +
-                    '[class*="CookieBanner"], [id*="cookie"], [id*="consent"], ' +
-                    '[class*="overlay"][style*="z-index"]'
-                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-            }""")
-        except Exception:
-            pass
-        await asyncio.sleep(0.3)
-
-    async def _fill_search_form(self, page, req: FlightSearchRequest) -> bool:
-        """Fill the easyJet homepage search form. Returns True on success.
-
-        Form structure (verified Mar 2026):
-        - textbox "From" with placeholder "Country, city, airport"
-        - textbox "To" with placeholder "Country, city, airport"
-        - textbox "Clear selected travel date" (calendar trigger)
-        - button "Show flights"
-        """
-        # Fill 'From' airport
-        ok = await self._fill_airport_field(page, "From", req.origin)
-        if not ok:
-            return False
-        await asyncio.sleep(0.5)
-
-        # Fill 'To' airport
-        ok = await self._fill_airport_field(page, "To", req.destination)
-        if not ok:
-            return False
-        await asyncio.sleep(0.5)
-
-        # Fill date
-        ok = await self._fill_date(page, req)
-        if not ok:
-            return False
-        return True
-
-    async def _fill_airport_field(self, page, label: str, iata: str) -> bool:
-        """Fill an airport textbox and select the matching suggestion.
-
-        The easyJet form renders textbox "From" / textbox "To".
-        Typing the IATA code triggers an autocomplete dropdown with
-        radio buttons like ``radio "London Gatwick ( LGW ) United Kingdom"``.
-        Returns True on success.
-        """
-        try:
-            field = page.get_by_role("textbox", name=label)
-            # Clear existing value
-            if label == "From":
-                clear_name = "Clear selected departure airport"
-            else:
-                clear_name = "Clear selected destination airport"
-            try:
-                clear_btn = page.get_by_role("button", name=clear_name)
-                if await clear_btn.count() > 0:
-                    await clear_btn.click(timeout=2000)
-                    await asyncio.sleep(0.3)
-                    logger.info("easyJet: cleared %s field", label)
-            except Exception:
-                pass
-
-            await field.click(timeout=3000)
-            await asyncio.sleep(0.3)
-            await field.fill(iata)
-            logger.info("easyJet: typed '%s' in %s field, waiting for suggestions", iata, label)
-            await asyncio.sleep(2.0)
-
-            # Suggestions appear as radio buttons: "London Gatwick ( LGW ) United Kingdom"
-            # Note: spaces around the IATA code inside parentheses
-            option = page.get_by_role("radio", name=re.compile(
-                rf"{re.escape(iata)}", re.IGNORECASE
-            )).first
-            await option.click(timeout=5000)
-            logger.info("easyJet: selected %s airport for %s", iata, label)
-            return True
-        except Exception as e:
-            logger.warning("easyJet: %s field error: %s", label, e)
-            return False
-
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        """Open the date picker and select the outbound date.
-
-        The calendar has:
-        - Day buttons labeled "April 15, 2026" (US format with comma)
-        - Month headings "APRIL 2026" (uppercase)
-        - Navigation: button "Previous month" / button "Next month"
-        - Toggle: button "Return trip" → click to switch to one-way
-        
-        Flow: open calendar → navigate to month → click outbound day → handle return.
-        Returns True on success.
-        """
-        target = req.date_from
-
-        try:
-            # Click the date field to open the calendar
-            try:
-                date_field = page.get_by_role("textbox", name="Clear selected travel date")
-                if await date_field.count() == 0:
-                    date_field = page.get_by_placeholder("Choose your dates")
-                await date_field.click(timeout=3000)
-            except Exception:
-                when_section = page.locator("text=When").first
-                await when_section.click(timeout=3000)
-            await asyncio.sleep(0.8)
-            logger.info("easyJet: opened date picker")
-
-            # Navigate to the right month FIRST (before any toggling).
-            month_upper = target.strftime("%B %Y").upper()  # e.g. "APRIL 2026"
-            for i in range(12):
-                heading = page.get_by_role("heading", name=month_upper)
-                if await heading.count() > 0:
-                    logger.info("easyJet: found month heading '%s'", month_upper)
-                    break
-                try:
-                    fwd = page.get_by_role("button", name="Next month")
-                    await fwd.click(timeout=2000)
-                    await asyncio.sleep(0.4)
-                except Exception as e:
-                    logger.warning("easyJet: could not click 'Next month': %s", e)
-                    break
-
-            # Click the outbound day button.
-            day_label = f"{target.strftime('%B')} {target.day}, {target.year}"
-            day_btn = page.get_by_role("button", name=day_label)
-            await day_btn.click(timeout=5000)
-            logger.info("easyJet: clicked outbound date %s", day_label)
-            await asyncio.sleep(0.5)
-
-            # After selecting outbound, calendar asks for return date.
-            # Either switch to one-way or pick a return date +7 days.
-            try:
-                return_btn = page.get_by_role("button", name="Return trip")
-                if await return_btn.count() > 0:
-                    await return_btn.click(timeout=2000)
-                    await asyncio.sleep(0.3)
-                    logger.info("easyJet: switched to one-way")
-                else:
-                    # Already one-way or no toggle visible — pick return date
-                    from datetime import timedelta
-                    ret = target + timedelta(days=7)
-                    ret_label = f"{ret.strftime('%B')} {ret.day}, {ret.year}"
-                    ret_btn = page.get_by_role("button", name=ret_label)
-                    if await ret_btn.count() > 0:
-                        await ret_btn.click(timeout=2000)
-                        logger.info("easyJet: picked return date %s", ret_label)
-            except Exception:
-                pass
-
-            await asyncio.sleep(0.5)
-            return True
-        except Exception as e:
-            logger.warning("easyJet: Date error: %s", e)
-            return False
-
-    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     def _build_booking_url(self, req: FlightSearchRequest) -> str:
         date_out = req.date_from.strftime("%Y-%m-%d")
-        url = (
+        return (
             f"https://www.easyjet.com/en/buy/flights"
             f"?dep={req.origin}&dest={req.destination}"
             f"&dd={date_out}&isOneWay=on"
             f"&apax={req.adults}&cpax={req.children or 0}"
             f"&ipax={req.infants or 0}"
         )
-        return url
 
     def _parse_dt(self, s: str) -> datetime:
         if not s:

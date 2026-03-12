@@ -1,5 +1,5 @@
 """
-Porter Airlines Playwright connector — browser automation to bypass WAF.
+Porter Airlines Playwright scraper — browser automation to bypass WAF.
 
 Porter (IATA: PD) is a Canadian airline based at Billy Bishop Toronto City Airport.
 
@@ -176,7 +176,7 @@ async def _get_browser():
 
 
 class PorterConnectorClient:
-    """Porter Airlines Playwright connector.
+    """Porter Airlines Playwright scraper.
 
     Strategy A (preferred): Navigate directly to the results URL at
     www.flyporter.com/en/flight/tickets/Select_BAF?... — this is the same URL
@@ -716,7 +716,7 @@ class PorterConnectorClient:
                         outbound=route,
                         airlines=["PD"],
                         owner_airline="PD",
-                        source="porter_connector",
+                        source="porter_scraper",
                         source_tier="protocol",
                         is_locked=False,
                         booking_url=booking_url,

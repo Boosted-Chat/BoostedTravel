@@ -1,5 +1,5 @@
 """
-FlyDubai hybrid connector — direct API first, Playwright fallback.
+FlyDubai hybrid scraper — direct API first, Playwright fallback.
 
 FlyDubai (IATA: FZ) is Dubai's low-cost carrier.
 Booking engine: flights2.flydubai.com (Angular SPA).
@@ -95,7 +95,7 @@ async def _get_browser():
 
 
 class FlydubaiConnectorClient:
-    """FlyDubai hybrid connector — direct API first, Playwright fallback."""
+    """FlyDubai hybrid scraper — direct API first, Playwright fallback."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout

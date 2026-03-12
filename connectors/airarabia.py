@@ -1,5 +1,5 @@
 """
-Air Arabia direct API connector — queries FeaturedOffers REST endpoint via httpx.
+Air Arabia direct API scraper — queries FeaturedOffers REST endpoint via httpx.
 
 Air Arabia (IATA: G9) is a UAE low-cost carrier based in Sharjah.
 
@@ -100,7 +100,7 @@ _ORIGIN_COUNTRY: dict[str, str] = {
 
 
 class AirArabiaConnectorClient:
-    """Air Arabia connector — httpx calls to FeaturedOffers API, no browser."""
+    """Air Arabia scraper — httpx calls to FeaturedOffers API, no browser."""
 
     def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
@@ -129,7 +129,7 @@ class AirArabiaConnectorClient:
         country = _ORIGIN_COUNTRY.get(req.origin)
         if not country:
             # Fallback: resolve via shared airport→country map
-            from connectors.airline_routes import get_country
+            from api.services.airline_routes import get_country
             country = get_country(req.origin)
         if not country:
             logger.debug(

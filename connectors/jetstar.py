@@ -1,5 +1,5 @@
 """
-Jetstar Playwright connector — CDP Chrome + bundle-data-v2 JSON extraction.
+Jetstar Playwright scraper — CDP Chrome + bundle-data-v2 JSON extraction.
 
 Jetstar (IATA: JQ) is an Australian low-cost airline in the Qantas Group,
 operating domestic/international flights across Asia-Pacific.
@@ -179,7 +179,7 @@ async def _get_browser():
 
 
 class JetstarConnectorClient:
-    """Jetstar Playwright connector -- direct URL to Navitaire booking engine + DOM extraction."""
+    """Jetstar Playwright scraper -- direct URL to Navitaire booking engine + DOM extraction."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout

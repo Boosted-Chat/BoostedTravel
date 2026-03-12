@@ -1,5 +1,5 @@
 """
-Ryanair direct API connector — queries Ryanair's public REST API.
+Ryanair direct API scraper — queries Ryanair's public REST API.
 
 Ryanair exposes a rich internal REST API used by their SPA frontend.
 These endpoints are publicly accessible without authentication.
@@ -39,7 +39,7 @@ _HEADERS = {
 
 
 class RyanairConnectorClient:
-    """Direct connector for Ryanair's public API — zero auth, real-time prices."""
+    """Direct scraper for Ryanair's public API — zero auth, real-time prices."""
 
     def __init__(self, timeout: float = 20.0):
         self.timeout = timeout

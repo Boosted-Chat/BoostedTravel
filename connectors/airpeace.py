@@ -1,31 +1,38 @@
 """
-Air Peace direct connector — uses Playwright to bypass WAF protection.
+Air Peace direct scraper — httpx client hitting Crane IBE server-rendered HTML.
 
 Air Peace (IATA: P4) is a Nigerian airline (largest in West Africa).
-Website: www.flyairpeace.com
+Booking engine: Crane IBE at apk-ports.hosting.aero (server-rendered HTML).
 
-Strategy:
-1. Navigate to flyairpeace.com homepage
-2. Dismiss cookie/consent banners
-3. Fill search form (origin/destination/date, one-way)
-4. Intercept API responses (search/availability/fares)
-5. Parse JSON → FlightOffer objects
+Strategy (verified Mar 2026):
+  The flyairpeace.com booking form redirects to book-airpeace.crane.aero (Cloudflare).
+  However, the SAME Crane IBE backend is directly accessible at:
+    https://apk-ports.hosting.aero/ibe/availability?depPort=LOS&arrPort=ABV&...
+  This endpoint returns server-rendered HTML with all flight data — no JS needed.
+  Ports API: https://apk-ports.hosting.aero/ibe/search/portGroupsByPortCode
 
-Homepage observations (Mar 2026):
-- Webpage fetch returned limited content (possible Cloudflare protection)
-- Use generic form-filling approach with broad selectors
+  Date format: DD.MM.YYYY
+  Currency: USD (default)
+
+  HTML structure (Crane IBE):
+    <div class="availability-flight-table"> wraps the whole results table
+      <div class="js-journey" data-journey-duration="4800" ...> per flight
+        <div class="selection-item">
+          info-row > left-info-block (dep time/port/date) + middle-block (flight-no, duration, stops) + right-info-block (arr time/port/date)
+          fare-container > mobile-fare-block > fare-item (cabin-mobile-economy / cabin-mobile-business / cabin-mobile-first) > price-text-single-line
+    Note: each flight has BOTH mobile and desktop views — take first match only.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
-import random
 import re
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
+
+import httpx
 
 from models.flights import (
     FlightOffer,
@@ -37,61 +44,33 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
-    {"width": 1280, "height": 720},
-    {"width": 1600, "height": 900},
-]
-_LOCALES = ["en-NG", "en-US", "en-GB"]
-_TIMEZONES = [
-    "Africa/Lagos", "Africa/Johannesburg", "Africa/Nairobi",
-    "Europe/London", "Africa/Cairo",
-]
+_BASE = "https://apk-ports.hosting.aero"
+_AVAIL_URL = f"{_BASE}/ibe/availability"
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-_pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
-
-
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
-
-
-async def _get_browser():
-    """Shared headed Chromium (launched once, reused)."""
-    global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("AirPeace: Playwright browser launched (headed Chrome)")
-        return _browser
+_JOURNEY_SPLIT = re.compile(r'<div[^>]*class="js-journey"')
+_JOURNEY_DUR_RE = re.compile(r'data-journey-duration="(\d+)"')
+_TIME_RE = re.compile(r'<span[^>]*class="time"[^>]*>(\d{1,2}:\d{2})</span>')
+_PORT_RE = re.compile(r'<span[^>]*class="port"[^>]*>([^<]+)</span>')
+_DATE_RE = re.compile(r'<span[^>]*class="date"[^>]*>([^<]+)</span>')
+_FLIGHT_NO_RE = re.compile(r'<span[^>]*class="flight-no"[^>]*>([^<]+)</span>')
+_DURATION_RE = re.compile(r'<span[^>]*class="flight-duration"[^>]*>([^<]+)</span>')
+_STOPS_RE = re.compile(r'<span[^>]*class="total-stop"[^>]*>([^<]+)</span>')
+_PRICE_RE = re.compile(r'<span[^>]*class="price-text-single-line[^"]*"[^>]*>\$?\s*([\d,.]+)</span>')
+_CABIN_PRICE_RE = re.compile(
+    r'cabin-mobile-(\w+).*?price-text-single-line[^"]*"[^>]*>\$?\s*([\d,.]+)',
+    re.DOTALL,
+)
 
 
 class AirPeaceConnectorClient:
-    """Air Peace Playwright connector — form-fill + API interception."""
+    """Air Peace httpx scraper — Crane IBE server-rendered HTML."""
 
-    def __init__(self, timeout: float = 50.0):
+    def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
 
     async def close(self):
@@ -99,495 +78,224 @@ class AirPeaceConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-            color_scheme=random.choice(["light", "dark", "no-preference"]),
-        )
-
+        dep_date = req.date_from.strftime("%d.%m.%Y")
+        params = {
+            "depPort": req.origin,
+            "arrPort": req.destination,
+            "departureDate": dep_date,
+            "adult": str(req.adults),
+            "child": str(req.children),
+            "infant": str(req.infants),
+            "tripType": "ONE_WAY",
+            "lang": "en",
+        }
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
-
-            try:
-                cdp = await context.new_cdp_session(page)
-                await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
-            except Exception:
-                pass
-
-            captured_data: dict = {}
-            api_event = asyncio.Event()
-
-            async def on_response(response):
-                try:
-                    url = response.url.lower()
-                    if response.status == 200 and (
-                        "availability" in url
-                        or "/api/flights" in url
-                        or "/api/search" in url
-                        or "search/flights" in url
-                        or "flights/search" in url
-                        or "fares" in url
-                        or "offers" in url
-                        or "low-fare" in url
-                        or "airpeace" in url and "search" in url
-                        or "booking" in url and "search" in url
-                        or "getflights" in url
-                    ):
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            if data and isinstance(data, (dict, list)):
-                                captured_data["json"] = data
-                                api_event.set()
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            logger.info("AirPeace: loading homepage for %s→%s", req.origin, req.destination)
-            # Air Peace may have Cloudflare protection — give extra time
-            try:
-                await page.goto(
-                    "https://www.flyairpeace.com/",
-                    wait_until="domcontentloaded",
-                    timeout=int(self.timeout * 1000),
-                )
-            except Exception:
-                # Retry with networkidle for slow-loading sites
-                try:
-                    await page.goto(
-                        "https://www.flyairpeace.com/",
-                        wait_until="load",
-                        timeout=int(self.timeout * 1000),
-                    )
-                except Exception as e:
-                    logger.warning("AirPeace: homepage load failed: %s", e)
-                    return self._empty(req)
-
-            await asyncio.sleep(5.0)
-
-            # Dismiss possible Cloudflare challenge
-            await self._dismiss_cookies(page)
-            await asyncio.sleep(1.0)
-            await self._dismiss_cookies(page)
-
-            # Set one-way
-            await self._set_one_way(page)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, "From", req.origin, 0)
-            if not ok:
-                ok = await self._fill_airport_field(page, "Departure", req.origin, 0)
-            if not ok:
-                logger.warning("AirPeace: origin fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, "To", req.destination, 1)
-            if not ok:
-                ok = await self._fill_airport_field(page, "Arrival", req.destination, 1)
-            if not ok:
-                logger.warning("AirPeace: destination fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_date(page, req)
-            if not ok:
-                logger.warning("AirPeace: date fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.3)
-
-            await self._click_search(page)
-
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning("AirPeace: timed out waiting for API response")
-                offers = await self._extract_from_dom(page, req)
-                if offers:
-                    return self._build_response(offers, req, time.monotonic() - t0)
-                return self._empty(req)
-
-            data = captured_data.get("json", {})
-            if not data:
-                return self._empty(req)
-
-            elapsed = time.monotonic() - t0
-            offers = self._parse_response(data, req)
-            return self._build_response(offers, req, elapsed)
-
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers=_HEADERS,
+            ) as client:
+                resp = await client.get(_AVAIL_URL, params=params)
+                resp.raise_for_status()
+                html = resp.text
         except Exception as e:
-            logger.error("AirPeace Playwright error: %s", e)
+            logger.warning("AirPeace: request failed: %s", e)
             return self._empty(req)
-        finally:
-            await context.close()
 
-    async def _dismiss_cookies(self, page) -> None:
-        for label in [
-            "Accept All", "Accept Cookies", "Accept", "Accept all",
-            "I agree", "Got it", "OK", "Close", "Allow", "Dismiss",
-        ]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=2000)
-                    await asyncio.sleep(0.5)
-                    return
-            except Exception:
-                continue
-        try:
-            await page.evaluate("""() => {
-                document.querySelectorAll(
-                    '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], ' +
-                    '[class*="Cookie"], [id*="Cookie"], [class*="onetrust"], [id*="onetrust"], ' +
-                    '[class*="modal-overlay"], [class*="popup"], [id*="popup"], ' +
-                    '[class*="privacy"], [id*="privacy"], [class*="gdpr"], [id*="gdpr"], ' +
-                    '[class*="banner"], [id*="banner"]'
-                ).forEach(el => {
-                    if (el.offsetHeight > 0 && el.offsetHeight < 300) el.remove();
-                });
-                document.body.style.overflow = 'auto';
-            }""")
-        except Exception:
-            pass
-
-    async def _set_one_way(self, page) -> None:
-        for label in ["One Way", "One-way", "One way", "ONE WAY"]:
-            try:
-                el = page.get_by_text(label, exact=False).first
-                if el and await el.count() > 0:
-                    await el.click(timeout=3000)
-                    return
-            except Exception:
-                continue
-        for label in ["One Way", "One-way"]:
-            try:
-                radio = page.get_by_role("radio", name=re.compile(rf"{re.escape(label)}", re.IGNORECASE))
-                if await radio.count() > 0:
-                    await radio.first.click(timeout=2000)
-                    return
-            except Exception:
-                continue
-        try:
-            toggle = page.locator("[data-testid*='one-way'], [class*='one-way'], [id*='one-way'], [class*='oneWay']").first
-            if await toggle.count() > 0:
-                await toggle.click(timeout=2000)
-        except Exception:
-            pass
-
-    async def _fill_airport_field(self, page, label: str, iata: str, index: int) -> bool:
-        # Try combobox/textbox first
-        try:
-            for role in ["combobox", "textbox"]:
-                field = page.get_by_role(role, name=re.compile(rf"{label}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    await asyncio.sleep(0.3)
-                    await field.first.fill("")
-                    await asyncio.sleep(0.2)
-                    await field.first.fill(iata)
-                    await asyncio.sleep(2.5)
-                    for role2 in ["option", "button", "listitem", "link"]:
-                        try:
-                            option = page.get_by_role(role2, name=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                            if await option.count() > 0:
-                                await option.click(timeout=3000)
-                                return True
-                        except Exception:
-                            continue
-                    item = page.locator(
-                        "[class*='suggestion'], [class*='option'], [class*='result'], "
-                        "[class*='autocomplete'] li, [class*='dropdown'] li, "
-                        "[class*='airport'] li, [class*='station'] li"
-                    ).filter(has_text=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                    if await item.count() > 0:
-                        await item.click(timeout=3000)
-                        return True
-                    await page.keyboard.press("Enter")
-                    return True
-        except Exception as e:
-            logger.debug("AirPeace: %s field error: %s", label, e)
-        # Try <select> dropdowns
-        try:
-            select = page.locator("select")
-            count = await select.count()
-            if count > index:
-                sel = select.nth(index)
-                options = sel.locator("option")
-                opt_count = await options.count()
-                for i in range(opt_count):
-                    text = await options.nth(i).text_content()
-                    value = await options.nth(i).get_attribute("value")
-                    if text and iata.upper() in text.upper():
-                        await sel.select_option(value=value or text)
-                        return True
-                    if value and iata.upper() in value.upper():
-                        await sel.select_option(value=value)
-                        return True
-        except Exception:
-            pass
-        # Fallback by input index
-        try:
-            inputs = page.locator("input[type='text'], input[type='search'], input[placeholder]")
-            if await inputs.count() > index:
-                field = inputs.nth(index)
-                await field.click(timeout=3000)
-                await field.fill("")
-                await asyncio.sleep(0.2)
-                await field.fill(iata)
-                await asyncio.sleep(2.5)
-                await page.keyboard.press("Enter")
-                return True
-        except Exception:
-            pass
-        return False
-
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        target = req.date_from
-        try:
-            for name in ["Departure", "Depart", "Date", "When", "Travel Date"]:
-                field = page.get_by_role("textbox", name=re.compile(rf"{name}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    break
-            else:
-                date_el = page.locator("[class*='date'], [data-testid*='date'], [id*='date']").first
-                if await date_el.count() > 0:
-                    await date_el.click(timeout=3000)
-            await asyncio.sleep(0.8)
-
-            target_my = target.strftime("%B %Y")
-            for _ in range(12):
-                content = await page.content()
-                if target_my.lower() in content.lower():
-                    break
-                try:
-                    fwd = page.get_by_role("button", name=re.compile(r"(next|forward|>|>>|›)", re.IGNORECASE))
-                    if await fwd.count() > 0:
-                        await fwd.first.click(timeout=2000)
-                        await asyncio.sleep(0.4)
-                        continue
-                except Exception:
-                    pass
-                try:
-                    fwd = page.locator("[class*='next'], [aria-label*='next'], [aria-label*='Next']").first
-                    await fwd.click(timeout=2000)
-                    await asyncio.sleep(0.4)
-                except Exception:
-                    break
-
-            day = target.day
-            for fmt in [
-                f"{day} {target.strftime('%B')} {target.year}",
-                f"{target.strftime('%B')} {day}, {target.year}",
-                f"{target.strftime('%B')} {day}",
-                target.strftime("%Y-%m-%d"),
-            ]:
-                try:
-                    day_btn = page.locator(f"[aria-label*='{fmt}']").first
-                    if await day_btn.count() > 0:
-                        await day_btn.click(timeout=3000)
-                        await asyncio.sleep(0.5)
-                        return True
-                except Exception:
-                    continue
-            day_btn = page.locator(
-                "table button, .calendar button, [class*='calendar'] button, [class*='datepicker'] button, "
-                "table td, [class*='calendar'] td"
-            ).filter(has_text=re.compile(rf"^{day}$")).first
-            if await day_btn.count() > 0:
-                await day_btn.click(timeout=3000)
-                return True
-            day_btn = page.get_by_role("button", name=re.compile(rf"^{day}$")).first
-            await day_btn.click(timeout=3000)
-            return True
-        except Exception as e:
-            logger.warning("AirPeace: date error: %s", e)
-            return False
-
-    async def _click_search(self, page) -> None:
-        for label in ["Search", "SEARCH", "Search Flights", "Search flights", "Find flights", "Book Now", "Book"]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=5000)
-                    logger.info("AirPeace: clicked search")
-                    return
-            except Exception:
-                continue
-        try:
-            await page.locator("button[type='submit']").first.click(timeout=3000)
-        except Exception:
-            await page.keyboard.press("Enter")
-
-    async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        try:
-            await asyncio.sleep(3)
-            data = await page.evaluate("""() => {
-                if (window.__NEXT_DATA__) return window.__NEXT_DATA__;
-                if (window.__NUXT__) return window.__NUXT__;
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    try {
-                        const d = JSON.parse(s.textContent);
-                        if (d && (d.flights || d.journeys || d.fares || d.availability)) return d;
-                    } catch {}
-                }
-                return null;
-            }""")
-            if data:
-                return self._parse_response(data, req)
-        except Exception:
-            pass
-        return []
-
-    def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
-        if isinstance(data, list):
-            data = {"flights": data}
-        booking_url = self._build_booking_url(req)
-        offers: list[FlightOffer] = []
-
-        flights_raw = (
-            data.get("outboundFlights")
-            or data.get("outbound")
-            or data.get("journeys")
-            or data.get("flights")
-            or data.get("availability", {}).get("trips", [])
-            or data.get("data", {}).get("flights", [])
-            or data.get("data", {}).get("journeys", [])
-            or data.get("flightList", [])
-            or data.get("results", [])
-            or []
-        )
-        if isinstance(flights_raw, dict):
-            flights_raw = flights_raw.get("outbound", []) or flights_raw.get("journeys", [])
-        if not isinstance(flights_raw, list):
-            flights_raw = []
-
-        for flight in flights_raw:
-            offer = self._parse_single_flight(flight, req, booking_url)
-            if offer:
-                offers.append(offer)
-        return offers
-
-    def _parse_single_flight(self, flight: dict, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
-        best_price = self._extract_best_price(flight)
-        if best_price is None or best_price <= 0:
-            return None
-        segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
-        segments: list[FlightSegment] = []
-        if segments_raw and isinstance(segments_raw, list):
-            for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
-        else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
-        total_dur = 0
-        if segments and segments[0].departure and segments[-1].arrival:
-            total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
-        route = FlightRoute(segments=segments, total_duration_seconds=max(total_dur, 0), stopovers=max(len(segments) - 1, 0))
-        flight_key = flight.get("journeyKey") or flight.get("id") or f"{flight.get('departureDate', '')}_{time.monotonic()}"
-        return FlightOffer(
-            id=f"p4_{hashlib.md5(str(flight_key).encode()).hexdigest()[:12]}",
-            price=round(best_price, 2),
-            currency=req.currency,
-            price_formatted=f"{best_price:.2f} {req.currency}",
-            outbound=route,
-            inbound=None,
-            airlines=["Air Peace"],
-            owner_airline="P4",
-            booking_url=booking_url,
-            is_locked=False,
-            source="airpeace_direct",
-            source_tier="free",
-        )
-
-    @staticmethod
-    def _extract_best_price(flight: dict) -> Optional[float]:
-        fares = flight.get("fares") or flight.get("fareProducts") or flight.get("bundles") or flight.get("fareBundles") or []
-        best = float("inf")
-        for fare in fares:
-            if isinstance(fare, dict):
-                for key in ["price", "amount", "totalPrice", "basePrice", "fareAmount", "totalAmount"]:
-                    val = fare.get(key)
-                    if isinstance(val, dict):
-                        val = val.get("amount") or val.get("value")
-                    if val is not None:
-                        try:
-                            v = float(val)
-                            if 0 < v < best:
-                                best = v
-                        except (TypeError, ValueError):
-                            pass
-        for key in ["price", "lowestFare", "totalPrice", "farePrice", "amount", "lowestPrice"]:
-            p = flight.get(key)
-            if p is not None:
-                try:
-                    v = float(p) if not isinstance(p, dict) else float(p.get("amount", 0))
-                    if 0 < v < best:
-                        best = v
-                except (TypeError, ValueError):
-                    pass
-        return best if best < float("inf") else None
-
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
-        dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
-        arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
-        flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
-        origin = seg.get("origin") or seg.get("departureStation") or seg.get("departureAirport") or default_origin
-        destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("arrivalAirport") or default_dest
-        carrier = seg.get("carrierCode") or seg.get("carrier") or seg.get("airline") or "P4"
-        return FlightSegment(
-            airline=carrier, airline_name="Air Peace", flight_no=flight_no,
-            origin=origin, destination=destination,
-            departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
-        )
-
-    def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
+        offers = self._parse_html(html, req)
+        elapsed = time.monotonic() - t0
         offers.sort(key=lambda o: o.price)
-        logger.info("AirPeace %s→%s returned %d offers in %.1fs (Playwright)", req.origin, req.destination, len(offers), elapsed)
+        logger.info(
+            "AirPeace %s→%s: %d offers in %.1fs (httpx)",
+            req.origin, req.destination, len(offers), elapsed,
+        )
         h = hashlib.md5(f"airpeace{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency, offers=offers, total_results=len(offers),
+            search_id=f"fs_{h}",
+            origin=req.origin,
+            destination=req.destination,
+            currency="USD",
+            offers=offers,
+            total_results=len(offers),
         )
 
-    @staticmethod
-    def _parse_dt(s: Any) -> datetime:
-        if not s:
-            return datetime(2000, 1, 1)
-        s = str(s)
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            pass
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M"):
-            try:
-                return datetime.strptime(s[:len(fmt) + 2], fmt)
-            except (ValueError, IndexError):
+    def _parse_html(self, html: str, req: FlightSearchRequest) -> list[FlightOffer]:
+        """Parse flight cards from Crane IBE server-rendered HTML."""
+        offers: list[FlightOffer] = []
+        booking_url = self._build_booking_url(req)
+
+        # Split by journey containers (Crane IBE uses js-journey divs)
+        parts = re.split(r'<div[^>]*class="js-journey"', html)
+
+        for part in parts[1:]:
+            # Extract structured data-attrs from the js-journey div tag
+            dur_attr = re.search(r'data-journey-duration="(\d+)"', part)
+            stop_attr = re.search(r'data-stop-count="(\d+)"', part)
+
+            flight_nos_raw = _FLIGHT_NO_RE.findall(part)
+            # Flight numbers may be "P4-7120" (nonstop) or "P4-7130 - P4-7576" (connecting)
+            flight_no_full = ""
+            for fn in flight_nos_raw:
+                fn = fn.strip()
+                if fn and re.match(r"[A-Z0-9]{2}-?\d+", fn):
+                    flight_no_full = fn
+                    break
+            if not flight_no_full:
                 continue
-        return datetime(2000, 1, 1)
+            # Split connecting flight numbers
+            flight_no_parts = [f.strip().replace("-", "") for f in flight_no_full.split(" - ")]
+
+            times = _TIME_RE.findall(part)
+            ports = _PORT_RE.findall(part)
+            dates = _DATE_RE.findall(part)
+            durations = _DURATION_RE.findall(part)
+            stops = _STOPS_RE.findall(part)
+
+            dep_time = times[0] if times else ""
+            arr_time = times[1] if len(times) > 1 else ""
+            dep_port = self._extract_iata(ports[0]) if ports else req.origin
+            arr_port = self._extract_iata(ports[1]) if len(ports) > 1 else req.destination
+            dep_date_str = dates[0].strip() if dates else ""
+            arr_date_str = dates[1].strip() if len(dates) > 1 else dep_date_str
+            duration_str = durations[0].strip() if durations else ""
+            stop_text = stops[0].strip() if stops else "Nonstop"
+            stopovers = int(stop_attr.group(1)) if stop_attr else (
+                0 if "nonstop" in stop_text.lower() or "direct" in stop_text.lower() else 1
+            )
+
+            # Parse fares — use cabin-mobile + price regex (takes first per cabin, skips desktop dupes)
+            prices_by_cabin: dict[str, float] = {}
+            for cabin, price_str in _CABIN_PRICE_RE.findall(part):
+                cabin = cabin.lower()
+                if cabin in prices_by_cabin:
+                    continue
+                try:
+                    prices_by_cabin[cabin] = float(price_str.replace(",", ""))
+                except ValueError:
+                    pass
+
+            if not prices_by_cabin:
+                all_prices = _PRICE_RE.findall(part)
+                for p_str in all_prices:
+                    try:
+                        p = float(p_str.replace(",", ""))
+                        if p > 0:
+                            prices_by_cabin.setdefault("economy", p)
+                            break
+                    except ValueError:
+                        pass
+
+            if not prices_by_cabin:
+                continue
+
+            departure = self._parse_datetime(dep_date_str, dep_time)
+            arrival = self._parse_datetime(arr_date_str or dep_date_str, arr_time)
+            duration_secs = int(dur_attr.group(1)) if dur_attr else self._parse_duration(duration_str)
+            if not duration_secs and departure and arrival and arrival > departure:
+                duration_secs = int((arrival - departure).total_seconds())
+
+            display_flight_no = "/".join(flight_no_parts)
+
+            for cabin, price in prices_by_cabin.items():
+                cabin_code = {"economy": "M", "business": "C", "first": "F"}.get(cabin, "M")
+                # Build segments — for connecting flights, Crane only shows origin/destination
+                segments = []
+                if len(flight_no_parts) == 1:
+                    segments.append(FlightSegment(
+                        airline="P4",
+                        airline_name="Air Peace",
+                        flight_no=flight_no_parts[0],
+                        origin=dep_port,
+                        destination=arr_port,
+                        departure=departure,
+                        arrival=arrival,
+                        duration_seconds=duration_secs,
+                        cabin_class=cabin_code,
+                    ))
+                else:
+                    # Connecting flight — create one segment per leg
+                    # Crane only shows overall dep/arr, not intermediate times
+                    for idx, fn in enumerate(flight_no_parts):
+                        segments.append(FlightSegment(
+                            airline="P4",
+                            airline_name="Air Peace",
+                            flight_no=fn,
+                            origin=dep_port if idx == 0 else "---",
+                            destination=arr_port if idx == len(flight_no_parts) - 1 else "---",
+                            departure=departure if idx == 0 else departure,
+                            arrival=arrival if idx == len(flight_no_parts) - 1 else departure,
+                            duration_seconds=0,
+                            cabin_class=cabin_code,
+                        ))
+
+                route = FlightRoute(
+                    segments=segments,
+                    total_duration_seconds=duration_secs,
+                    stopovers=stopovers,
+                )
+                offer_id = hashlib.md5(
+                    f"{display_flight_no}_{cabin}_{price}".encode()
+                ).hexdigest()[:12]
+                offers.append(FlightOffer(
+                    id=f"p4_{offer_id}",
+                    price=round(price, 2),
+                    currency="USD",
+                    price_formatted=f"${price:.2f} USD",
+                    outbound=route,
+                    inbound=None,
+                    airlines=["Air Peace"],
+                    owner_airline="P4",
+                    booking_url=booking_url,
+                    is_locked=False,
+                    source="airpeace_direct",
+                    source_tier="free",
+                ))
+
+        return offers
+
+    @staticmethod
+    def _extract_iata(port_text: str) -> str:
+        m = re.search(r"\(([A-Z]{3})\)", port_text)
+        return m.group(1) if m else port_text.strip()[:3].upper()
+
+    @staticmethod
+    def _parse_datetime(date_str: str, time_str: str) -> Optional[datetime]:
+        if not date_str or not time_str:
+            return None
+        try:
+            return datetime.strptime(f"{date_str.strip()} {time_str.strip()}", "%d %b %Y %H:%M")
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_duration(dur_str: str) -> int:
+        total = 0
+        h = re.search(r"(\d+)\s*h", dur_str)
+        m = re.search(r"(\d+)\s*m", dur_str)
+        if h:
+            total += int(h.group(1)) * 3600
+        if m:
+            total += int(m.group(1)) * 60
+        return total
 
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
-        dep = req.date_from.strftime("%Y-%m-%d")
+        dep = req.date_from.strftime("%d.%m.%Y")
         return (
-            f"https://www.flyairpeace.com/booking?origin={req.origin}"
-            f"&destination={req.destination}&date={dep}&adults={req.adults}&tripType=O"
+            f"https://book-airpeace.crane.aero/ibe/availability"
+            f"?depPort={req.origin}&arrPort={req.destination}"
+            f"&departureDate={dep}&adult={req.adults}"
+            f"&child={req.children}&infant={req.infants}"
+            f"&tripType=ONE_WAY&lang=en"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"airpeace{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency, offers=[], total_results=0,
+            search_id=f"fs_{h}",
+            origin=req.origin,
+            destination=req.destination,
+            currency="USD",
+            offers=[],
+            total_results=0,
         )

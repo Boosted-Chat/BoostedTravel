@@ -1,15 +1,19 @@
 """
-Peach Aviation Playwright connector — direct booking URL approach.
+Peach Aviation CDP Chrome scraper — direct booking URL + DOM extraction.
 
 Peach Aviation (IATA: MM) is a Japanese LCC (ANA group).
 Booking site: booking.flypeach.com
 
-Strategy:
-1. Build direct search URL with JSON params (bypasses homepage form entirely)
-2. Navigate to booking.flypeach.com/en/getsearch?s=[params]
-3. Click through the confirmation page
-4. Extract flight data from server-rendered DOM
-5. Parse → FlightOffer objects
+Strategy (converted Mar 2026):
+1. Launch real system Chrome via CDP (persistent, survives across searches)
+2. Build direct search URL with JSON params (bypasses homepage form)
+3. Navigate to booking.flypeach.com/en/getsearch?s=[params]
+4. Click "Search by One-way" to submit
+5. Extract flight data from server-rendered DOM
+6. Parse → FlightOffer objects
+
+Real Chrome passes reCAPTCHA better than Playwright's bundled Chromium.
+Persistent browser avoids ~5s launch overhead per search.
 """
 
 from __future__ import annotations
@@ -18,8 +22,9 @@ import asyncio
 import hashlib
 import json
 import logging
-import random
+import os
 import re
+import subprocess
 import time
 import urllib.parse
 from datetime import datetime, timedelta
@@ -35,18 +40,19 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
+_CDP_PORT = 9451
+_USER_DATA_DIR = os.path.join(os.environ.get("TEMP", "/tmp"), "peach_cdp_data")
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ]
-_LOCALES = ["en-US", "en-GB", "en-JP"]
-_TIMEZONES = ["Asia/Tokyo", "Asia/Seoul", "Asia/Shanghai", "Asia/Taipei"]
 
+_chrome_proc: subprocess.Popen | None = None
 _pw_instance = None
-_browser = None
-_persistent_context = None
+_cdp_browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -57,50 +63,62 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _find_chrome() -> str:
+    for p in _CHROME_PATHS:
+        if os.path.isfile(p):
+            return p
+    raise FileNotFoundError("Chrome not found")
+
+
+def _launch_chrome():
+    global _chrome_proc
+    if _chrome_proc and _chrome_proc.poll() is None:
+        return
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    chrome = _find_chrome()
+    _chrome_proc = subprocess.Popen(
+        [
+            chrome,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    logger.info("Peach: Chrome launched on CDP port %d (pid=%d)", _CDP_PORT, _chrome_proc.pid)
+
+
 async def _get_browser():
-    global _pw_instance, _browser, _persistent_context
+    global _pw_instance, _cdp_browser
     lock = _get_lock()
     async with lock:
-        if _persistent_context and _persistent_context.browser and _persistent_context.browser.is_connected():
-            return _persistent_context
-        if _browser and _browser.is_connected():
-            return _browser
+        if _cdp_browser and _cdp_browser.is_connected():
+            return _cdp_browser
+        _launch_chrome()
+        await asyncio.sleep(2)
         from playwright.async_api import async_playwright
-        _pw_instance = await async_playwright().start()
-        args = [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-        ]
-        # Try persistent context first (preserves cookies/reCAPTCHA score)
-        import tempfile, os
-        user_data = os.path.join(tempfile.gettempdir(), "peach_browser_data")
-        os.makedirs(user_data, exist_ok=True)
-        try:
-            _persistent_context = await _pw_instance.chromium.launch_persistent_context(
-                user_data_dir=user_data,
-                headless=False, channel="chrome", args=args,
-                viewport={"width": 1440, "height": 900},
-                locale="en-US",
-                timezone_id="Asia/Tokyo",
-                service_workers="block",
-            )
-            logger.info("Peach: persistent browser context launched (Chrome)")
-            return _persistent_context
-        except Exception:
+        if not _pw_instance:
+            _pw_instance = await async_playwright().start()
+        for attempt in range(5):
             try:
-                _browser = await _pw_instance.chromium.launch(
-                    headless=False, channel="chrome", args=args,
+                _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{_CDP_PORT}"
                 )
+                logger.info("Peach: connected to Chrome via CDP")
+                return _cdp_browser
             except Exception:
-                _browser = await _pw_instance.chromium.launch(
-                    headless=False, args=args,
-                )
-            logger.info("Peach: Playwright browser launched (headed Chrome, non-persistent)")
-            return _browser
+                if attempt < 4:
+                    await asyncio.sleep(1)
+        raise RuntimeError(f"Peach: cannot connect to Chrome CDP on port {_CDP_PORT}")
 
 
 class PeachConnectorClient:
-    """Peach Aviation connector — direct booking URL + DOM extraction."""
+    """Peach Aviation scraper — direct booking URL + DOM extraction."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -110,31 +128,11 @@ class PeachConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        browser_or_ctx = await _get_browser()
-
-        # Persistent context IS the context; regular browser needs a new context
-        is_persistent = hasattr(browser_or_ctx, 'new_page') and not hasattr(browser_or_ctx, 'new_context')
-        if is_persistent:
-            context = browser_or_ctx
-            own_context = False
-        else:
-            context = await browser_or_ctx.new_context(
-                viewport=random.choice(_VIEWPORTS),
-                locale=random.choice(_LOCALES),
-                timezone_id=random.choice(_TIMEZONES),
-                service_workers="block",
-                color_scheme=random.choice(["light", "dark", "no-preference"]),
-            )
-            own_context = True
+        browser = await _get_browser()
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = None
         try:
-            try:
-                from playwright_stealth import Stealth
-                page = await context.new_page()
-                await Stealth().apply_stealth_async(page)
-                logger.info("Peach: stealth applied to page")
-            except Exception:
-                page = await context.new_page()
-                logger.info("Peach: stealth not available, using plain page")
+            page = await context.new_page()
 
             search_url = self._build_search_url(req)
             logger.info("Peach: navigating to booking URL for %s→%s on %s",
@@ -181,15 +179,14 @@ class PeachConnectorClient:
             return self._build_response(offers, req, elapsed)
 
         except Exception as e:
-            logger.error("Peach Playwright error: %s", e)
+            logger.error("Peach error: %s", e)
             return self._empty(req)
         finally:
-            try:
-                await page.close()
-            except Exception:
-                pass
-            if own_context:
-                await context.close()
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # URL building

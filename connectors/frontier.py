@@ -1,5 +1,5 @@
 """
-Frontier Airlines hybrid connector -- curl_cffi SSR extraction with Playwright fallback.
+Frontier Airlines hybrid scraper -- curl_cffi SSR extraction with Playwright fallback.
 
 Frontier (IATA: F9) is a US ultra-low-cost carrier operating domestic and
 select international routes from Denver and other US hubs.
@@ -27,7 +27,10 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
-from curl_cffi.requests import AsyncSession
+try:
+    from curl_cffi.requests import AsyncSession
+except ImportError:
+    AsyncSession = None
 
 from models.flights import (
     FlightOffer,
@@ -92,7 +95,7 @@ async def _get_browser():
 
 
 class FrontierConnectorClient:
-    """Frontier hybrid connector -- curl_cffi SSR first, Playwright fallback."""
+    """Frontier hybrid scraper -- curl_cffi SSR first, Playwright fallback."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout

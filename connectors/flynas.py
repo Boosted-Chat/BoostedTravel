@@ -1,32 +1,30 @@
 """
-Flynas direct connector — uses Playwright to bypass WAF protection.
+Flynas hybrid scraper — CDP Chrome + persistent page + page.evaluate(fetch).
 
 Flynas (IATA: XY) is a Saudi low-cost carrier.
-Website: www.flynas.com — custom booking engine at booking.flynas.com.
+Website: booking.flynas.com — custom booking engine protected by Akamai WAF.
 
-Strategy:
-1. Navigate to flynas.com/en homepage
-2. Dismiss cookie banner ("Accept all")
-3. Fill search form (Origin/Destination/Depart, One Way)
-4. Intercept API responses from booking.flynas.com
+Strategy (CDP Chrome + in-browser fetch):
+1. Launch REAL system Chrome (--remote-debugging-port, --user-data-dir).
+2. Connect via Playwright CDP. Keep ONE persistent page on booking.flynas.com.
+3. page.evaluate(fetch('/api/SessionCreate')) → establishes API session
+4. page.evaluate(fetch('/api/FlightSearch', body)) → real-time flight data
 5. Parse JSON → FlightOffer objects
 
-Homepage observations (Mar 2026):
-- Cookie banner: "Accept all" / "Configure" buttons
-- Search form: One Way / Round trip / Multi-City tabs
-- Fields: Origin, Destination, Depart date, Return date
-- Search button: "Search"
-- Booking engine: booking.flynas.com (separate subdomain)
-- Direct booking URLs available with hash routing
+Real Chrome bypasses Akamai fingerprinting where bundled Chromium fails.
+Searches complete in ~0.4-0.7s after initial page load (~6-10s).
+The page is kept warm and reused across multiple searches.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import os
 import random
-import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -47,17 +45,37 @@ _VIEWPORTS = [
     {"width": 1536, "height": 864},
     {"width": 1920, "height": 1080},
     {"width": 1280, "height": 720},
-    {"width": 1600, "height": 900},
 ]
-_LOCALES = ["en-US", "en-GB", "en-SA", "en-AE"]
-_TIMEZONES = [
-    "Asia/Riyadh", "Asia/Dubai", "Europe/London",
-    "Africa/Cairo", "Asia/Kolkata",
-]
+_DEBUG_PORT = 9449
+_USER_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".flynas_chrome_data"
+)
 
 _pw_instance = None
 _browser = None
+_chrome_proc = None
 _browser_lock: Optional[asyncio.Lock] = None
+# Warm page: keeps one page with Akamai cookies alive for fast reuse
+_warm_page = None
+_warm_page_lock: Optional[asyncio.Lock] = None
+_warm_ready = False
+
+
+def _find_chrome() -> Optional[str]:
+    """Find Chrome executable on the system."""
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
 
 
 def _get_lock() -> asyncio.Lock:
@@ -67,16 +85,77 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _get_page_lock() -> asyncio.Lock:
+    global _warm_page_lock
+    if _warm_page_lock is None:
+        _warm_page_lock = asyncio.Lock()
+    return _warm_page_lock
+
+
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused)."""
-    global _pw_instance, _browser
+    """Launch real Chrome via subprocess + connect via CDP."""
+    global _pw_instance, _browser, _chrome_proc
     lock = _get_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
+        if _browser:
+            try:
+                if _browser.is_connected():
+                    return _browser
+            except Exception:
+                pass
+
         from playwright.async_api import async_playwright
 
+        if _pw_instance:
+            try:
+                await _pw_instance.stop()
+            except Exception:
+                pass
         _pw_instance = await async_playwright().start()
+
+        chrome_path = _find_chrome()
+        if chrome_path:
+            os.makedirs(_USER_DATA_DIR, exist_ok=True)
+            # Try connecting to already-running Chrome
+            try:
+                _browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://localhost:{_DEBUG_PORT}"
+                )
+                logger.info("Flynas: connected to existing Chrome via CDP")
+                return _browser
+            except Exception:
+                pass
+
+            # Launch new Chrome
+            vp = random.choice(_VIEWPORTS)
+            _chrome_proc = subprocess.Popen(
+                [
+                    chrome_path,
+                    f"--remote-debugging-port={_DEBUG_PORT}",
+                    f"--user-data-dir={_USER_DATA_DIR}",
+                    f"--window-size={vp['width']},{vp['height']}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "about:blank",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            await asyncio.sleep(2.5)
+            try:
+                _browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://localhost:{_DEBUG_PORT}"
+                )
+                logger.info("Flynas: CDP Chrome connected (port %d)", _DEBUG_PORT)
+                return _browser
+            except Exception as e:
+                logger.warning("Flynas: CDP connect failed: %s, falling back", e)
+                if _chrome_proc:
+                    _chrome_proc.terminate()
+                    _chrome_proc = None
+
+        # Fallback: regular Playwright headed
         try:
             _browser = await _pw_instance.chromium.launch(
                 headless=False,
@@ -88,486 +167,298 @@ async def _get_browser():
                 headless=False,
                 args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
             )
-        logger.info("Flynas: Playwright browser launched (headed Chrome)")
+        logger.info("Flynas: Playwright browser launched (headed fallback)")
         return _browser
 
 
-class FlynasConnectorClient:
-    """Flynas Playwright connector — homepage form search + API interception."""
+async def _ensure_warm_page():
+    """Ensure a warm page exists with valid Akamai session."""
+    global _warm_page, _warm_ready
+    lock = _get_page_lock()
+    async with lock:
+        # Check if existing page is still usable
+        if _warm_ready and _warm_page and not _warm_page.is_closed():
+            try:
+                await _warm_page.evaluate("1")
+                return _warm_page
+            except Exception:
+                _warm_ready = False
 
-    def __init__(self, timeout: float = 45.0):
+        # Get browser and use first context's first page, or create one
+        browser = await _get_browser()
+        contexts = browser.contexts
+        if contexts and contexts[0].pages:
+            _warm_page = contexts[0].pages[0]
+        else:
+            ctx = contexts[0] if contexts else await browser.new_context()
+            _warm_page = await ctx.new_page()
+
+        logger.info("Flynas: loading booking page (Akamai warm-up)...")
+        await _warm_page.goto(
+            "https://booking.flynas.com/",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        await asyncio.sleep(5)
+
+        # Create API session
+        sess = await _warm_page.evaluate("""async () => {
+            const r = await fetch('/api/SessionCreate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({session: {channel: 'web'}})
+            });
+            return {status: r.status};
+        }""")
+        logger.info("Flynas: SessionCreate status=%s", sess.get("status"))
+
+        _warm_ready = True
+        return _warm_page
+
+
+class FlynasConnectorClient:
+    """Flynas hybrid scraper — Playwright warm page + in-browser fetch API."""
+
+    def __init__(self, timeout: float = 30.0):
         self.timeout = timeout
 
     async def close(self):
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        # Retry once on empty results (Akamai bot challenge can block intermittently)
-        for attempt in range(2):
-            t0 = time.monotonic()
-            result = await self._search_attempt(req, t0)
-            if result.total_results > 0:
-                return result
-            if attempt == 0:
-                logger.info("Flynas: attempt 1 returned 0 results, retrying with fresh context...")
-                await asyncio.sleep(2.0)
-        return result
-
-    async def _search_attempt(self, req: FlightSearchRequest, t0: float) -> FlightSearchResponse:
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-            color_scheme=random.choice(["light", "dark", "no-preference"]),
-        )
+        t0 = time.monotonic()
 
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
+            page = await _ensure_warm_page()
+        except Exception as e:
+            logger.error("Flynas: warm page setup failed: %s", e)
+            return self._empty(req)
 
+        date_str = req.date_from.strftime("%Y-%m-%d")
+
+        flights_data = [{"origin": req.origin, "destination": req.destination, "date": date_str}]
+        if req.return_from:
+            ret_str = req.return_from.strftime("%Y-%m-%d")
+            flights_data.append({"origin": req.destination, "destination": req.origin, "date": ret_str})
+
+        search_body = {
+            "flightSearch": {
+                "flights": flights_data,
+                "adultCount": str(req.adults),
+                "childCount": str(req.children or 0),
+                "infantCount": str(req.infants or 0),
+                "selectedCurrencyCode": req.currency or "SAR",
+                "flightMode": "return" if req.return_from else "oneway",
+                "clickId": "",
+                "reqSource": "",
+                "custID": "",
+                "isStopoverbooking": False,
+            }
+        }
+
+        # Execute FlightSearch via in-browser fetch (inherits Akamai cookies)
+        try:
+            result = await page.evaluate(
+                """async (body) => {
+                    const r = await fetch('/api/FlightSearch', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body)
+                    });
+                    return {status: r.status, body: await r.text()};
+                }""",
+                search_body,
+            )
+        except Exception as e:
+            logger.warning("Flynas: page.evaluate failed: %s — resetting warm page", e)
+            global _warm_ready
+            _warm_ready = False
+            return self._empty(req)
+
+        status = result.get("status", 0)
+        elapsed = time.monotonic() - t0
+
+        if status == 429:
+            # Akamai challenge — wait and retry once
+            logger.info("Flynas: 429 challenge, waiting 3s and retrying...")
+            await asyncio.sleep(3)
             try:
-                cdp = await context.new_cdp_session(page)
-                await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+                result = await page.evaluate(
+                    """async (body) => {
+                        const r = await fetch('/api/FlightSearch', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body)
+                        });
+                        return {status: r.status, body: await r.text()};
+                    }""",
+                    search_body,
+                )
+                status = result.get("status", 0)
+                elapsed = time.monotonic() - t0
             except Exception:
-                pass
-
-            captured_data: dict = {}
-            api_event = asyncio.Event()
-
-            async def on_response(response):
-                try:
-                    url = response.url.lower()
-                    status = response.status
-                    # Log all API calls for debugging
-                    if "/api/" in url:
-                        logger.debug("Flynas API: %s %s", status, response.url[:120])
-                    if status in (200, 201) and "/api/flightsearch" in url:
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            if data and isinstance(data, dict):
-                                captured_data["json"] = data
-                                api_event.set()
-                                logger.info("Flynas: captured FlightSearch API response (%s)", status)
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            # Warmup: visit flynas.com first to establish Akamai session cookies
-            logger.info("Flynas: warming up session via www.flynas.com/en")
-            try:
-                await page.goto(
-                    "https://www.flynas.com/en",
-                    wait_until="domcontentloaded",
-                    timeout=15000,
-                )
-                await asyncio.sleep(2.0)
-                await self._dismiss_cookies(page)
-                await asyncio.sleep(1.0)
-            except Exception as e:
-                logger.debug("Flynas: warmup page load issue (non-fatal): %s", e)
-
-            # Now navigate to the direct booking URL with session cookies established
-            dep = req.date_from.strftime("%Y-%m-%d")
-            direct_url = (
-                f"https://booking.flynas.com/#/booking/search-redirect?"
-                f"origin={req.origin}&destination={req.destination}"
-                f"&currency={req.currency}&departureDate={dep}&returnDate=null"
-                f"&flightMode=oneway&adultCount={req.adults}"
-                f"&childCount={req.children or 0}&infantCount={req.infants or 0}"
-                f"&culture=en-US"
-            )
-
-            logger.info("Flynas: loading booking page for %s→%s", req.origin, req.destination)
-            await page.goto(
-                direct_url,
-                wait_until="domcontentloaded",
-                timeout=int(self.timeout * 1000),
-            )
-            await asyncio.sleep(4.0)
-
-            await self._dismiss_cookies(page)
-            await asyncio.sleep(0.5)
-
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                # Fallback: try homepage form fill
-                logger.info("Flynas: direct URL didn't trigger API, trying homepage form")
-                await page.goto(
-                    "https://www.flynas.com/en",
-                    wait_until="domcontentloaded",
-                    timeout=int(self.timeout * 1000),
-                )
-                await asyncio.sleep(3.0)
-                await self._dismiss_cookies(page)
-                await asyncio.sleep(0.5)
-
-                await self._set_one_way(page)
-                await asyncio.sleep(0.5)
-
-                ok = await self._fill_airport_field(page, "Origin", req.origin, 0)
-                if not ok:
-                    return self._empty(req)
-                await asyncio.sleep(0.5)
-
-                ok = await self._fill_airport_field(page, "Destination", req.destination, 1)
-                if not ok:
-                    return self._empty(req)
-                await asyncio.sleep(0.5)
-
-                ok = await self._fill_date(page, req)
-                if not ok:
-                    return self._empty(req)
-                await asyncio.sleep(0.3)
-
-                await self._click_search(page)
-
-                remaining2 = max(self.timeout - (time.monotonic() - t0), 8)
-                try:
-                    await asyncio.wait_for(api_event.wait(), timeout=remaining2)
-                except asyncio.TimeoutError:
-                    offers = await self._extract_from_dom(page, req)
-                    if offers:
-                        return self._build_response(offers, req, time.monotonic() - t0)
-                    return self._empty(req)
-
-            data = captured_data.get("json", {})
-            if not data:
+                _warm_ready = False
                 return self._empty(req)
 
-            elapsed = time.monotonic() - t0
-            offers = self._parse_response(data, req)
-            return self._build_response(offers, req, elapsed)
-
-        except Exception as e:
-            logger.error("Flynas Playwright error: %s", e)
+        if status not in (200, 201):
+            logger.warning("Flynas API returned %d: %s", status, result.get("body", "")[:300])
+            if status in (403, 429):
+                _warm_ready = False
             return self._empty(req)
-        finally:
-            await context.close()
 
-    async def _dismiss_cookies(self, page) -> None:
-        for label in [
-            "Accept all", "Accept All", "Accept", "I agree",
-            "Got it", "OK", "Close", "Dismiss", "Agree", "Configure",
-        ]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=2000)
-                    await asyncio.sleep(0.5)
-                    return
-            except Exception:
-                continue
         try:
-            await page.evaluate("""() => {
-                document.querySelectorAll(
-                    '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], ' +
-                    '[class*="Cookie"], [id*="Cookie"], [class*="onetrust"], [id*="onetrust"], ' +
-                    '[class*="modal-overlay"], [class*="popup"], [id*="popup"], ' +
-                    '[class*="privacy"], [id*="privacy"]'
-                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-                document.body.style.overflow = 'auto';
-            }""")
+            data = json.loads(result["body"])
         except Exception:
-            pass
+            logger.warning("Flynas: non-JSON response")
+            return self._empty(req)
 
-    async def _set_one_way(self, page) -> None:
-        for label in ["One Way", "One-way", "One way", "ONE WAY"]:
-            try:
-                el = page.get_by_text(label, exact=False).first
-                if el and await el.count() > 0:
-                    await el.click(timeout=3000)
-                    return
-            except Exception:
-                continue
-        try:
-            toggle = page.locator("[data-testid*='one-way'], [data-testid*='oneway'], [class*='one-way']").first
-            if await toggle.count() > 0:
-                await toggle.click(timeout=2000)
-        except Exception:
-            pass
-
-    async def _fill_airport_field(self, page, label: str, iata: str, index: int) -> bool:
-        try:
-            for role in ["combobox", "textbox"]:
-                field = page.get_by_role(role, name=re.compile(rf"{label}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    await asyncio.sleep(0.3)
-                    await field.first.fill("")
-                    await asyncio.sleep(0.2)
-                    await field.first.fill(iata)
-                    await asyncio.sleep(2.5)
-                    for role2 in ["option", "button", "listitem", "link"]:
-                        try:
-                            option = page.get_by_role(role2, name=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                            if await option.count() > 0:
-                                await option.click(timeout=3000)
-                                return True
-                        except Exception:
-                            continue
-                    item = page.locator(
-                        "[class*='suggestion'], [class*='option'], [class*='result'], "
-                        "[class*='autocomplete'] li, [class*='dropdown'] li, "
-                        "[class*='airport'] li, [class*='station'] li"
-                    ).filter(has_text=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                    if await item.count() > 0:
-                        await item.click(timeout=3000)
-                        return True
-                    await page.keyboard.press("Enter")
-                    return True
-        except Exception as e:
-            logger.debug("Flynas: %s field error: %s", label, e)
-        try:
-            inputs = page.locator("input[type='text'], input[type='search'], input[placeholder]")
-            if await inputs.count() > index:
-                field = inputs.nth(index)
-                await field.click(timeout=3000)
-                await field.fill("")
-                await asyncio.sleep(0.2)
-                await field.fill(iata)
-                await asyncio.sleep(2.5)
-                await page.keyboard.press("Enter")
-                return True
-        except Exception:
-            pass
-        return False
-
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        target = req.date_from
-        try:
-            for name in ["Depart", "Departure", "Date", "When"]:
-                field = page.get_by_role("textbox", name=re.compile(rf"{name}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    break
-            else:
-                date_el = page.locator("[class*='date'], [data-testid*='date'], [id*='date']").first
-                if await date_el.count() > 0:
-                    await date_el.click(timeout=3000)
-            await asyncio.sleep(0.8)
-
-            target_my = target.strftime("%B %Y")
-            for _ in range(12):
-                content = await page.content()
-                if target_my.lower() in content.lower():
-                    break
-                try:
-                    fwd = page.get_by_role("button", name=re.compile(r"(next|forward|>|>>|›)", re.IGNORECASE))
-                    if await fwd.count() > 0:
-                        await fwd.first.click(timeout=2000)
-                        await asyncio.sleep(0.4)
-                        continue
-                except Exception:
-                    pass
-                try:
-                    fwd = page.locator("[class*='next'], [aria-label*='next'], [aria-label*='Next']").first
-                    await fwd.click(timeout=2000)
-                    await asyncio.sleep(0.4)
-                except Exception:
-                    break
-
-            day = target.day
-            for fmt in [
-                f"{day} {target.strftime('%B')} {target.year}",
-                f"{target.strftime('%B')} {day}, {target.year}",
-                f"{target.strftime('%B')} {day}",
-                target.strftime("%Y-%m-%d"),
-            ]:
-                try:
-                    day_btn = page.locator(f"[aria-label*='{fmt}']").first
-                    if await day_btn.count() > 0:
-                        await day_btn.click(timeout=3000)
-                        await asyncio.sleep(0.5)
-                        return True
-                except Exception:
-                    continue
-            day_btn = page.locator(
-                "table button, .calendar button, [class*='calendar'] button, [class*='datepicker'] button"
-            ).filter(has_text=re.compile(rf"^{day}$")).first
-            if await day_btn.count() > 0:
-                await day_btn.click(timeout=3000)
-                return True
-            day_btn = page.get_by_role("button", name=re.compile(rf"^{day}$")).first
-            await day_btn.click(timeout=3000)
-            return True
-        except Exception as e:
-            logger.warning("Flynas: date error: %s", e)
-            return False
-
-    async def _click_search(self, page) -> None:
-        for label in ["Search", "SEARCH", "Search Flights", "Find flights"]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=5000)
-                    logger.info("Flynas: clicked search")
-                    return
-            except Exception:
-                continue
-        try:
-            await page.locator("button[type='submit']").first.click(timeout=3000)
-        except Exception:
-            await page.keyboard.press("Enter")
-
-    async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        try:
-            await asyncio.sleep(3)
-            data = await page.evaluate("""() => {
-                if (window.__NEXT_DATA__) return window.__NEXT_DATA__;
-                if (window.__NUXT__) return window.__NUXT__;
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    try {
-                        const d = JSON.parse(s.textContent);
-                        if (d && (d.flights || d.journeys || d.fares || d.availability)) return d;
-                    } catch {}
-                }
-                return null;
-            }""")
-            if data:
-                return self._parse_response(data, req)
-        except Exception:
-            pass
-        return []
-
-    def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
-        if isinstance(data, list):
-            data = {"flights": data}
-        booking_url = self._build_booking_url(req)
-        offers: list[FlightOffer] = []
-
-        # Primary path: flightsAvailability.trips[].flights[]
+        # Parse response
         trips = data.get("flightsAvailability", {}).get("trips", [])
-        if trips:
-            for trip in trips:
-                for flight in trip.get("flights", []):
-                    offer = self._parse_single_flight(flight, req, booking_url)
-                    if offer:
-                        offers.append(offer)
-            return offers
+        outbound_flights = []
+        return_flights = []
 
-        # Fallback paths for other possible shapes
-        flights_raw = (
-            data.get("outboundFlights")
-            or data.get("outbound")
-            or data.get("journeys")
-            or data.get("flights")
-            or data.get("availability", {}).get("trips", [])
-            or data.get("data", {}).get("flights", [])
-            or data.get("data", {}).get("journeys", [])
-            or data.get("lowFareAvailability", {}).get("outboundOptions", [])
-            or data.get("flightList", [])
-            or []
-        )
-        if isinstance(flights_raw, dict):
-            flights_raw = flights_raw.get("outbound", []) or flights_raw.get("journeys", [])
-        if not isinstance(flights_raw, list):
-            flights_raw = []
+        for i, trip in enumerate(trips):
+            for flight in trip.get("flights", []):
+                parsed = self._parse_flight(flight)
+                if parsed:
+                    if i == 0:
+                        outbound_flights.append(parsed)
+                    else:
+                        return_flights.append(parsed)
 
-        for flight in flights_raw:
-            offer = self._parse_single_flight(flight, req, booking_url)
-            if offer:
+        offers = []
+        booking_url = self._build_booking_url(req)
+        currency = req.currency or "SAR"
+
+        if req.return_from and return_flights:
+            outbound_flights.sort(key=lambda x: x["price"])
+            return_flights.sort(key=lambda x: x["price"])
+
+            for ob in outbound_flights[:15]:
+                for rt in return_flights[:10]:
+                    total = ob["price"] + rt["price"]
+                    offer = FlightOffer(
+                        id=f"xy_{hashlib.md5((ob['key'] + rt['key']).encode()).hexdigest()[:12]}",
+                        price=round(total, 2),
+                        currency=currency,
+                        price_formatted=f"{total:.2f} {currency}",
+                        outbound=ob["route"],
+                        inbound=rt["route"],
+                        airlines=["flynas"],
+                        owner_airline="XY",
+                        booking_url=booking_url,
+                        is_locked=False,
+                        source="flynas_direct",
+                        source_tier="free",
+                    )
+                    offers.append(offer)
+        else:
+            for ob in outbound_flights:
+                offer = FlightOffer(
+                    id=f"xy_{hashlib.md5(ob['key'].encode()).hexdigest()[:12]}",
+                    price=round(ob["price"], 2),
+                    currency=currency,
+                    price_formatted=f"{ob['price']:.2f} {currency}",
+                    outbound=ob["route"],
+                    inbound=None,
+                    airlines=["flynas"],
+                    owner_airline="XY",
+                    booking_url=booking_url,
+                    is_locked=False,
+                    source="flynas_direct",
+                    source_tier="free",
+                )
                 offers.append(offer)
-        return offers
 
-    def _parse_single_flight(self, flight: dict, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
-        best_price = self._extract_best_price(flight)
+        offers.sort(key=lambda o: o.price)
+
+        logger.info(
+            "Flynas %s→%s returned %d offers in %.1fs",
+            req.origin, req.destination, len(offers), elapsed,
+        )
+
+        search_hash = hashlib.md5(
+            f"flynas{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
+
+        return FlightSearchResponse(
+            search_id=f"fs_{search_hash}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=currency,
+            offers=offers,
+            total_results=len(offers),
+        )
+
+    def _parse_flight(self, flight: dict) -> Optional[dict]:
+        """Parse a single flight from the flynas FlightSearch response."""
+        best_price = None
+        fares = flight.get("fares", [])
+        for fare in fares:
+            p = fare.get("price")
+            if p is not None and p > 0:
+                if best_price is None or p < best_price:
+                    best_price = p
         if best_price is None or best_price <= 0:
             return None
-        segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
-        segments: list[FlightSegment] = []
-        if segments_raw and isinstance(segments_raw, list):
-            for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
-        else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
+
+        legs = flight.get("legs", [])
+        segments = []
+        for leg in legs:
+            flight_no = str(leg.get("flightNumber", "")).strip()
+            carrier = leg.get("carrierCode") or leg.get("operatedBy") or "XY"
+            if flight_no and not flight_no.startswith(("XY", "xy")):
+                flight_no = f"XY{flight_no}"
+            segments.append(FlightSegment(
+                airline=carrier,
+                airline_name="flynas",
+                flight_no=flight_no,
+                origin=leg.get("origin", ""),
+                destination=leg.get("destination", ""),
+                departure=self._parse_dt(leg.get("departureDate", "")),
+                arrival=self._parse_dt(leg.get("arrivalDate", "")),
+                cabin_class="M",
+            ))
+
+        if not segments:
+            # Fallback: build from flight-level data
+            flight_no = str(flight.get("flightNumber", "")).strip()
+            if flight_no and not flight_no.startswith(("XY", "xy")):
+                flight_no = f"XY{flight_no}"
+            segments.append(FlightSegment(
+                airline="XY",
+                airline_name="flynas",
+                flight_no=flight_no,
+                origin=flight.get("origin", ""),
+                destination=flight.get("destination", ""),
+                departure=self._parse_dt(flight.get("departureDate", "")),
+                arrival=self._parse_dt(flight.get("arrivalDate", "")),
+                cabin_class="M",
+            ))
+
         total_dur = 0
         if segments and segments[0].departure and segments[-1].arrival:
-            total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
-        route = FlightRoute(segments=segments, total_duration_seconds=max(total_dur, 0), stopovers=max(len(segments) - 1, 0))
-        flight_key = flight.get("journeyKey") or flight.get("id") or f"{flight.get('departureDate', '')}_{time.monotonic()}"
-        return FlightOffer(
-            id=f"xy_{hashlib.md5(str(flight_key).encode()).hexdigest()[:12]}",
-            price=round(best_price, 2),
-            currency=req.currency,
-            price_formatted=f"{best_price:.2f} {req.currency}",
-            outbound=route,
-            inbound=None,
-            airlines=["flynas"],
-            owner_airline="XY",
-            booking_url=booking_url,
-            is_locked=False,
-            source="flynas_direct",
-            source_tier="free",
+            total_dur = max(
+                int((segments[-1].arrival - segments[0].departure).total_seconds()), 0
+            )
+
+        route = FlightRoute(
+            segments=segments,
+            total_duration_seconds=total_dur,
+            stopovers=flight.get("numberOfStops", max(len(segments) - 1, 0)),
         )
 
-    @staticmethod
-    def _extract_best_price(flight: dict) -> Optional[float]:
-        fares = flight.get("fares") or flight.get("fareProducts") or flight.get("bundles") or flight.get("fareBundles") or []
-        best = float("inf")
-        # Prefer total/published prices over base prices (which exclude taxes)
-        total_keys = ["price", "publishedTotalPrice", "totalPrice", "amount", "totalAmount", "fareAmount"]
-        for fare in fares:
-            if isinstance(fare, dict):
-                for key in total_keys:
-                    val = fare.get(key)
-                    if isinstance(val, dict):
-                        val = val.get("amount") or val.get("value")
-                    if val is not None:
-                        try:
-                            v = float(val)
-                            if 0 < v < best:
-                                best = v
-                                break  # Found best key for this fare, stop
-                        except (TypeError, ValueError):
-                            pass
-        for key in ["price", "lowestFare", "totalPrice", "farePrice", "amount", "lowestPrice"]:
-            p = flight.get(key)
-            if p is not None:
-                try:
-                    v = float(p) if not isinstance(p, dict) else float(p.get("amount", 0))
-                    if 0 < v < best:
-                        best = v
-                except (TypeError, ValueError):
-                    pass
-        return best if best < float("inf") else None
-
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
-        dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
-        arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
-        flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
-        # Ensure flight number has carrier prefix (API sometimes returns just digits)
-        if flight_no and flight_no.isdigit():
-            flight_no = f"XY{flight_no}"
-        origin = seg.get("origin") or seg.get("departureStation") or seg.get("departureAirport") or default_origin
-        destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("arrivalAirport") or default_dest
-        codes = seg.get("allFlightCodes")
-        carrier = (codes[0] if isinstance(codes, list) and codes else None) or seg.get("carrierCode") or seg.get("carrier") or seg.get("airline") or "XY"
-        return FlightSegment(
-            airline=carrier, airline_name="flynas", flight_no=flight_no,
-            origin=origin, destination=destination,
-            departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+        flight_key = str(
+            flight.get("journeyKey")
+            or flight.get("id")
+            or f"{segments[0].flight_no}_{segments[0].departure.isoformat()}"
         )
 
-    def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
-        offers.sort(key=lambda o: o.price)
-        logger.info("Flynas %s→%s returned %d offers in %.1fs (Playwright)", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"flynas{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency, offers=offers, total_results=len(offers),
-        )
+        return {
+            "price": float(best_price),
+            "key": flight_key,
+            "route": route,
+        }
 
     @staticmethod
     def _parse_dt(s: Any) -> datetime:
@@ -578,7 +469,7 @@ class FlynasConnectorClient:
             return datetime.fromisoformat(s.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
             pass
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M"):
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S"):
             try:
                 return datetime.strptime(s[:len(fmt) + 2], fmt)
             except (ValueError, IndexError):
@@ -596,8 +487,14 @@ class FlynasConnectorClient:
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"flynas{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(
+            f"flynas{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
         return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency, offers=[], total_results=0,
+            search_id=f"fs_{h}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=req.currency,
+            offers=[],
+            total_results=0,
         )

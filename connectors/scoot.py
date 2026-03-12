@@ -1,5 +1,5 @@
 """
-Scoot Playwright connector — CDP Chrome + API interception via Navitaire Angular SPA.
+Scoot Playwright scraper — CDP Chrome + API interception via Navitaire Angular SPA.
 
 Scoot (IATA: TR) is Singapore Airlines' low-cost subsidiary operating from SIN.
 Uses a modern Navitaire Angular 20 booking engine at booking.flyscoot.com.
@@ -177,7 +177,7 @@ async def _get_browser():
 
 
 class ScootConnectorClient:
-    """Scoot Playwright connector — CDP Chrome + Navitaire API interception."""
+    """Scoot Playwright scraper — CDP Chrome + Navitaire API interception."""
 
     def __init__(self, timeout: float = 50.0):
         self.timeout = timeout

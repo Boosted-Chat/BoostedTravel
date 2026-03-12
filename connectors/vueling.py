@@ -1,5 +1,5 @@
 """
-Vueling hybrid connector — direct API first, Playwright fallback.
+Vueling hybrid scraper — direct API first, Playwright fallback.
 
 Vueling (IATA: VY) is a Spanish low-cost carrier.
 Booking engine: tickets.vueling.com (Angular 17 SPA).
@@ -227,7 +227,7 @@ async def _ensure_token() -> str | None:
 
 
 class VuelingConnectorClient:
-    """Vueling hybrid connector — direct API first, Playwright fallback."""
+    """Vueling hybrid scraper — direct API first, Playwright fallback."""
 
     def __init__(self, timeout: float = 60.0):
         self.timeout = timeout

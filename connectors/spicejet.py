@@ -1,24 +1,24 @@
 """
-SpiceJet direct connector — homepage session + URL navigation + API response capture.
+SpiceJet direct API scraper — no browser required.
 
 SpiceJet (IATA: SG) is an Indian low-cost carrier (Navitaire/dotREZ platform).
 Website: www.spicejet.com — React Native Web SPA with REST API backend.
 
-Strategy (URL Navigation + API Interception):
-1. Navigate to spicejet.com homepage (headed Chrome + stealth) to establish WAF session
-2. Navigate to /search?from=...&to=...&departure=YYYY-MM-DD&tripType=1&...
-3. The SPA reads URL params and calls /api/v3/search/availability automatically
-4. Capture the API response via page.on("response") → parse into FlightOffer objects
+Strategy (Pure Direct API):
+1. Token: POST /api/v1/token — no auth, returns JWT. Cached ~10 min.
+2. Search: POST /api/v3/search/availability with JWT + curl_cffi (TLS impersonation).
+   ~1-1.5s per search. No browser needed at all.
 
-Key API details (discovered March 2026):
-- Token: POST /api/v1/token — auto-fired by SPA, JWT with 10-15min idle timeout
+Key API details (discovered March 2026, body field fix April 2026):
+- Token: POST /api/v1/token — empty JSON body, returns {"data":{"token":"eyJ..."}}
+  Headers: os: desktop, Content-Type: application/json
 - Availability: POST /api/v3/search/availability
   Body: {"originStationCode":"DEL","destinationStationCode":"BOM",
-         "onWardDate":"2026-03-20","currency":"INR",
+         "onWardDate":"2026-04-15","currency":"INR",
          "pax":{"journeyClass":"ff","adult":1,"child":0,"infant":0,"srCitizen":0}}
+  IMPORTANT: the date field is "onWardDate" (not beginDate/endDate).
   Response: {"data":{"trips":[{"journeysAvailable":[...segments, fares...]}]}}
 - Fare pricing encoded in base64url fareAvailabilityKey: first number / 10 = INR base fare
-- IMPORTANT: Homepage must be loaded first to establish WAF cookies; direct URL alone fails
 """
 
 from __future__ import annotations
@@ -26,12 +26,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
-import random
-import re
 import time
 from datetime import datetime
 from typing import Any, Optional
+
+from curl_cffi import requests as cffi_requests
 
 from models.flights import (
     FlightOffer,
@@ -43,50 +44,23 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
-]
-_LOCALES = ["en-IN", "en-US", "en-GB"]
-_TIMEZONES = ["Asia/Kolkata", "Asia/Dubai", "Europe/London"]
+# --- API constants ---
+_TOKEN_URL = "https://www.spicejet.com/api/v1/token"
+_SEARCH_URL = "https://www.spicejet.com/api/v3/search/availability"
+_IMPERSONATE = "chrome131"
+_TOKEN_MAX_AGE = 10 * 60  # Re-acquire token every 10 minutes
 
-_pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
+# --- Shared token state ---
+_token_lock: Optional[asyncio.Lock] = None
+_cached_token: Optional[str] = None
+_token_timestamp: float = 0.0
 
 
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
-
-
-async def _get_browser():
-    """Shared headed Chromium (launched once, reused)."""
-    global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("SpiceJet: Playwright browser launched (headed Chrome)")
-        return _browser
+def _get_token_lock() -> asyncio.Lock:
+    global _token_lock
+    if _token_lock is None:
+        _token_lock = asyncio.Lock()
+    return _token_lock
 
 
 def _decode_fare_price(fare_key: str) -> Optional[float]:
@@ -96,10 +70,8 @@ def _decode_fare_price(fare_key: str) -> Optional[float]:
     The number after '!0:' divided by 10 gives the base fare in INR.
     """
     try:
-        # base64url decode
         padded = fare_key + "=" * (4 - len(fare_key) % 4)
         decoded = base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
-        # Extract pricing section after '!'
         if "!" not in decoded:
             return None
         pricing = decoded.split("!")[-1]
@@ -113,7 +85,7 @@ def _decode_fare_price(fare_key: str) -> Optional[float]:
 
 
 class SpiceJetConnectorClient:
-    """SpiceJet connector — token capture + API replay (no form filling needed)."""
+    """SpiceJet direct API scraper — curl_cffi with TLS impersonation."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -121,101 +93,148 @@ class SpiceJetConnectorClient:
     async def close(self):
         pass
 
-    async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        # Retry up to 2 times (WAF may block the first attempt)
-        for attempt in range(2):
-            result = await self._try_search(req)
-            if result.total_results > 0:
-                return result
-            if attempt == 0:
-                logger.info("SpiceJet: retrying search (attempt %d yielded 0 results)", attempt + 1)
-                await asyncio.sleep(2.0)
-        return result
+    # ------------------------------------------------------------------
+    # Token management
+    # ------------------------------------------------------------------
 
-    async def _try_search(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        t0 = time.monotonic()
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
+    async def _ensure_token(self) -> Optional[str]:
+        """Return cached JWT token, acquiring a fresh one if expired."""
+        global _cached_token, _token_timestamp
+        lock = _get_token_lock()
+        async with lock:
+            age = time.monotonic() - _token_timestamp
+            if _cached_token and age < _TOKEN_MAX_AGE:
+                return _cached_token
+            return await self._acquire_token()
+
+    async def _acquire_token(self) -> Optional[str]:
+        """Fetch a fresh JWT from the token endpoint."""
+        global _cached_token, _token_timestamp
+        loop = asyncio.get_event_loop()
+        try:
+            token = await loop.run_in_executor(None, self._acquire_token_sync)
+            if token:
+                _cached_token = token
+                _token_timestamp = time.monotonic()
+                logger.info("SpiceJet: acquired fresh JWT token")
+            return token
+        except Exception as e:
+            logger.error("SpiceJet: token acquisition failed: %s", e)
+            return None
+
+    @staticmethod
+    def _acquire_token_sync() -> Optional[str]:
+        """Synchronous token acquisition via curl_cffi."""
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        r = sess.post(
+            _TOKEN_URL,
+            json={},
+            headers={"Content-Type": "application/json", "os": "desktop"},
+            timeout=10,
         )
+        if r.status_code != 200:
+            logger.warning("SpiceJet: token endpoint returned %d", r.status_code)
+            return None
+        data = r.json()
+        return data.get("data", {}).get("token")
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """Search SpiceJet flights via direct API (~1-1.5s per search)."""
+        t0 = time.monotonic()
 
         try:
-            try:
-                from playwright_stealth import stealth_async
-
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
-
-            captured_data: dict = {}
-            api_event = asyncio.Event()
-
-            async def on_response(response):
-                url = response.url
-                if "/api/v3/search/availability" in url and response.status == 200:
-                    try:
-                        body = await response.text()
-                        if body and len(body) > 500:
-                            import json as _json
-                            captured_data["availability"] = _json.loads(body)
-                            api_event.set()
-                    except Exception:
-                        pass
-                elif "/api/v2/search/lowfare" in url and response.status == 200:
-                    try:
-                        body = await response.text()
-                        if body and len(body) > 100:
-                            import json as _json
-                            captured_data["lowfare"] = _json.loads(body)
-                    except Exception:
-                        pass
-
-            page.on("response", on_response)
-
-            # Phase 1: Load homepage to establish session (WAF cookies + token)
-            logger.info("SpiceJet: loading homepage for %s→%s", req.origin, req.destination)
-            await page.goto(
-                "https://www.spicejet.com/",
-                wait_until="domcontentloaded",
-                timeout=int(self.timeout * 1000),
-            )
-            await asyncio.sleep(4.0)
-
-            # Phase 2: Navigate to search URL — the SPA reads params and calls
-            # the availability + lowfare APIs automatically with proper auth
-            search_url = self._build_search_nav_url(req)
-            logger.info("SpiceJet: navigating to search page")
-            await page.goto(
-                search_url,
-                wait_until="domcontentloaded",
-                timeout=int(self.timeout * 1000),
-            )
-
-            # Wait for the availability API response
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning("SpiceJet: timed out waiting for availability API")
+            token = await self._ensure_token()
+            if not token:
+                logger.warning("SpiceJet: no token available")
                 return self._empty(req)
 
-            data = captured_data.get("availability", {})
-            if not data:
-                return self._empty(req)
+            data = await self._api_search(req, token)
 
-            elapsed = time.monotonic() - t0
-            offers = self._parse_availability(data, req)
-            return self._build_response(offers, req, elapsed)
+            # If failed (e.g. expired token), re-acquire once and retry
+            if data is None:
+                logger.info("SpiceJet: search failed, re-acquiring token")
+                token = await self._acquire_token()
+                if token:
+                    data = await self._api_search(req, token)
+
+            if data:
+                elapsed = time.monotonic() - t0
+                offers = self._parse_availability(data, req)
+                logger.info(
+                    "SpiceJet %s→%s returned %d offers in %.1fs (direct API)",
+                    req.origin, req.destination, len(offers), elapsed,
+                )
+                return self._build_response(offers, req, elapsed)
+
+            logger.warning("SpiceJet: no data for %s→%s", req.origin, req.destination)
+            return self._empty(req)
 
         except Exception as e:
             logger.error("SpiceJet error: %s", e)
             return self._empty(req)
-        finally:
-            await context.close()
+
+    async def _api_search(self, req: FlightSearchRequest, token: str) -> Optional[dict]:
+        """Execute availability search via curl_cffi."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._api_search_sync, req, token)
+
+    def _api_search_sync(self, req: FlightSearchRequest, token: str) -> Optional[dict]:
+        """Synchronous availability search."""
+        currency = req.currency if req.currency != "EUR" else "INR"
+        date_str = req.date_from.strftime("%Y-%m-%d")
+
+        body = {
+            "originStationCode": req.origin,
+            "destinationStationCode": req.destination,
+            "onWardDate": date_str,
+            "currency": currency,
+            "pax": {
+                "journeyClass": "ff",
+                "adult": req.adults,
+                "child": req.children or 0,
+                "infant": req.infants or 0,
+                "srCitizen": 0,
+            },
+        }
+
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        try:
+            r = sess.post(
+                _SEARCH_URL,
+                json=body,
+                headers={
+                    "Authorization": token,
+                    "Content-Type": "application/json",
+                    "os": "desktop",
+                    "Origin": "https://www.spicejet.com",
+                    "Referer": f"https://www.spicejet.com/search?from={req.origin}&to={req.destination}",
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            logger.error("SpiceJet: API request failed: %s", e)
+            return None
+
+        if r.status_code == 401:
+            logger.warning("SpiceJet: API returned 401 (token expired)")
+            return None
+        if r.status_code != 200:
+            logger.warning("SpiceJet: API returned %d", r.status_code)
+            return None
+
+        try:
+            return r.json()
+        except Exception:
+            logger.error("SpiceJet: failed to parse API response")
+            return None
+
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
 
     def _parse_availability(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
         """Parse /api/v3/search/availability response into FlightOffer list."""
@@ -235,7 +254,6 @@ class SpiceJetConnectorClient:
         self, journey: dict, req: FlightSearchRequest, booking_url: str
     ) -> Optional[FlightOffer]:
         """Parse a single journey from the availability response."""
-        # Extract cheapest fare price from fare keys
         fares = journey.get("fares", {})
         best_price = float("inf")
         for fare_key, fare_info in fares.items():
@@ -248,13 +266,11 @@ class SpiceJetConnectorClient:
         if best_price == float("inf") or best_price <= 0:
             return None
 
-        # Add estimated taxes (~19% for Indian domestic, ~12% international)
         designator = journey.get("designator", {})
         is_international = journey.get("isInternational", False)
         tax_rate = 0.12 if is_international else 0.19
         total_price = round(best_price * (1 + tax_rate))
 
-        # Parse segments
         segments_raw = journey.get("segments", [])
         segments: list[FlightSegment] = []
         for seg in segments_raw:
@@ -263,7 +279,6 @@ class SpiceJetConnectorClient:
                 segments.append(seg_obj)
 
         if not segments:
-            # Use journey-level designator
             dep_str = designator.get("departure", "")
             arr_str = designator.get("arrival", "")
             carrier_str = journey.get("carrierString", "SG ???")
@@ -284,7 +299,6 @@ class SpiceJetConnectorClient:
                 )
             )
 
-        # Calculate total duration
         total_dur = 0
         if segments and segments[0].departure and segments[-1].arrival:
             total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
@@ -309,7 +323,7 @@ class SpiceJetConnectorClient:
             owner_airline="SG",
             booking_url=booking_url,
             is_locked=False,
-            source="spicejet_direct",
+            source="spicejet_direct_api",
             source_tier="protocol",
         )
 
@@ -325,7 +339,6 @@ class SpiceJetConnectorClient:
         origin = designator.get("origin", req.origin)
         destination = designator.get("destination", req.destination)
 
-        # Get equipment type from legs
         aircraft = ""
         legs = seg.get("legs", [])
         if legs:
@@ -351,14 +364,14 @@ class SpiceJetConnectorClient:
             aircraft=aircraft,
         )
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     def _build_response(
         self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float
     ) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
-        logger.info(
-            "SpiceJet %s→%s returned %d offers in %.1fs",
-            req.origin, req.destination, len(offers), elapsed,
-        )
         h = hashlib.md5(f"spicejet{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -384,16 +397,6 @@ class SpiceJetConnectorClient:
             except (ValueError, IndexError):
                 continue
         return datetime(2000, 1, 1)
-
-    def _build_search_nav_url(self, req: FlightSearchRequest) -> str:
-        """Build the SPA search URL. The SPA reads params and calls the API."""
-        dep = req.date_from.strftime("%Y-%m-%d")
-        return (
-            f"https://www.spicejet.com/search?from={req.origin}&to={req.destination}"
-            f"&tripType=1&departure={dep}&adult={req.adults}&child={req.children}"
-            f"&srCitizen=0&infant={req.infants}&currency="
-            f"{req.currency if req.currency != 'EUR' else 'INR'}"
-        )
 
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:

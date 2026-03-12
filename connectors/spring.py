@@ -1,27 +1,32 @@
 """
-Spring Airlines Playwright connector — browser automation to bypass WAF.
+Spring Airlines direct API scraper -- queries en.ch.com REST endpoints.
 
 Spring Airlines (IATA: 9C) is a Chinese LCC headquartered in Shanghai.
-Website: global.ch.com/en or flights.ch.com/en (international site).
+Website: en.ch.com (English), flights.ch.com (Chinese).
 
-Strategy:
-1. Navigate to global.ch.com/en homepage
-2. Dismiss cookie/popup banner
-3. Fill search form (From/To/Departure, One-way)
-4. Intercept API responses (availability / fares)
-5. Parse JSON → FlightOffer objects
+API backend: en.ch.com (publicly accessible, no auth key required)
+  - Flight search:     POST /Flights/SearchByTime
+  - Low price calendar: POST /Flights/MinPriceTrends
+  - City/routes:       GET  /Default/GetReRoutesByCity?CityCode={code}&Lang=en-us
+  - City detection:    GET  /Default/GetCity
+
+Parameters (form-encoded):
+  Departure, Arrival (city codes), DepartureDate (YYYY-MM-DD),
+  Currency, AdtNum, ChdNum, InfNum, IsIJFlight, SType.
+
+Discovered via Playwright network interception + JS analysis, Mar 2026.
+Rewritten from 539-line Playwright scraper to direct httpx API client.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
-import random
-import re
 import time
 from datetime import datetime
 from typing import Any, Optional
+
+import httpx
 
 from models.flights import (
     FlightOffer,
@@ -33,58 +38,27 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
-    {"width": 1280, "height": 720},
-    {"width": 1600, "height": 900},
-]
-_LOCALES = ["en-US", "en-GB", "zh-CN", "en-CN"]
-_TIMEZONES = [
-    "Asia/Shanghai", "Asia/Tokyo", "Asia/Seoul",
-    "Asia/Bangkok", "Asia/Singapore",
-]
+_BASE = "https://en.ch.com"
+_SEARCH_URL = f"{_BASE}/Flights/SearchByTime"
 
-_pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
-
-
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
-
-
-async def _get_browser():
-    global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False, channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Spring: Playwright browser launched (headed Chrome)")
-        return _browser
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": f"{_BASE}/flights",
+    "Origin": _BASE,
+}
 
 
 class SpringConnectorClient:
-    """Spring Airlines Playwright connector — homepage form search + API interception."""
+    """Spring Airlines scraper -- direct httpx API client for SearchByTime."""
 
-    def __init__(self, timeout: float = 45.0):
+    def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
 
     async def close(self):
@@ -92,443 +66,210 @@ class SpringConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-            color_scheme=random.choice(["light", "dark", "no-preference"]),
-        )
+        date_str = req.date_from.strftime("%Y-%m-%d")
+
+        form_data = {
+            "Departure": req.origin,
+            "Arrival": req.destination,
+            "DepartureDate": date_str,
+            "ReturnDate": "",
+            "IsIJFlight": "false",
+            "SType": "0",
+            "Currency": req.currency or "CNY",
+            "AdtNum": str(req.adults),
+            "ChdNum": str(req.children),
+            "InfNum": str(req.infants),
+        }
+
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
-
-            try:
-                cdp = await context.new_cdp_session(page)
-                await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
-            except Exception:
-                pass
-
-            captured_data: dict = {}
-            api_event = asyncio.Event()
-
-            async def on_response(response):
-                try:
-                    url = response.url.lower()
-                    if response.status == 200 and (
-                        "availability" in url or "/api/flights" in url
-                        or "/api/search" in url or "search/flights" in url
-                        or "flights/search" in url or "fares" in url
-                        or "offers" in url or "low-fare" in url
-                        or "flight-search" in url or "flightsearch" in url
-                        or "booking" in url and "search" in url
-                        or "shopping" in url or "schedule" in url
-                    ):
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            if data and isinstance(data, (dict, list)):
-                                captured_data["json"] = data
-                                api_event.set()
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            logger.info("Spring: loading homepage for %s→%s", req.origin, req.destination)
-            # Try international site first, fall back to flights.ch.com
-            loaded = False
-            for url in ["https://global.ch.com/en", "https://flights.ch.com/en", "https://www.ch.com/en"]:
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                    loaded = True
-                    break
-                except Exception:
-                    continue
-            if not loaded:
-                return self._empty(req)
-
-            await asyncio.sleep(3.0)
-
-            await self._dismiss_cookies(page)
-            await asyncio.sleep(0.5)
-            await self._dismiss_cookies(page)
-
-            await self._set_one_way(page)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, req.origin, 0)
-            if not ok:
-                logger.warning("Spring: origin fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, req.destination, 1)
-            if not ok:
-                logger.warning("Spring: destination fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_date(page, req)
-            if not ok:
-                logger.warning("Spring: date fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.3)
-
-            await self._click_search(page)
-
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning("Spring: timed out waiting for API response")
-                offers = await self._extract_from_dom(page, req)
-                if offers:
-                    return self._build_response(offers, req, time.monotonic() - t0)
-                return self._empty(req)
-
-            data = captured_data.get("json", {})
-            if not data:
-                return self._empty(req)
-
-            elapsed = time.monotonic() - t0
-            offers = self._parse_response(data, req)
-            return self._build_response(offers, req, elapsed)
-
-        except Exception as e:
-            logger.error("Spring Playwright error: %s", e)
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+                cookies={"lang": "en-us"},
+            ) as client:
+                # Get session cookie
+                await client.get(
+                    f"{_BASE}/flights",
+                    headers={"User-Agent": _HEADERS["User-Agent"], "Accept": "text/html,*/*"},
+                )
+                # Search
+                resp = await client.post(_SEARCH_URL, data=form_data, headers=_HEADERS)
+        except httpx.HTTPError as exc:
+            logger.error("Spring API request failed: %s", exc)
             return self._empty(req)
-        finally:
-            await context.close()
 
-    async def _dismiss_cookies(self, page) -> None:
-        for label in [
-            "Accept All", "Accept all", "Accept", "I agree",
-            "Got it", "OK", "Close", "Dismiss", "同意",
-        ]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=2000)
-                    await asyncio.sleep(0.5)
-                    return
-            except Exception:
-                continue
+        if resp.status_code != 200:
+            logger.warning("Spring API returned %d", resp.status_code)
+            return self._empty(req)
+
         try:
-            close_btn = page.locator("[class*='close'], .popup .close, .modal .close, [aria-label='Close']").first
-            if await close_btn.count() > 0:
-                await close_btn.click(timeout=2000)
-                await asyncio.sleep(0.3)
+            data = resp.json()
         except Exception:
-            pass
-        try:
-            await page.evaluate("""() => {
-                document.querySelectorAll(
-                    '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], '
-                    + '[class*="onetrust"], [id*="onetrust"], [class*="modal-overlay"], '
-                    + '[class*="popup"], [id*="popup"], [class*="privacy"]'
-                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-                document.body.style.overflow = 'auto';
-            }""")
-        except Exception:
-            pass
+            logger.warning("Spring API returned non-JSON response")
+            return self._empty(req)
 
-    async def _set_one_way(self, page) -> None:
-        for label in ["One Way", "One-way", "One way", "单程"]:
-            try:
-                el = page.get_by_text(label, exact=False).first
-                if el and await el.count() > 0:
-                    await el.click(timeout=3000)
-                    return
-            except Exception:
-                continue
-        for label in ["One Way", "One-way"]:
-            try:
-                radio = page.get_by_role("radio", name=re.compile(rf"{re.escape(label)}", re.IGNORECASE))
-                if await radio.count() > 0:
-                    await radio.first.click(timeout=2000)
-                    return
-            except Exception:
-                continue
-        try:
-            toggle = page.locator("[data-testid*='one-way'], [data-testid*='oneway'], [class*='one-way']").first
-            if await toggle.count() > 0:
-                await toggle.click(timeout=2000)
-        except Exception:
-            pass
+        if data.get("Code") != "0":
+            logger.warning("Spring API error code: %s", data.get("Code"))
+            return self._empty(req)
 
-    async def _fill_airport_field(self, page, iata: str, index: int) -> bool:
-        origin_labels = ["From", "Origin", "Departure", "出发"]
-        dest_labels = ["To", "Destination", "Arrival", "到达"]
-        labels = origin_labels if index == 0 else dest_labels
-        try:
-            for name in labels:
-                for role in ["combobox", "textbox"]:
-                    field = page.get_by_role(role, name=re.compile(rf"{re.escape(name)}", re.IGNORECASE))
-                    if await field.count() > 0:
-                        await field.first.click(timeout=3000)
-                        await asyncio.sleep(0.3)
-                        await field.first.fill("")
-                        await asyncio.sleep(0.2)
-                        await field.first.fill(iata)
-                        await asyncio.sleep(2.5)
-                        for role2 in ["option", "button", "listitem", "link"]:
-                            try:
-                                option = page.get_by_role(role2, name=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                                if await option.count() > 0:
-                                    await option.click(timeout=3000)
-                                    return True
-                            except Exception:
-                                continue
-                        item = page.locator(
-                            "[class*='suggestion'], [class*='option'], [class*='result'], "
-                            "[class*='autocomplete'] li, [class*='dropdown'] li, "
-                            "[class*='airport'] li, [class*='station'] li"
-                        ).filter(has_text=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                        if await item.count() > 0:
-                            await item.click(timeout=3000)
-                            return True
-                        await page.keyboard.press("Enter")
-                        return True
-        except Exception as e:
-            logger.debug("Spring: field %d error: %s", index, e)
-        try:
-            inputs = page.locator("input[type='text'], input[type='search'], input[placeholder]")
-            if await inputs.count() > index:
-                field = inputs.nth(index)
-                await field.click(timeout=3000)
-                await field.fill("")
-                await asyncio.sleep(0.2)
-                await field.fill(iata)
-                await asyncio.sleep(2.5)
-                await page.keyboard.press("Enter")
-                return True
-        except Exception:
-            pass
-        return False
-
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        target = req.date_from
-        try:
-            for name in ["Departure", "Depart", "Date", "出发日期"]:
-                field = page.get_by_role("textbox", name=re.compile(rf"{re.escape(name)}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    break
-            else:
-                date_el = page.locator("[class*='date'], [data-testid*='date'], [id*='date'], [class*='calendar']").first
-                if await date_el.count() > 0:
-                    await date_el.click(timeout=3000)
-            await asyncio.sleep(0.8)
-            target_my = target.strftime("%B %Y")
-            for _ in range(12):
-                content = await page.content()
-                if target_my.lower() in content.lower() or target.strftime("%Y-%m") in content:
-                    break
-                try:
-                    fwd = page.get_by_role("button", name=re.compile(r"(next|forward|>|›)", re.IGNORECASE))
-                    if await fwd.count() > 0:
-                        await fwd.first.click(timeout=2000)
-                        await asyncio.sleep(0.4)
-                        continue
-                except Exception:
-                    pass
-                try:
-                    fwd = page.locator("[class*='next'], [aria-label*='next']").first
-                    await fwd.click(timeout=2000)
-                    await asyncio.sleep(0.4)
-                except Exception:
-                    break
-            day = target.day
-            for fmt in [
-                f"{target.strftime('%B')} {day}, {target.year}",
-                f"{day} {target.strftime('%B')} {target.year}",
-                f"{target.strftime('%B')} {day}",
-                target.strftime("%Y-%m-%d"),
-            ]:
-                try:
-                    day_btn = page.locator(f"[aria-label*='{fmt}']").first
-                    if await day_btn.count() > 0:
-                        await day_btn.click(timeout=3000)
-                        return True
-                except Exception:
-                    continue
-            day_btn = page.locator(
-                "table button, .calendar button, [class*='calendar'] button, "
-                "[class*='datepicker'] button, [class*='calendar'] td"
-            ).filter(has_text=re.compile(rf"^{day}$")).first
-            if await day_btn.count() > 0:
-                await day_btn.click(timeout=3000)
-                return True
-            day_btn = page.get_by_role("button", name=re.compile(rf"^{day}$")).first
-            await day_btn.click(timeout=3000)
-            return True
-        except Exception as e:
-            logger.warning("Spring: date error: %s", e)
-            return False
-
-    async def _click_search(self, page) -> None:
-        for label in ["Search", "SEARCH", "Search Flights", "Find Flights", "搜索航班"]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=5000)
-                    return
-            except Exception:
-                continue
-        try:
-            await page.locator("button[type='submit']").first.click(timeout=3000)
-        except Exception:
-            await page.keyboard.press("Enter")
-
-    async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        try:
-            await asyncio.sleep(3)
-            data = await page.evaluate("""() => {
-                if (window.__NEXT_DATA__) return window.__NEXT_DATA__;
-                if (window.__NUXT__) return window.__NUXT__;
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    try { const d = JSON.parse(s.textContent);
-                        if (d && (d.flights || d.journeys || d.fares || d.availability)) return d;
-                    } catch {}
-                }
-                return null;
-            }""")
-            if data:
-                return self._parse_response(data, req)
-        except Exception:
-            pass
-        return []
-
-    def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
-        if isinstance(data, list):
-            data = {"flights": data}
-        booking_url = self._build_booking_url(req)
-        offers: list[FlightOffer] = []
-        flights_raw = (
-            data.get("outboundFlights") or data.get("outbound") or data.get("journeys")
-            or data.get("flights") or data.get("availability", {}).get("trips", [])
-            or data.get("data", {}).get("flights", []) or data.get("data", {}).get("journeys", [])
-            or data.get("lowFareAvailability", {}).get("outboundOptions", [])
-            or data.get("flightList", []) or data.get("tripOptions", []) or []
+        offers = self._parse_routes(data, req)
+        elapsed = time.monotonic() - t0
+        offers.sort(key=lambda o: o.price)
+        logger.info(
+            "Spring %s->%s returned %d offers in %.1fs",
+            req.origin, req.destination, len(offers), elapsed,
         )
-        if isinstance(flights_raw, dict):
-            flights_raw = flights_raw.get("outbound", []) or flights_raw.get("journeys", [])
-        if not isinstance(flights_raw, list):
-            flights_raw = []
-        for flight in flights_raw:
-            offer = self._parse_single_flight(flight, req, booking_url)
-            if offer:
-                offers.append(offer)
+
+        search_id = hashlib.md5(
+            f"spring{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
+        return FlightSearchResponse(
+            search_id=f"fs_{search_id}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=req.currency or "CNY",
+            offers=offers,
+            total_results=len(offers),
+        )
+
+    def _parse_routes(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+        raw_routes = data.get("Route", [])
+        if not raw_routes:
+            return []
+
+        booking_url = self._booking_url(req)
+        offers: list[FlightOffer] = []
+        currency = req.currency or "CNY"
+
+        for route in raw_routes:
+            if not isinstance(route, list) or not route:
+                continue
+
+            # Each route is a list of segment dicts (1 for direct, 2+ for connecting)
+            first = route[0]
+            price = first.get("MinCabinPrice") or first.get("MinCabinPriceForDisplay") or 0
+            if price <= 0:
+                continue
+
+            tax = first.get("RouteTotalTax", 0) or 0
+            total_price = price + tax
+
+            segments: list[FlightSegment] = []
+            stopovers_list = first.get("Stopovers", [])
+
+            if stopovers_list:
+                # Connecting flight — segments come from Stopovers
+                for stop in stopovers_list:
+                    segments.append(self._build_segment(stop, req))
+            else:
+                # Direct flight — build from the route itself
+                segments.append(self._build_segment(first, req))
+
+            if not segments:
+                continue
+
+            # Calculate total duration
+            total_dur = 0
+            flight_time = first.get("FlightsTime", "") or first.get("FlightTime", "")
+            if flight_time:
+                total_dur = self._parse_duration(flight_time)
+            elif segments[0].departure and segments[-1].arrival:
+                delta = segments[-1].arrival - segments[0].departure
+                total_dur = max(int(delta.total_seconds()), 0)
+
+            route_obj = FlightRoute(
+                segments=segments,
+                total_duration_seconds=total_dur,
+                stopovers=max(len(segments) - 1, 0),
+            )
+
+            seg_id = first.get("SegmentId", "")
+            fid = hashlib.md5(
+                f"9c_{req.origin}{req.destination}{seg_id}{price}".encode()
+            ).hexdigest()[:12]
+
+            offers.append(FlightOffer(
+                id=f"9c_{fid}",
+                price=round(total_price, 2),
+                currency=currency,
+                price_formatted=f"{total_price:.0f} {currency}",
+                outbound=route_obj,
+                inbound=None,
+                airlines=["Spring Airlines"],
+                owner_airline="9C",
+                booking_url=booking_url,
+                is_locked=False,
+                source="spring_direct",
+                source_tier="free",
+            ))
+
         return offers
 
-    def _parse_single_flight(self, flight: dict, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
-        best_price = self._extract_best_price(flight)
-        if best_price is None or best_price <= 0:
-            return None
-        segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
-        segments: list[FlightSegment] = []
-        if segments_raw and isinstance(segments_raw, list):
-            for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
-        else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
-        total_dur = 0
-        if segments and segments[0].departure and segments[-1].arrival:
-            total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
-        route = FlightRoute(segments=segments, total_duration_seconds=max(total_dur, 0), stopovers=max(len(segments) - 1, 0))
-        flight_key = flight.get("journeyKey") or flight.get("id") or f"{flight.get('departureDate', '')}_{time.monotonic()}"
-        return FlightOffer(
-            id=f"9c_{hashlib.md5(str(flight_key).encode()).hexdigest()[:12]}",
-            price=round(best_price, 2), currency=req.currency,
-            price_formatted=f"{best_price:.2f} {req.currency}",
-            outbound=route, inbound=None, airlines=["Spring Airlines"], owner_airline="9C",
-            booking_url=booking_url, is_locked=False, source="spring_direct", source_tier="free",
-        )
+    def _build_segment(self, seg: dict, req: FlightSearchRequest) -> FlightSegment:
+        flight_no = seg.get("No", "") or ""
+        origin_code = seg.get("DepartureCode") or seg.get("DepartureAirportCode") or req.origin
+        dest_code = seg.get("ArrivalCode") or seg.get("ArrivalAirportCode") or req.destination
+        dep_str = seg.get("DepartureTime") or seg.get("DepartureTimeBJ") or ""
+        arr_str = seg.get("ArrivalTime") or seg.get("ArrivalTimeBJ") or ""
+        aircraft = seg.get("Type", "") or ""
 
-    @staticmethod
-    def _extract_best_price(flight: dict) -> Optional[float]:
-        fares = flight.get("fares") or flight.get("fareProducts") or flight.get("bundles") or flight.get("fareBundles") or []
-        best = float("inf")
-        for fare in fares:
-            if isinstance(fare, dict):
-                for key in ["price", "amount", "totalPrice", "basePrice", "fareAmount", "totalAmount"]:
-                    val = fare.get(key)
-                    if isinstance(val, dict):
-                        val = val.get("amount") or val.get("value")
-                    if val is not None:
-                        try:
-                            v = float(val)
-                            if 0 < v < best:
-                                best = v
-                        except (TypeError, ValueError):
-                            pass
-        for key in ["price", "lowestFare", "totalPrice", "farePrice", "amount", "lowestPrice"]:
-            p = flight.get(key)
-            if p is not None:
-                try:
-                    v = float(p) if not isinstance(p, dict) else float(p.get("amount", 0))
-                    if 0 < v < best:
-                        best = v
-                except (TypeError, ValueError):
-                    pass
-        return best if best < float("inf") else None
+        dep_dt = self._parse_dt(dep_str)
+        arr_dt = self._parse_dt(arr_str)
+        dur = 0
+        if dep_dt and arr_dt:
+            dur = max(int((arr_dt - dep_dt).total_seconds()), 0)
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
-        dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
-        arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
-        flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
-        origin = seg.get("origin") or seg.get("departureStation") or seg.get("departureAirport") or default_origin
-        destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("arrivalAirport") or default_dest
-        carrier = seg.get("carrierCode") or seg.get("carrier") or seg.get("airline") or "9C"
         return FlightSegment(
-            airline=carrier, airline_name="Spring Airlines", flight_no=flight_no,
-            origin=origin, destination=destination,
-            departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str), cabin_class="M",
-        )
-
-    def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
-        offers.sort(key=lambda o: o.price)
-        logger.info("Spring %s→%s returned %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"spring{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency, offers=offers, total_results=len(offers),
+            airline="9C",
+            airline_name="Spring Airlines",
+            flight_no=flight_no,
+            origin=origin_code,
+            destination=dest_code,
+            departure=dep_dt or datetime(2000, 1, 1),
+            arrival=arr_dt or datetime(2000, 1, 1),
+            duration_seconds=dur,
+            cabin_class="economy",
+            aircraft=aircraft,
         )
 
     @staticmethod
-    def _parse_dt(s: Any) -> datetime:
-        if not s:
-            return datetime(2000, 1, 1)
-        s = str(s)
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            pass
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M"):
+    def _parse_duration(s: str) -> int:
+        """Parse '2 H 40 M' or '2H40M' to seconds."""
+        import re
+        m = re.search(r'(\d+)\s*[Hh]', s)
+        mins_match = re.search(r'(\d+)\s*[Mm]', s)
+        hours = int(m.group(1)) if m else 0
+        mins = int(mins_match.group(1)) if mins_match else 0
+        return hours * 3600 + mins * 60
+
+    @staticmethod
+    def _parse_dt(raw: str) -> Optional[datetime]:
+        if not raw:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
             try:
-                return datetime.strptime(s[:len(fmt) + 2], fmt)
+                return datetime.strptime(raw[:len(fmt) + 2], fmt)
             except (ValueError, IndexError):
                 continue
-        return datetime(2000, 1, 1)
+        return None
 
     @staticmethod
-    def _build_booking_url(req: FlightSearchRequest) -> str:
+    def _booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
         return (
-            f"https://global.ch.com/en/booking/search?origin={req.origin}"
-            f"&destination={req.destination}&departure={dep}&adults={req.adults}&tripType=OW"
+            f"https://en.ch.com/flights/{req.origin}-{req.destination}.html"
+            f"?departure={dep}&adults={req.adults}&tripType=OW"
         )
 
-    def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"spring{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+    @staticmethod
+    def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
+        search_id = hashlib.md5(
+            f"spring{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
         return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency, offers=[], total_results=0,
+            search_id=f"fs_{search_id}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=req.currency or "CNY",
+            offers=[],
+            total_results=0,
         )

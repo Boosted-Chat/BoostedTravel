@@ -1,28 +1,29 @@
 """
-Flair Airlines Playwright connector -- navigates to flyflair.com and searches flights.
+Flair Airlines httpx scraper -- fetches fare data from flights.flyflair.com
+(EveryMundo airTRFX platform).
 
 Flair Airlines (IATA: F8) is a Canadian ultra-low-cost carrier based in
-Edmonton, Alberta. Operates domestic Canadian and transborder US routes.
-Default currency CAD.
+Edmonton, Alberta. Operates domestic Canadian, transborder US, and
+Mexico/Caribbean routes. Default currency CAD.
 
 Strategy:
-1. Navigate to flyflair.com homepage
-2. Dismiss cookie consent banner
-3. Fill search form (origin, destination, date, one-way)
-4. Intercept API responses (availability/search endpoints)
-5. Parse results -> FlightOffers
+1. Map IATA codes to city slugs used by flights.flyflair.com
+2. Fetch route page: flights.flyflair.com/en-ca/flights-from-{origin}-to-{dest}
+3. Extract __NEXT_DATA__ JSON from page
+4. Parse StandardFareModule fares -> FlightOffers
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
+import json
 import logging
-import random
 import re
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
+
+import httpx
 
 from models.flights import (
     FlightOffer,
@@ -34,60 +35,56 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
-    {"width": 1280, "height": 720},
-]
-_LOCALES = ["en-CA", "en-US", "fr-CA", "en-GB"]
-_TIMEZONES = [
-    "America/Edmonton", "America/Toronto", "America/Vancouver",
-    "America/Winnipeg", "America/New_York",
-]
+# IATA code -> URL slug mapping for flights.flyflair.com route pages
+_IATA_TO_SLUG: dict[str, str] = {
+    # Canada
+    "YXX": "abbotsford",
+    "YYC": "calgary",
+    "YYG": "charlottetown",
+    "YEG": "edmonton",
+    "YHZ": "halifax",
+    "YLW": "kelowna",
+    "YKF": "kitchener-waterloo",
+    "YQM": "moncton",
+    "YUL": "montreal",
+    "YSJ": "saint-john",
+    "YYT": "st-johns",
+    "YQT": "thunder-bay",
+    "YYZ": "toronto",
+    "YVR": "vancouver",
+    "YYJ": "victoria-bc",
+    "YWG": "winnipeg",
+    # Caribbean
+    "PUJ": "punta-cana",
+    "KIN": "kingston",
+    "MBJ": "montego-bay",
+    # Mexico
+    "CUN": "cancun",
+    "GDL": "guadalajara",
+    "MEX": "mexico-city",
+    "PVR": "puerto-vallarta",
+    # USA
+    "FLL": "fort-lauderdale",
+    "LAS": "las-vegas",
+    "LAX": "los-angeles",
+    "MCO": "orlando",
+    "SFO": "san-francisco",
+}
 
-_pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-CA,en;q=0.9",
+}
 
-
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
-
-
-async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Flair: Playwright browser launched (headed Chrome)")
-        return _browser
+_BASE = "https://flights.flyflair.com/en-ca"
 
 
 class FlairConnectorClient:
-    """Flair Airlines Playwright connector -- homepage form search + API interception."""
+    """Flair Airlines httpx scraper -- flights.flyflair.com fare pages."""
 
-    def __init__(self, timeout: float = 45.0):
+    def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
 
     async def close(self):
@@ -95,462 +92,160 @@ class FlairConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-        )
 
-        try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
-
-            try:
-                cdp = await context.new_cdp_session(page)
-                await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
-            except Exception:
-                pass
-
-            captured_data: dict = {}
-            api_event = asyncio.Event()
-
-            async def on_response(response):
-                try:
-                    url = response.url.lower()
-                    if response.status == 200 and (
-                        "availability" in url
-                        or "flights/search" in url
-                        or "api/booking" in url
-                        or "search/results" in url
-                        or "offers" in url
-                        or "fares" in url
-                        or "shopping" in url
-                        or "/api/v1/" in url
-                        or "/api/flights" in url
-                        or "/api/nsk/" in url
-                    ):
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            if data and isinstance(data, (dict, list)):
-                                captured_data["json"] = data
-                                api_event.set()
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            logger.info("Flair: loading homepage for %s->%s", req.origin, req.destination)
-            await page.goto(
-                "https://flyflair.com",
-                wait_until="domcontentloaded",
-                timeout=int(self.timeout * 1000),
-            )
-            await asyncio.sleep(3.0)
-
-            await self._dismiss_cookies(page)
-            await asyncio.sleep(0.5)
-            await self._dismiss_cookies(page)
-
-            await self._set_one_way(page)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, "Origin", "From", "Depart from", req.origin, 0)
-            if not ok:
-                logger.warning("Flair: origin fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_airport_field(page, "Destination", "To", "Arrive at", req.destination, 1)
-            if not ok:
-                logger.warning("Flair: destination fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_date(page, req)
-            if not ok:
-                logger.warning("Flair: date fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.3)
-
-            await self._click_search(page)
-
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning("Flair: timed out waiting for API response")
-                offers = await self._extract_from_dom(page, req)
-                if offers:
-                    return self._build_response(offers, req, time.monotonic() - t0)
-                return self._empty(req)
-
-            data = captured_data.get("json", {})
-            if not data:
-                return self._empty(req)
-
-            elapsed = time.monotonic() - t0
-            offers = self._parse_response(data, req)
-            return self._build_response(offers, req, elapsed)
-
-        except Exception as e:
-            logger.error("Flair Playwright error: %s", e)
+        origin_slug = _IATA_TO_SLUG.get(req.origin)
+        dest_slug = _IATA_TO_SLUG.get(req.destination)
+        if not origin_slug or not dest_slug:
+            logger.warning("Flair: unmapped IATA code %s or %s", req.origin, req.destination)
             return self._empty(req)
-        finally:
-            await context.close()
 
-    async def _dismiss_cookies(self, page) -> None:
-        for label in [
-            "Accept", "Accept all", "Accept all cookies", "Accept cookies",
-            "I agree", "OK", "Got it", "Allow all",
-        ]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=2000)
-                    await asyncio.sleep(0.5)
-                    return
-            except Exception:
-                continue
+        url = f"{_BASE}/flights-from-{origin_slug}-to-{dest_slug}"
+        logger.info("Flair: fetching %s", url)
+
         try:
-            await page.evaluate("""() => {
-                document.querySelectorAll(
-                    '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], ' +
-                    '[class*="Cookie"], [id*="Cookie"], [class*="onetrust"], [id*="onetrust"], ' +
-                    '[class*="modal-overlay"], [class*="popup"], [id*="popup"]'
-                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-                document.body.style.overflow = 'auto';
-            }""")
-        except Exception:
-            pass
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers=_HEADERS,
+            ) as client:
+                resp = await client.get(url)
 
-    async def _set_one_way(self, page) -> None:
-        for label in ["One way", "One Way", "One-way", "One-Way"]:
-            try:
-                radio = page.get_by_role("radio", name=re.compile(rf"{re.escape(label)}", re.IGNORECASE))
-                if await radio.count() > 0:
-                    await radio.first.click(timeout=2000)
-                    return
-            except Exception:
-                continue
-        for label in ["One way", "One Way", "One-way"]:
-            try:
-                el = page.get_by_text(label, exact=False).first
-                if await el.count() > 0:
-                    await el.click(timeout=2000)
-                    return
-            except Exception:
-                continue
+            if resp.status_code != 200:
+                logger.warning("Flair: %s returned %d", url, resp.status_code)
+                return self._empty(req)
 
-    async def _fill_airport_field(self, page, label1: str, label2: str, label3: str, iata: str, index: int) -> bool:
-        try:
-            for role in ["combobox", "textbox"]:
-                for label in [label1, label2, label3]:
-                    field = page.get_by_role(role, name=re.compile(rf"{label}", re.IGNORECASE))
-                    if await field.count() > 0:
-                        await field.first.click(timeout=3000)
-                        await asyncio.sleep(0.3)
-                        await field.first.fill("")
-                        await asyncio.sleep(0.2)
-                        await field.first.fill(iata)
-                        await asyncio.sleep(2.5)
-                        for role2 in ["option", "button", "listitem", "link"]:
-                            try:
-                                option = page.get_by_role(role2, name=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                                if await option.count() > 0:
-                                    await option.click(timeout=3000)
-                                    return True
-                            except Exception:
-                                continue
-                        item = page.locator(
-                            "[class*='suggestion'], [class*='option'], [class*='result'], "
-                            "[class*='autocomplete'] li, [class*='dropdown'] li, "
-                            "[class*='airport'] li, [class*='station'] li"
-                        ).filter(has_text=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                        if await item.count() > 0:
-                            await item.click(timeout=3000)
-                            return True
-                        await page.keyboard.press("Enter")
-                        return True
+            fares = self._extract_fares(resp.text)
+            if not fares:
+                logger.warning("Flair: no fares found in page")
+                return self._empty(req)
+
+            offers = self._build_offers(fares, req)
+            elapsed = time.monotonic() - t0
+
+            offers.sort(key=lambda o: o.price)
+            logger.info(
+                "Flair %s->%s returned %d offers in %.1fs (httpx)",
+                req.origin, req.destination, len(offers), elapsed,
+            )
+
+            h = hashlib.md5(
+                f"flair{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+            return FlightSearchResponse(
+                search_id=f"fs_{h}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=offers[0].currency if offers else (req.currency or "CAD"),
+                offers=offers,
+                total_results=len(offers),
+            )
+
         except Exception as e:
-            logger.debug("Flair: %s field error: %s", label1, e)
+            logger.error("Flair httpx error: %s", e)
+            return self._empty(req)
+
+    @staticmethod
+    def _extract_fares(html: str) -> list[dict]:
+        """Extract fare dicts from __NEXT_DATA__ StandardFareModule."""
+        nd_match = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            html,
+        )
+        if not nd_match:
+            return []
+
         try:
-            inputs = page.locator("input[type='text'], input[type='search'], input[placeholder]")
-            if await inputs.count() > index:
-                field = inputs.nth(index)
-                await field.click(timeout=3000)
-                await field.fill("")
-                await asyncio.sleep(0.2)
-                await field.fill(iata)
-                await asyncio.sleep(2.5)
-                await page.keyboard.press("Enter")
-                return True
-        except Exception:
-            pass
-        return False
+            nd = json.loads(nd_match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            return []
 
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        target = req.date_from
-        try:
-            for name in ["Departure", "Depart", "Date", "Travel date"]:
-                field = page.get_by_role("textbox", name=re.compile(rf"{name}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    break
-            else:
-                date_el = page.locator("[class*='date'], [data-testid*='date'], [id*='date']").first
-                if await date_el.count() > 0:
-                    await date_el.click(timeout=3000)
-            await asyncio.sleep(0.8)
+        apollo = (
+            nd.get("props", {})
+            .get("pageProps", {})
+            .get("apolloState", {})
+            .get("data", {})
+        )
+        if not apollo:
+            return []
 
-            target_my = target.strftime("%B %Y")
-            for _ in range(12):
-                found = False
-                for variant in [target_my, target_my.upper(), target_my.lower()]:
-                    if await page.locator(f"text={variant}").first.count() > 0:
-                        found = True
-                        break
-                if found:
-                    break
-                try:
-                    fwd = page.get_by_role("button", name=re.compile(r"(next|forward|>|>>)", re.IGNORECASE))
-                    if await fwd.count() > 0:
-                        await fwd.first.click(timeout=2000)
-                        await asyncio.sleep(0.4)
-                        continue
-                except Exception:
-                    pass
-                try:
-                    fwd = page.locator("[class*='next'], [aria-label*='next'], [aria-label*='Next']").first
-                    await fwd.click(timeout=2000)
-                    await asyncio.sleep(0.4)
-                    continue
-                except Exception:
-                    break
-
-            day = target.day
-            day_label = f"{day} {target.strftime('%B')} {target.year}"
-            try:
-                day_btn = page.locator(f"[aria-label*='{day_label}'], [aria-label*='{target.strftime('%B')} {day}']").first
-                if await day_btn.count() > 0:
-                    await day_btn.click(timeout=3000)
-                    await asyncio.sleep(0.5)
-                    return True
-            except Exception:
-                pass
-            day_btn = page.locator(
-                "table button, .calendar button, [class*='calendar'] button, [class*='datepicker'] button"
-            ).filter(has_text=re.compile(rf"^{day}$")).first
-            if await day_btn.count() > 0:
-                await day_btn.click(timeout=3000)
-                await asyncio.sleep(0.5)
-                return True
-            day_btn = page.get_by_role("button", name=re.compile(rf"^{day}$")).first
-            await day_btn.click(timeout=3000)
-            await asyncio.sleep(0.5)
-            return True
-        except Exception as e:
-            logger.warning("Flair: date error: %s", e)
-            return False
-
-    async def _click_search(self, page) -> None:
-        for label in [
-            "Search flights", "Search", "SEARCH", "Find flights",
-            "Let's go", "Search Flights",
-        ]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=5000)
-                    logger.info("Flair: clicked search")
-                    return
-            except Exception:
-                continue
-        try:
-            await page.locator("button[type='submit']").first.click(timeout=3000)
-        except Exception:
-            await page.keyboard.press("Enter")
-
-    async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        try:
-            await asyncio.sleep(3)
-            data = await page.evaluate("""() => {
-                if (window.__NEXT_DATA__) return window.__NEXT_DATA__;
-                if (window.__NUXT__) return window.__NUXT__;
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    try {
-                        const d = JSON.parse(s.textContent);
-                        if (d && (d.flights || d.journeys || d.fares || d.availability)) return d;
-                    } catch {}
-                }
-                return null;
-            }""")
-            if data:
-                return self._parse_response(data, req)
-        except Exception:
-            pass
+        for v in apollo.values():
+            if isinstance(v, dict) and v.get("__typename") == "StandardFareModule":
+                fares = v.get("fares", [])
+                if fares and isinstance(fares, list):
+                    return [f for f in fares if isinstance(f, dict)]
         return []
 
-    def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
-        if isinstance(data, list):
-            data = {"flights": data}
-        currency = req.currency or "CAD"
+    def _build_offers(
+        self, fares: list[dict], req: FlightSearchRequest
+    ) -> list[FlightOffer]:
         booking_url = self._build_booking_url(req)
+        target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
 
-        flights_raw = (
-            data.get("outboundFlights")
-            or data.get("outbound")
-            or data.get("journeys")
-            or data.get("flights")
-            or data.get("data", {}).get("flights", [])
-            or []
-        )
-        trips = data.get("trips")
-        if trips and isinstance(trips, list) and len(trips) > 0:
-            dates = trips[0].get("dates") or []
-            for d in dates:
-                jnys = d.get("journeys") or []
-                if jnys:
-                    flights_raw = jnys
-                    break
-        if isinstance(flights_raw, dict):
-            flights_raw = flights_raw.get("outbound", []) or flights_raw.get("journeys", [])
-        if not isinstance(flights_raw, list):
-            flights_raw = []
-
-        for flight in flights_raw:
-            offer = self._parse_single_flight(flight, currency, req, booking_url)
-            if offer:
-                offers.append(offer)
-        return offers
-
-    def _parse_single_flight(self, flight: dict, currency: str, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
-        best_price = self._extract_best_price(flight)
-        if best_price is None or best_price <= 0:
-            return None
-
-        segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
-        segments: list[FlightSegment] = []
-        if segments_raw and isinstance(segments_raw, list):
-            for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
-        else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
-
-        total_dur = 0
-        if segments and segments[0].departure and segments[-1].arrival:
-            total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
-
-        route = FlightRoute(
-            segments=segments,
-            total_duration_seconds=max(total_dur, 0),
-            stopovers=max(len(segments) - 1, 0),
-        )
-        flight_key = flight.get("journeyKey") or flight.get("id") or f"{flight.get('departureDate', '')}_{time.monotonic()}"
-        return FlightOffer(
-            id=f"f8_{hashlib.md5(str(flight_key).encode()).hexdigest()[:12]}",
-            price=round(best_price, 2),
-            currency=currency,
-            price_formatted=f"{best_price:.2f} {currency}",
-            outbound=route,
-            inbound=None,
-            airlines=["Flair Airlines"],
-            owner_airline="F8",
-            booking_url=booking_url,
-            is_locked=False,
-            source="flair_direct",
-            source_tier="free",
-        )
-
-    @staticmethod
-    def _extract_best_price(flight: dict) -> Optional[float]:
-        fares = flight.get("fares") or flight.get("fareProducts") or flight.get("bundles") or flight.get("fareBundles") or []
-        best = float("inf")
         for fare in fares:
-            if isinstance(fare, dict):
-                pax_fares = fare.get("passengerFares") or fare.get("paxFares") or []
-                if pax_fares and isinstance(pax_fares, list):
-                    for pf in pax_fares:
-                        for key in ["fareAmount", "publishedFare", "fareTotal", "total"]:
-                            v = pf.get(key)
-                            if v is not None:
-                                try:
-                                    val = float(v)
-                                    if 0 < val < best:
-                                        best = val
-                                except (TypeError, ValueError):
-                                    pass
-                for key in ["price", "amount", "totalPrice", "basePrice", "fareAmount"]:
-                    val = fare.get(key)
-                    if isinstance(val, dict):
-                        val = val.get("amount") or val.get("value") or val.get("total")
-                    if val is not None:
-                        try:
-                            v = float(val)
-                            if 0 < v < best:
-                                best = v
-                        except (TypeError, ValueError):
-                            pass
-        for key in ["price", "lowestFare", "totalPrice", "farePrice", "amount"]:
-            p = flight.get(key)
-            if p is not None:
-                try:
-                    v = float(p) if not isinstance(p, dict) else float(p.get("amount", 0))
-                    if 0 < v < best:
-                        best = v
-                except (TypeError, ValueError):
-                    pass
-        return best if best < float("inf") else None
-
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
-        dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("std") or seg.get("designator", {}).get("departure", "")
-        arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("sta") or seg.get("designator", {}).get("arrival", "")
-        flight_no = str(
-            seg.get("flightNumber") or seg.get("flight_no") or seg.get("number")
-            or seg.get("identifier", {}).get("identifier", "")
-        ).replace(" ", "")
-        origin = seg.get("origin") or seg.get("departureStation") or seg.get("designator", {}).get("origin", default_origin)
-        destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("designator", {}).get("destination", default_dest)
-        return FlightSegment(
-            airline="F8", airline_name="Flair Airlines", flight_no=flight_no,
-            origin=origin, destination=destination,
-            departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
-        )
-
-    def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
-        offers.sort(key=lambda o: o.price)
-        logger.info("Flair %s->%s returned %d offers in %.1fs (Playwright)", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"flair{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=offers[0].currency if offers else (req.currency or "CAD"),
-            offers=offers, total_results=len(offers),
-        )
-
-    @staticmethod
-    def _parse_dt(s: Any) -> datetime:
-        if not s:
-            return datetime(2000, 1, 1)
-        s = str(s)
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            pass
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M"):
-            try:
-                return datetime.strptime(s[:len(fmt) + 2], fmt)
-            except (ValueError, IndexError):
+            price = fare.get("totalPrice")
+            if not price or price <= 0:
                 continue
-        return datetime(2000, 1, 1)
+
+            currency = fare.get("currencyCode") or req.currency or "CAD"
+            dep_date = fare.get("departureDate", "")
+            origin_code = fare.get("originAirportCode") or req.origin
+            dest_code = fare.get("destinationAirportCode") or req.destination
+
+            # Parse departure date for the segment
+            dep_dt = datetime(2000, 1, 1)
+            if dep_date:
+                try:
+                    dep_dt = datetime.strptime(dep_date, "%Y-%m-%d")
+                except ValueError:
+                    pass
+
+            segment = FlightSegment(
+                airline="F8",
+                airline_name="Flair Airlines",
+                flight_no="",
+                origin=origin_code,
+                destination=dest_code,
+                departure=dep_dt,
+                arrival=dep_dt,
+                duration_seconds=0,
+                cabin_class=fare.get("travelClass", "Economy").lower(),
+            )
+
+            route = FlightRoute(
+                segments=[segment],
+                total_duration_seconds=0,
+                stopovers=0,
+            )
+
+            fid = hashlib.md5(
+                f"f8_{origin_code}{dest_code}{dep_date}{price}".encode()
+            ).hexdigest()[:12]
+
+            # Use date-specific booking URL
+            dep_url = dep_date or target_date
+            offer_booking = (
+                f"https://flyflair.com/flights"
+                f"?from={origin_code}&to={dest_code}"
+                f"&depart={dep_url}&adults={req.adults}&children={req.children}"
+            )
+
+            offers.append(FlightOffer(
+                id=f"f8_{fid}",
+                price=round(price, 2),
+                currency=currency,
+                price_formatted=fare.get("formattedTotalPrice") or f"{price:.2f} {currency}",
+                outbound=route,
+                inbound=None,
+                airlines=["Flair Airlines"],
+                owner_airline="F8",
+                booking_url=offer_booking,
+                is_locked=False,
+                source="flair_direct",
+                source_tier="free",
+            ))
+
+        return offers
 
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
@@ -562,8 +257,14 @@ class FlairConnectorClient:
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"flair{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(
+            f"flair{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
         return FlightSearchResponse(
-            search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
-            currency=req.currency or "CAD", offers=[], total_results=0,
+            search_id=f"fs_{h}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=req.currency or "CAD",
+            offers=[],
+            total_results=0,
         )

@@ -1,30 +1,19 @@
 """
-SunExpress Playwright connector — homepage form fill + DOM extraction.
+SunExpress CDP Chrome scraper — homepage form fill + DOM extraction.
 
 SunExpress (IATA: XQ) is a Turkish-German low-cost carrier, a joint venture
 of Turkish Airlines and Lufthansa, operating from Turkey and Germany to
 leisure destinations across Europe, Middle East and North Africa.
 
-Strategy (verified Mar 2026):
-1. Navigate to sunexpress.com/en-gb homepage (establishes session + cookies)
-2. Dismiss OneTrust cookie banner ("Accept All Cookies" button)
-3. Click "One-way" toggle
-4. Fill origin: click "From" BUTTON → type IATA in combobox → click option
-5. Fill destination: combobox auto-opens → type IATA → click option
-6. Open date picker (.ibe-search_date-control click) — shows 3-month calendar
-7. Navigate calendar forward until target month visible, click day via JS
-8. Click "Search flights" button → waits for navigation to /booking/select/
-9. Wait for prices to appear in DOM (Angular SPA renders flight cards)
-10. Extract flights from DOM: times, duration, stops, prices
-
-Key UI details:
-  - Airport fields are BUTTONS (not combobox/textbox) — clicking opens an
-    overlay with a combobox search + listbox of options with role="option"
-  - Calendar: .v7-cal cells with month abbreviation prefix (e.g. "Apr  15")
-  - Results page: Angular 7 SPA, flight cards with departure/arrival times,
-    duration text ("4h", "6h 5m"), stop count, and prices
-  - No usable flight API — /booking/api/v1/booking returns {result: true}
-    and /pricing/api/v1/journeys only has calendar-level daily lowest prices
+Strategy (converted Mar 2026):
+1. Launch real system Chrome via CDP (persistent, avoids launch overhead)
+2. Navigate to sunexpress.com/en-gb homepage (establishes session + cookies)
+3. Dismiss OneTrust cookie banner ("Accept All Cookies" button)
+4. Click "One-way" toggle
+5. Fill origin/destination via combobox
+6. Navigate calendar to target month, click day
+7. Click "Search flights" → wait for /booking/select/
+8. Extract flights from Angular SPA DOM
 """
 
 from __future__ import annotations
@@ -32,8 +21,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -76,9 +67,20 @@ _MONTH_ABBRS = {
     7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
 }
 
-# ── Shared browser singleton ──────────────────────────────────────────────
+# ── CDP Chrome singleton ──────────────────────────────────────────────
+_CDP_PORT = 9453
+_USER_DATA_DIR = os.path.join(os.environ.get("TEMP", "/tmp"), "sunexpress_cdp_data")
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+]
+
+_chrome_proc: subprocess.Popen | None = None
 _pw_instance = None
-_browser = None
+_cdp_browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -89,33 +91,63 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _find_chrome() -> str:
+    for p in _CHROME_PATHS:
+        if os.path.isfile(p):
+            return p
+    raise FileNotFoundError("Chrome not found")
+
+
+def _launch_chrome():
+    global _chrome_proc
+    if _chrome_proc and _chrome_proc.poll() is None:
+        return
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    chrome = _find_chrome()
+    _chrome_proc = subprocess.Popen(
+        [
+            chrome,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    logger.info("SunExpress: Chrome launched on CDP port %d (pid=%d)", _CDP_PORT, _chrome_proc.pid)
+
+
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
+    """Shared real Chrome via CDP (launched once, reused across searches)."""
+    global _pw_instance, _cdp_browser
     lock = _get_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
+        if _cdp_browser and _cdp_browser.is_connected():
+            return _cdp_browser
+        _launch_chrome()
+        await asyncio.sleep(2)
         from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("SunExpress: Playwright browser launched (headed Chrome)")
-        return _browser
+        if not _pw_instance:
+            _pw_instance = await async_playwright().start()
+        for attempt in range(5):
+            try:
+                _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{_CDP_PORT}"
+                )
+                logger.info("SunExpress: connected to Chrome via CDP")
+                return _cdp_browser
+            except Exception:
+                if attempt < 4:
+                    await asyncio.sleep(1)
+        raise RuntimeError(f"SunExpress: cannot connect to Chrome CDP on port {_CDP_PORT}")
 
 
 class SunExpressConnectorClient:
-    """SunExpress Playwright connector — homepage form fill + DOM extraction."""
+    """SunExpress Playwright scraper — homepage form fill + DOM extraction."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -134,12 +166,7 @@ class SunExpressConnectorClient:
         )
 
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
+            page = await context.new_page()
 
             # ── Step 1: Load homepage (establishes session) ────────────
             logger.info("SunExpress: loading homepage for %s→%s", req.origin, req.destination)

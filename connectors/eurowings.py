@@ -1,25 +1,17 @@
 """
-Eurowings Playwright connector — navigates to Eurowings homepage and searches flights.
+Eurowings CDP Chrome scraper — navigates to Eurowings homepage and searches flights.
 
 The direct API is behind WAF (Akamai) — requires browser session.
+Real Chrome via CDP passes Akamai better than Playwright's bundled Chromium.
 
-Strategy (verified Jul 2025):
-1. Navigate to eurowings.com/en.html homepage
-2. Dismiss cookie banner (#onetrust-accept-btn-handler)
-3. Remove blocking overlay (.o-layer__overlay) and login panel via JS
-4. Fill departure: click button:has-text("Departure airport") [aria-haspopup="dialog"]
-   → dialog opens with autocomplete input (id like autocomplete-v-N)
-   → type IATA code → select from button.list-option matching code
-5. Fill destination: same pattern with "Destination airport"
-6. Fill date: click button:has-text("Outgoing flight") → date input DD/MM/YY
-   → press Enter to confirm
-7. Close any popover overlays (_popoverOverlay_*) via JS
-8. Click button "Search for flight" (class button--primary _submitButton_*)
-9. Wait for API response interception or use results page
-10. Parse results → FlightOffers
-
-Eurowings uses Vue.js with modal dialogs (aria-haspopup="dialog") for airport
-selection — inputs are readonly, must click trigger buttons. Date uses DD/MM/YY format.
+Strategy (converted Mar 2026):
+1. Launch real system Chrome via CDP (persistent, passes Akamai better)
+2. Navigate to eurowings.com/en.html homepage
+3. Dismiss cookie banner, remove overlays
+4. Fill departure/destination via autocomplete dialogs
+5. Fill date
+6. Click search, intercept API response
+7. Parse results → FlightOffers
 """
 
 from __future__ import annotations
@@ -28,8 +20,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -53,8 +47,19 @@ _VIEWPORTS = [
 _LOCALES = ["en-GB", "en-US", "en-DE"]
 _TIMEZONES = ["Europe/London", "Europe/Berlin", "Europe/Paris", "Europe/Vienna"]
 
+_CDP_PORT = 9455
+_USER_DATA_DIR = os.path.join(os.environ.get("TEMP", "/tmp"), "eurowings_cdp_data")
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+]
+
+_chrome_proc: subprocess.Popen | None = None
 _pw_instance = None
-_browser = None
+_cdp_browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -65,33 +70,63 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _find_chrome() -> str:
+    for p in _CHROME_PATHS:
+        if os.path.isfile(p):
+            return p
+    raise FileNotFoundError("Chrome not found")
+
+
+def _launch_chrome():
+    global _chrome_proc
+    if _chrome_proc and _chrome_proc.poll() is None:
+        return
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    chrome = _find_chrome()
+    _chrome_proc = subprocess.Popen(
+        [
+            chrome,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    logger.info("Eurowings: Chrome launched on CDP port %d (pid=%d)", _CDP_PORT, _chrome_proc.pid)
+
+
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
+    """Shared real Chrome via CDP (launched once, reused across searches)."""
+    global _pw_instance, _cdp_browser
     lock = _get_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
+        if _cdp_browser and _cdp_browser.is_connected():
+            return _cdp_browser
+        _launch_chrome()
+        await asyncio.sleep(2)
         from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Eurowings: Playwright browser launched (headed Chrome)")
-        return _browser
+        if not _pw_instance:
+            _pw_instance = await async_playwright().start()
+        for attempt in range(5):
+            try:
+                _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{_CDP_PORT}"
+                )
+                logger.info("Eurowings: connected to Chrome via CDP")
+                return _cdp_browser
+            except Exception:
+                if attempt < 4:
+                    await asyncio.sleep(1)
+        raise RuntimeError(f"Eurowings: cannot connect to Chrome CDP on port {_CDP_PORT}")
 
 
 class EurowingsConnectorClient:
-    """Eurowings Playwright connector — homepage form search + API interception."""
+    """Eurowings Playwright scraper — homepage form search + API interception."""
 
     def __init__(self, timeout: float = 60.0):
         self.timeout = timeout
@@ -162,7 +197,7 @@ class EurowingsConnectorClient:
             elapsed = time.monotonic() - t0
             return self._build_response(offers, req, elapsed) if offers else self._empty(req)
         except Exception as exc:
-            logger.warning("Eurowings connector error: %s", exc)
+            logger.warning("Eurowings scraper error: %s", exc)
             return self._empty(req)
         finally:
             try:

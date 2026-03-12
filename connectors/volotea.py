@@ -1,21 +1,21 @@
 """
-Volotea Playwright connector — homepage form-fill + API interception.
+Volotea hybrid scraper — static schedule JSON API + Playwright fallback.
 
 Volotea (V7) is a Spanish LCC based in Asturias, operating point-to-point
 routes across Southern Europe (France, Italy, Spain, Greece, North Africa).
 German routes are co-branded as Eurowings Discover (eurowings.volotea.com).
 
-Strategy:
-1. Navigate to www.volotea.com/en/ homepage.
-2. Dismiss OneTrust cookie banner.
-3. Fill the search form: origin, destination, one-way, date.
-4. Click "Search flights" — this triggers a search API call.
-5. Intercept the SearchFlights API response (returns full flight data as JSON).
-6. Parse payload.trips[].schedules[].journeys[] for flights.
+Strategy (hybrid, updated Mar 2026):
+  1. PRIMARY (no auth needed, ~0.5-1s):
+     GET https://json.volotea.com/dist/schedule/{ORIGIN}-{DEST}_schedule.json
+     Returns full flight data with prices, fares, seats, times.
+     Response: {"{ORIGIN}-{DEST}": [{Departure, Arrival, FlightNumber, CarrierCode,
+                Prices: [{Price, PriceWithFee, FareType, Currency}], AvailableSeats, ...}]}
+     Datetime format: YYYYMMDDTHHMM (e.g. 202603120810)
+  2. FALLBACK: Full Playwright homepage form-fill + API interception (old path).
 
-NOTE: Direct URL navigation to book.volotea.com triggers Akamai WAF 403 on the
-flights/search API endpoint. The homepage form uses a different, unblocked API
-path (/voe/eurowings/api/v1/search/flights/SearchFlights).
+  Note: The schedule JSON URL uses the ORIGIN-DEST direction. If that 404s,
+  try DEST-ORIGIN (the JSON often contains both directions in one file).
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
+from curl_cffi import requests as cffi_requests
+
 from models.flights import (
     FlightOffer,
     FlightRoute,
@@ -38,6 +40,9 @@ from models.flights import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SCHEDULE_URL = "https://json.volotea.com/dist/schedule/{route}_schedule.json"
+_IMPERSONATE = "chrome124"
 
 _VIEWPORTS = [
     {"width": 1366, "height": 768},
@@ -94,7 +99,7 @@ async def _get_browser():
 
 
 class VoloteaConnectorClient:
-    """Volotea Playwright connector — homepage form-fill + API interception."""
+    """Volotea hybrid scraper — static schedule JSON + Playwright fallback."""
 
     def __init__(self, timeout: float = 50.0):
         self.timeout = timeout
@@ -103,7 +108,239 @@ class VoloteaConnectorClient:
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """
+        Search Volotea flights via static schedule JSON API.
+
+        Fast path (~0.5-1s): curl_cffi GET to json.volotea.com schedule endpoint.
+        Fallback: Full Playwright homepage form-fill + interception.
+        """
         t0 = time.monotonic()
+
+        # Try direct API first (no auth needed)
+        offers = await self._api_search(req)
+
+        if offers is not None:
+            elapsed = time.monotonic() - t0
+            if offers:
+                offers.sort(key=lambda o: o.price)
+            logger.info(
+                "Volotea %s→%s returned %d offers in %.1fs (schedule API)",
+                req.origin, req.destination, len(offers), elapsed,
+            )
+            search_hash = hashlib.md5(
+                f"volotea{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+            return FlightSearchResponse(
+                search_id=f"fs_{search_hash}",
+                origin=req.origin, destination=req.destination,
+                currency=offers[0].currency if offers else (req.currency or "EUR"),
+                offers=offers, total_results=len(offers),
+            )
+
+        # Fallback to Playwright
+        logger.info("Volotea: schedule API failed, falling back to Playwright")
+        return await self._playwright_fallback(req, t0)
+
+    # ------------------------------------------------------------------
+    # Direct API via curl_cffi (static schedule JSON)
+    # ------------------------------------------------------------------
+
+    async def _api_search(
+        self, req: FlightSearchRequest,
+    ) -> Optional[list[FlightOffer]]:
+        """Fetch Volotea schedule JSON via curl_cffi."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._api_search_sync, req)
+
+    def _api_search_sync(
+        self, req: FlightSearchRequest,
+    ) -> Optional[list[FlightOffer]]:
+        """Synchronous curl_cffi schedule fetch."""
+        route_key = f"{req.origin}-{req.destination}"
+        reverse_key = f"{req.destination}-{req.origin}"
+
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+
+        # Try primary direction
+        data = self._fetch_schedule(sess, route_key)
+
+        # If 404, try reverse direction (file often contains both)
+        if data is None:
+            data = self._fetch_schedule(sess, reverse_key)
+
+        if data is None:
+            return None
+
+        # The JSON is a dict like {"ATH-BCN": [...], "BCN-ATH": [...]}
+        flights = None
+        if isinstance(data, dict):
+            flights = data.get(route_key)
+            if not flights:
+                # Try case variations
+                for key in data:
+                    if key.upper() == route_key.upper():
+                        flights = data[key]
+                        break
+        elif isinstance(data, list):
+            flights = data
+
+        if not flights or not isinstance(flights, list):
+            return []
+
+        # Filter to target date and parse
+        target_date = req.date_from.strftime("%Y%m%d")
+        booking_url = self._build_booking_url(req)
+        offers: list[FlightOffer] = []
+
+        for flight in flights:
+            if not isinstance(flight, dict):
+                continue
+            dep_str = flight.get("Departure", "")
+            if not dep_str.startswith(target_date):
+                continue
+
+            parsed = self._parse_schedule_flight(flight, req, booking_url)
+            if parsed:
+                offers.extend(parsed)
+
+        return offers
+
+    def _fetch_schedule(self, sess, route_key: str) -> Optional[dict]:
+        """Fetch a single schedule JSON file."""
+        url = _SCHEDULE_URL.format(route=route_key)
+        try:
+            r = sess.get(url, timeout=10)
+        except Exception as e:
+            logger.error("Volotea: schedule fetch error: %s", e)
+            return None
+
+        if r.status_code == 404:
+            return None
+        if r.status_code != 200:
+            return None
+
+        ct = r.headers.get("content-type", "")
+        if "json" not in ct:
+            return None
+
+        try:
+            return r.json()
+        except Exception:
+            return None
+
+    def _parse_schedule_flight(
+        self, flight: dict, req: FlightSearchRequest, booking_url: str,
+    ) -> list[FlightOffer]:
+        """Parse a single flight from the schedule JSON.
+
+        Each flight has multiple Prices (fare bundles).
+        Format: {Departure: "202603120810", Arrival: "202603121025",
+                 FlightNumber: "5004", CarrierCode: "V7",
+                 Prices: [{Price: 214.45, PriceWithFee: 214.45, FareType: "AE", Currency: "EUR"}],
+                 AvailableSeats: 180, BookingClass: "K"}
+        """
+        prices_raw = flight.get("Prices", [])
+        if not prices_raw:
+            return []
+
+        carrier = flight.get("CarrierCode", "V7")
+        flight_no = f"{carrier}{flight.get('FlightNumber', '')}"
+        dep_dt = self._parse_schedule_dt(flight.get("Departure", ""))
+        arr_dt = self._parse_schedule_dt(flight.get("Arrival", ""))
+
+        segment = FlightSegment(
+            airline=carrier,
+            airline_name="Volotea",
+            flight_no=flight_no,
+            origin=req.origin,
+            destination=req.destination,
+            departure=dep_dt,
+            arrival=arr_dt,
+            cabin_class="M",
+        )
+
+        total_dur = 0
+        if dep_dt and arr_dt and arr_dt > dep_dt:
+            total_dur = int((arr_dt - dep_dt).total_seconds())
+
+        route = FlightRoute(
+            segments=[segment],
+            total_duration_seconds=max(total_dur, 0),
+            stopovers=0,
+        )
+
+        # Check for connection flights
+        conn = flight.get("ConnectionInformation")
+        if conn and isinstance(conn, dict):
+            # Has a connection — build multi-segment route
+            conn_dep = self._parse_schedule_dt(conn.get("Departure", ""))
+            conn_arr = self._parse_schedule_dt(conn.get("Arrival", ""))
+            conn_origin = conn.get("DepartureStation", req.destination)
+            conn_dest = conn.get("ArrivalStation", req.destination)
+            conn_carrier = conn.get("CarrierCode", carrier)
+            conn_flight_no = f"{conn_carrier}{conn.get('FlightNumber', '')}"
+
+            segment2 = FlightSegment(
+                airline=conn_carrier, airline_name="Volotea",
+                flight_no=conn_flight_no,
+                origin=conn_origin, destination=conn_dest,
+                departure=conn_dep, arrival=conn_arr,
+                cabin_class="M",
+            )
+            route = FlightRoute(
+                segments=[segment, segment2],
+                total_duration_seconds=max(int((conn_arr - dep_dt).total_seconds()), 0) if conn_arr > dep_dt else 0,
+                stopovers=1,
+            )
+
+        offers: list[FlightOffer] = []
+        for price_entry in prices_raw:
+            if not isinstance(price_entry, dict):
+                continue
+            price = price_entry.get("PriceWithFee") or price_entry.get("Price")
+            if price is None or price <= 0:
+                continue
+            currency = price_entry.get("Currency", "EUR")
+            fare_type = price_entry.get("FareType", "")
+            fare_basis = price_entry.get("FareBasis", "")
+
+            offer_key = f"{flight_no}_{fare_type}_{fare_basis}_{price}"
+            offers.append(FlightOffer(
+                id=f"v7_{hashlib.md5(offer_key.encode()).hexdigest()[:12]}",
+                price=round(float(price), 2),
+                currency=currency,
+                price_formatted=f"{price:.2f} {currency}",
+                outbound=route,
+                inbound=None,
+                airlines=["Volotea"],
+                owner_airline=carrier,
+                booking_url=booking_url,
+                is_locked=False,
+                source="volotea_direct",
+                source_tier="free",
+            ))
+
+        return offers
+
+    @staticmethod
+    def _parse_schedule_dt(s: str) -> datetime:
+        """Parse Volotea schedule datetime: YYYYMMDDTHHMM or YYYYMMDDHHMM."""
+        if not s:
+            return datetime(2000, 1, 1)
+        s = s.replace("T", "")  # normalize
+        m = re.match(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})", s)
+        if m:
+            return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4]), int(m[5]))
+        return datetime(2000, 1, 1)
+
+    # ------------------------------------------------------------------
+    # Playwright fallback
+    # ------------------------------------------------------------------
+
+    async def _playwright_fallback(
+        self, req: FlightSearchRequest, t0: float,
+    ) -> FlightSearchResponse:
+        """Full Playwright form-fill + API interception as fallback."""
         browser = await _get_browser()
         context = await browser.new_context(
             viewport=random.choice(_VIEWPORTS),

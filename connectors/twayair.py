@@ -1,31 +1,47 @@
 """
-T'way Air Playwright connector — browser automation to bypass WAF.
+T'way Air scraper — nodriver + AJAX lowest-fare API.
 
-T'way Air (IATA: TW) is a South Korean LCC.
-Website: www.twayair.com — English at /app/main (default is Korean).
+T'way Air (IATA: TW) is a South Korean LCC operating domestic (GMP/ICN↔CJU/PUS)
+and international flights to Japan, Taiwan, Vietnam, Thailand, Philippines, Guam.
 
-Homepage observations (Mar 2026):
-- Korean-language default; /app/main path
-- Cookie banner: "모든 쿠키 허용" (Accept all cookies)
-- Trip type: 왕복 (roundtrip) / 편도 (oneway)
-- Origin/destination input fields
-- Calendar-based date picker
+Website: www.twayair.com — Java/Spring MVC + jQuery, protected by Akamai Bot Manager.
+Uses nodriver (undetected-chromedriver) as primary Akamai bypass, with CDP Chrome
+fallback for when persistent profile has warm Akamai cookies.
 
-Strategy:
-1. Navigate to twayair.com/app/main (with English locale)
-2. Dismiss cookie banner (Korean + English labels)
-3. Fill search form (From/To/Departure, One-way)
-4. Intercept API responses (availability / fares)
-5. Parse JSON → FlightOffer objects
+Strategy (discovered & verified Mar 2026):
+1. Launch nodriver browser → navigates to www.twayair.com/app/main
+   → Akamai may block first load; retry navigates again after delay
+   → Session cookies: _abck, bm_*, ak_bmsc granted after challenge
+2. Extract CSRF token from <meta name="_csrf"> and header name from <meta name="_csrf_header">
+3. POST /ajax/booking/getLowestFare via synchronous XHR in page context
+   → Parameters: tripType=OW, bookingType=INT/DOM, currency, depAirport, arrAirport
+   → CSRF sent via header (name from _csrf_header meta tag)
+   → Returns JSON: {"routeSaleYnMap": {...}, "OW": {"YYYYMMDD": "pipe|delimited|fare"}}
+4. Parse OW dict values (pipe-delimited) → FlightOffer objects
+
+Fare data format (pipe-delimited string per date key in OW dict):
+  Field 0: Date (YYYYMMDD)
+  Field 1: Departure airport (IATA)
+  Field 2: Arrival airport (IATA)
+  Field 3: Sold out (N/Y)
+  Field 4: Business sold out (N/Y)
+  Field 5: Operates (Y/N)
+  Field 6: Business operates (Y/N)
+  Field 7: Base fare (float, e.g. 7500.0)
+  Field 8: Total fare incl. taxes (float, e.g. 19200.0)
+  Field 9: Fare class name (e.g. SmartFare, NormalFare)
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -40,56 +56,205 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_VIEWPORTS = [
-    {"width": 1366, "height": 768},
-    {"width": 1440, "height": 900},
-    {"width": 1536, "height": 864},
-    {"width": 1920, "height": 1080},
-    {"width": 1280, "height": 720},
-    {"width": 1600, "height": 900},
-]
-_LOCALES = ["en-US", "en-GB", "ko-KR", "en-KR"]
-_TIMEZONES = [
-    "Asia/Seoul", "Asia/Tokyo", "Asia/Shanghai",
-    "Asia/Taipei", "Asia/Bangkok",
-]
+_MAX_ATTEMPTS = 2
 
+# Domestic routes (within South Korea) use bookingType=DOM, currency=KRW
+_DOMESTIC_AIRPORTS = {"GMP", "ICN", "CJU", "PUS", "TAE", "KWJ", "RSU", "USN", "MWX", "HIN", "WJU", "YNY", "KPO", "KUV"}
+
+# Currency mapping by destination country
+_COUNTRY_CURRENCY = {
+    "JP": "JPY", "KR": "KRW", "TW": "TWD", "VN": "VND",
+    "TH": "THB", "PH": "PHP", "SG": "SGD", "GU": "USD",
+    "HK": "HKD", "MO": "MOP", "CN": "CNY",
+}
+
+# nodriver browser singleton
+_nd_browser = None
+_nd_lock: Optional[asyncio.Lock] = None
+
+# CDP Chrome fallback
+_DEBUG_PORT = 9451
+_USER_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".twayair_chrome_data")
 _pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
+_cdp_browser = None
+_chrome_proc = None
+_cdp_lock: Optional[asyncio.Lock] = None
 
 
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
+def _get_nd_lock() -> asyncio.Lock:
+    global _nd_lock
+    if _nd_lock is None:
+        _nd_lock = asyncio.Lock()
+    return _nd_lock
 
 
-async def _get_browser():
-    global _pw_instance, _browser
-    lock = _get_lock()
+def _get_cdp_lock() -> asyncio.Lock:
+    global _cdp_lock
+    if _cdp_lock is None:
+        _cdp_lock = asyncio.Lock()
+    return _cdp_lock
+
+
+async def _get_nodriver_page():
+    """Launch nodriver, navigate to T'way homepage, retry on Akamai block.
+
+    Returns a nodriver page with valid Akamai session, or None if blocked.
+    """
+    global _nd_browser
+    lock = _get_nd_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
-        _pw_instance = await async_playwright().start()
         try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False, channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
+            import nodriver as uc
+        except ImportError:
+            logger.warning("TwayAir: nodriver not installed, skipping")
+            return None
+
+        try:
+            _nd_browser = await uc.start(
                 headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                browser_args=["--window-size=1440,900"],
             )
-        logger.info("TwayAir: Playwright browser launched (headed Chrome)")
-        return _browser
+        except Exception as e:
+            logger.warning("TwayAir: nodriver start failed: %s", e)
+            return None
+
+        page = await _nd_browser.get("https://www.twayair.com/app/main")
+        await asyncio.sleep(5)
+
+        title = await page.evaluate("document.title")
+        if "denied" in str(title).lower():
+            logger.info("TwayAir: Akamai blocked first load, retrying...")
+            await asyncio.sleep(5)
+            page = await _nd_browser.get("https://www.twayair.com/app/main")
+            await asyncio.sleep(8)
+            title = await page.evaluate("document.title")
+            if "denied" in str(title).lower():
+                logger.warning("TwayAir: Akamai blocked after retry")
+                return None
+
+        # Dismiss popups
+        try:
+            await page.evaluate("""
+                document.querySelectorAll('[class*="popup"], [class*="modal"], [class*="layer_popup"], [class*="dim"]')
+                    .forEach(el => { if (el.offsetHeight > 0) el.remove(); });
+                document.body.style.overflow = 'auto';
+            """)
+        except Exception:
+            pass
+        # Wait for Akamai sensor script to finish — too short causes 403 on AJAX
+        await asyncio.sleep(3)
+
+        return page
+
+
+def _find_chrome() -> Optional[str]:
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+async def _get_cdp_page(timeout_ms: int):
+    """CDP Chrome fallback — persistent profile with warm Akamai cookies.
+
+    Returns (page, context) or (None, None) on failure.
+    """
+    global _pw_instance, _cdp_browser, _chrome_proc
+    lock = _get_cdp_lock()
+    async with lock:
+        if _cdp_browser:
+            try:
+                if not _cdp_browser.is_connected():
+                    _cdp_browser = None
+            except Exception:
+                _cdp_browser = None
+
+        if not _cdp_browser:
+            from playwright.async_api import async_playwright
+
+            if _pw_instance:
+                try:
+                    await _pw_instance.stop()
+                except Exception:
+                    pass
+            _pw_instance = await async_playwright().start()
+
+            chrome_path = _find_chrome()
+            if not chrome_path:
+                return None, None
+
+            os.makedirs(_USER_DATA_DIR, exist_ok=True)
+            try:
+                _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://localhost:{_DEBUG_PORT}"
+                )
+            except Exception:
+                _chrome_proc = subprocess.Popen(
+                    [
+                        chrome_path,
+                        f"--remote-debugging-port={_DEBUG_PORT}",
+                        f"--user-data-dir={_USER_DATA_DIR}",
+                        "--window-size=1440,900",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-background-networking",
+                        "about:blank",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                await asyncio.sleep(2.5)
+                try:
+                    _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                        f"http://localhost:{_DEBUG_PORT}"
+                    )
+                except Exception as e:
+                    logger.warning("TwayAir: CDP connect failed: %s", e)
+                    if _chrome_proc:
+                        _chrome_proc.terminate()
+                        _chrome_proc = None
+                    return None, None
+
+        context = await _cdp_browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            locale="ko-KR",
+            timezone_id="Asia/Seoul",
+            service_workers="block",
+        )
+        try:
+            from playwright_stealth import stealth_async
+            page = await context.new_page()
+            await stealth_async(page)
+        except ImportError:
+            page = await context.new_page()
+
+        await page.goto(
+            "https://www.twayair.com/app/main",
+            wait_until="domcontentloaded",
+            timeout=timeout_ms,
+        )
+        await asyncio.sleep(3.0)
+
+        title = await page.title()
+        if "denied" in title.lower():
+            logger.warning("TwayAir: Akamai blocked CDP Chrome")
+            await context.close()
+            return None, None
+
+        return page, context
 
 
 class TwayAirConnectorClient:
-    """T'way Air Playwright connector — homepage form search + API interception."""
+    """T'way Air scraper — nodriver primary, CDP Chrome fallback, AJAX fare API."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -99,425 +264,304 @@ class TwayAirConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-            color_scheme=random.choice(["light", "dark", "no-preference"]),
-        )
+
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                offers = await self._attempt_search(req, t0)
+                if offers is not None:
+                    elapsed = time.monotonic() - t0
+                    return self._build_response(offers, req, elapsed)
+                logger.warning("TwayAir: attempt %d/%d got no results", attempt, _MAX_ATTEMPTS)
+            except Exception as e:
+                logger.warning("TwayAir: attempt %d/%d error: %s", attempt, _MAX_ATTEMPTS, e)
+
+        return self._empty(req)
+
+    async def _attempt_search(self, req: FlightSearchRequest, t0: float) -> Optional[list[FlightOffer]]:
+        # Strategy 1: nodriver (best Akamai bypass)
+        result = await self._attempt_nodriver(req)
+        if result is not None:
+            return result
+
+        # Strategy 2: CDP Chrome with persistent profile (may have warm Akamai cookies)
+        logger.info("TwayAir: nodriver failed, trying CDP Chrome fallback")
+        return await self._attempt_cdp(req)
+
+    async def _attempt_nodriver(self, req: FlightSearchRequest) -> Optional[list[FlightOffer]]:
+        page = await _get_nodriver_page()
+        if not page:
+            return None
+
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
+            csrf_info = await page.evaluate("""
+                (() => {
+                    const csrfMeta = document.querySelector('meta[name="_csrf"]');
+                    const headerMeta = document.querySelector('meta[name="_csrf_header"]');
+                    const csrfInput = document.querySelector('input[name="_csrf"]');
+                    return {
+                        token: csrfMeta ? csrfMeta.getAttribute('content') : (csrfInput ? csrfInput.value : ''),
+                        header: headerMeta ? headerMeta.getAttribute('content') : 'X-CSRF-TOKEN'
+                    };
+                })()
+            """)
 
-            try:
-                cdp = await context.new_cdp_session(page)
-                await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
-            except Exception:
-                pass
+            csrf_token = csrf_info.get("token", "") if isinstance(csrf_info, dict) else ""
+            csrf_header = csrf_info.get("header", "X-CSRF-TOKEN") if isinstance(csrf_info, dict) else "X-CSRF-TOKEN"
 
-            captured_data: dict = {}
-            api_event = asyncio.Event()
+            is_domestic = req.origin in _DOMESTIC_AIRPORTS and req.destination in _DOMESTIC_AIRPORTS
+            booking_type = "DOM" if is_domestic else "INT"
+            currency = self._determine_currency(req, is_domestic)
 
-            async def on_response(response):
-                try:
-                    url = response.url.lower()
-                    if response.status == 200 and (
-                        "availability" in url or "/api/flights" in url
-                        or "/api/search" in url or "search/flights" in url
-                        or "flights/search" in url or "fares" in url
-                        or "offers" in url or "low-fare" in url
-                        or "flight-search" in url or "flightsearch" in url
-                        or "booking" in url and "search" in url
-                        or "shopping" in url or "schedule" in url
-                    ):
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            if data and isinstance(data, (dict, list)):
-                                captured_data["json"] = data
-                                api_event.set()
-                except Exception:
-                    pass
+            body = f"tripType=OW&bookingType={booking_type}&currency={currency}&depAirport={req.origin}&arrAirport={req.destination}&baseDeptAirportCode={req.origin}&_csrf={csrf_token}"
 
-            page.on("response", on_response)
+            logger.info("TwayAir [nodriver]: calling getLowestFare (%s→%s, %s, %s)",
+                        req.origin, req.destination, booking_type, currency)
 
-            logger.info("TwayAir: loading homepage for %s→%s", req.origin, req.destination)
-            await page.goto("https://www.twayair.com/app/main",
-                            wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
-            await asyncio.sleep(3.0)
+            # Use synchronous XHR — nodriver page.evaluate returns None for async fetch
+            js = """
+                (() => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', '/ajax/booking/getLowestFare', false);
+                    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                    xhr.setRequestHeader('""" + csrf_header + """', '""" + csrf_token + """');
+                    xhr.send('""" + body + """');
+                    return JSON.stringify({status: xhr.status, text: xhr.responseText});
+                })()
+            """
+            raw = await page.evaluate(js)
 
-            await self._dismiss_cookies(page)
-            await asyncio.sleep(0.5)
-            await self._dismiss_cookies(page)
+            if not raw:
+                logger.warning("TwayAir [nodriver]: XHR returned null")
+                return None
 
-            await self._set_one_way(page)
-            await asyncio.sleep(0.5)
+            result = json.loads(raw) if isinstance(raw, str) else raw
+            status = result.get("status", 0)
+            text = result.get("text", "")
 
-            ok = await self._fill_airport_field(page, req.origin, 0)
-            if not ok:
-                logger.warning("TwayAir: origin fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
+            if status != 200 or not text:
+                logger.warning("TwayAir [nodriver]: HTTP %d, body=%d bytes", status, len(text))
+                return None
 
-            ok = await self._fill_airport_field(page, req.destination, 1)
-            if not ok:
-                logger.warning("TwayAir: destination fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.5)
-
-            ok = await self._fill_date(page, req)
-            if not ok:
-                logger.warning("TwayAir: date fill failed")
-                return self._empty(req)
-            await asyncio.sleep(0.3)
-
-            await self._click_search(page)
-
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning("TwayAir: timed out waiting for API response")
-                offers = await self._extract_from_dom(page, req)
-                if offers:
-                    return self._build_response(offers, req, time.monotonic() - t0)
-                return self._empty(req)
-
-            data = captured_data.get("json", {})
-            if not data:
-                return self._empty(req)
-
-            elapsed = time.monotonic() - t0
-            offers = self._parse_response(data, req)
-            return self._build_response(offers, req, elapsed)
+            return self._parse_fare_response(text, req, currency)
 
         except Exception as e:
-            logger.error("TwayAir Playwright error: %s", e)
-            return self._empty(req)
-        finally:
-            await context.close()
+            logger.warning("TwayAir [nodriver]: error: %s", e)
+            return None
 
-    async def _dismiss_cookies(self, page) -> None:
-        # TwayAir may show popup overlays — dismiss modal first
+    async def _attempt_cdp(self, req: FlightSearchRequest) -> Optional[list[FlightOffer]]:
+        page_ctx = await _get_cdp_page(int(self.timeout * 1000))
+        page, context = page_ctx if page_ctx else (None, None)
+        if not page:
+            return None
+
         try:
-            close_btn = page.locator("[class*='close'], .popup .close, .modal .close, [aria-label='Close'], .btn-close").first
-            if await close_btn.count() > 0:
-                await close_btn.click(timeout=2000)
-                await asyncio.sleep(0.3)
+            # Dismiss popups
+            await self._dismiss_popups_pw(page)
+            await asyncio.sleep(0.5)
+
+            csrf_info = await page.evaluate("""() => {
+                const csrfMeta = document.querySelector('meta[name="_csrf"]');
+                const headerMeta = document.querySelector('meta[name="_csrf_header"]');
+                const csrfInput = document.querySelector('input[name="_csrf"]');
+                return {
+                    token: csrfMeta ? csrfMeta.getAttribute('content') : (csrfInput ? csrfInput.value : ''),
+                    header: headerMeta ? headerMeta.getAttribute('content') : 'X-CSRF-TOKEN'
+                };
+            }""")
+
+            csrf_token = csrf_info.get("token", "")
+            csrf_header = csrf_info.get("header", "X-CSRF-TOKEN")
+
+            is_domestic = req.origin in _DOMESTIC_AIRPORTS and req.destination in _DOMESTIC_AIRPORTS
+            booking_type = "DOM" if is_domestic else "INT"
+            currency = self._determine_currency(req, is_domestic)
+
+            body = f"tripType=OW&bookingType={booking_type}&currency={currency}&depAirport={req.origin}&arrAirport={req.destination}&baseDeptAirportCode={req.origin}&_csrf={csrf_token}"
+
+            logger.info("TwayAir [CDP]: calling getLowestFare (%s→%s, %s, %s)",
+                        req.origin, req.destination, booking_type, currency)
+
+            result = await page.evaluate("""(args) => {
+                try {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', '/ajax/booking/getLowestFare', false);
+                    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                    xhr.setRequestHeader(args.csrfHeader, args.csrfToken);
+                    xhr.send(args.body);
+                    return {status: xhr.status, text: xhr.responseText};
+                } catch(e) {
+                    return {error: e.message};
+                }
+            }""", {"body": body, "csrfHeader": csrf_header, "csrfToken": csrf_token})
+
+            if not result or result.get("error"):
+                err = result.get("error", "null") if result else "null"
+                logger.warning("TwayAir [CDP]: getLowestFare error: %s", err)
+                return None
+
+            status = result.get("status", 0)
+            text = result.get("text", "")
+
+            if status != 200 or not text:
+                logger.warning("TwayAir [CDP]: HTTP %d, body=%d bytes", status, len(text))
+                return None
+
+            return self._parse_fare_response(text, req, currency)
+
+        except Exception as e:
+            logger.warning("TwayAir [CDP]: error: %s", e)
+            return None
+        finally:
+            if context:
+                await context.close()
+
+    def _determine_currency(self, req: FlightSearchRequest, is_domestic: bool) -> str:
+        if is_domestic:
+            return "KRW"
+        try:
+            from api.services.airline_routes import AIRPORT_COUNTRY
+            dest_country = AIRPORT_COUNTRY.get(req.destination, "")
+            origin_country = AIRPORT_COUNTRY.get(req.origin, "")
+            if origin_country == "KR":
+                return _COUNTRY_CURRENCY.get(dest_country, "KRW")
+            if dest_country == "KR":
+                return _COUNTRY_CURRENCY.get(origin_country, "KRW")
+        except ImportError:
+            pass
+        return "KRW"
+
+    def _parse_fare_response(self, text: str, req: FlightSearchRequest, currency: str) -> list[FlightOffer]:
+        """Parse JSON response from /ajax/booking/getLowestFare.
+
+        Response: {"routeSaleYnMap": {...}, "OW": {"YYYYMMDD": "pipe|delimited|fare"}}
+        Pipe format: date|dep|arr|soldOut(N/Y)|bizSoldOut|operates(Y/N)|bizOperates|baseFare|totalFare|fareClass
+        """
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("TwayAir: response is not valid JSON (%d bytes)", len(text))
+            return []
+
+        ow_data = data.get("OW", {})
+        if not ow_data:
+            logger.warning("TwayAir: empty OW dict in response")
+            return []
+
+        target_date_str = req.date_from.strftime("%Y%m%d")
+        booking_url = self._build_booking_url(req)
+        offers: list[FlightOffer] = []
+
+        for date_key, fare_str in ow_data.items():
+            if not fare_str or "|" not in str(fare_str):
+                continue
+
+            parts = str(fare_str).split("|")
+            if len(parts) < 9:
+                continue
+
+            fare_date = parts[0]        # YYYYMMDD
+            dep_airport = parts[1]      # IATA
+            arr_airport = parts[2]      # IATA
+            sold_out = parts[3].upper() == "Y"
+            operates = parts[5].upper() == "Y"
+            total_fare_str = parts[8]   # float string (e.g. 19200.0)
+            fare_class = parts[9] if len(parts) > 9 else ""
+
+            if sold_out or not operates:
+                continue
+
+            # Filter to requested date range
+            if fare_date != target_date_str:
+                if req.date_to:
+                    date_to_str = req.date_to.strftime("%Y%m%d")
+                    if not (target_date_str <= fare_date <= date_to_str):
+                        continue
+                else:
+                    continue
+
+            try:
+                total_fare = float(total_fare_str)
+            except (ValueError, TypeError):
+                continue
+
+            if total_fare <= 0:
+                continue
+
+            try:
+                dep_dt = datetime.strptime(fare_date, "%Y%m%d")
+            except ValueError:
+                continue
+
+            segment = FlightSegment(
+                airline="TW",
+                airline_name="T'way Air",
+                flight_no=f"TW {dep_airport}{arr_airport}",
+                origin=dep_airport,
+                destination=arr_airport,
+                departure=dep_dt,
+                arrival=dep_dt,
+                cabin_class="M",
+            )
+
+            route = FlightRoute(
+                segments=[segment],
+                total_duration_seconds=0,
+                stopovers=0,
+            )
+
+            offer_key = f"{fare_date}_{dep_airport}_{arr_airport}_{fare_class}_{total_fare}"
+            offers.append(FlightOffer(
+                id=f"tw_{hashlib.md5(offer_key.encode()).hexdigest()[:12]}",
+                price=round(total_fare, 2),
+                currency=currency,
+                price_formatted=f"{total_fare:,.0f} {currency}",
+                outbound=route,
+                inbound=None,
+                airlines=["T'way Air"],
+                owner_airline="TW",
+                booking_url=booking_url,
+                is_locked=False,
+                source="twayair_direct",
+                source_tier="free",
+            ))
+
+        logger.info("TwayAir: parsed %d offers from %d fare days", len(offers), len(ow_data))
+        return offers
+
+    async def _dismiss_popups_pw(self, page) -> None:
+        """Dismiss cookie banners and popup layers (Playwright page)."""
+        try:
+            await page.evaluate("""() => {
+                document.querySelectorAll(
+                    '[class*="cookie"], [class*="popup"], [class*="modal"], '
+                    + '[class*="layer_popup"], [class*="dim"], [class*="consent"]'
+                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
+                document.body.style.overflow = 'auto';
+            }""")
         except Exception:
             pass
-        for label in [
-            "모든 쿠키 허용", "Accept All", "Accept all", "Accept", "Agree",
-            "I agree", "Got it", "OK", "Close", "확인", "동의",
-        ]:
+
+        for label in ["\ub2eb\uae30", "Close", "\ud655\uc778", "OK", "\ub3d9\uc758", "Accept"]:
             try:
                 btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
                 if await btn.count() > 0:
                     await btn.first.click(timeout=2000)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                     return
             except Exception:
                 continue
-        try:
-            await page.evaluate("""() => {
-                document.querySelectorAll(
-                    '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], '
-                    + '[class*="onetrust"], [id*="onetrust"], [class*="modal-overlay"], '
-                    + '[class*="popup"], [id*="popup"], [class*="layer_popup"], '
-                    + '[class*="modal-backdrop"], [class*="dim"]'
-                ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-                document.body.style.overflow = 'auto';
-                document.body.classList.remove('modal-open');
-            }""")
-        except Exception:
-            pass
-
-    async def _set_one_way(self, page) -> None:
-        for label in ["One Way", "One-way", "One way", "편도"]:
-            try:
-                el = page.get_by_text(label, exact=False).first
-                if el and await el.count() > 0:
-                    await el.click(timeout=3000)
-                    return
-            except Exception:
-                continue
-        for label in ["One Way", "One-way", "편도"]:
-            try:
-                radio = page.get_by_role("radio", name=re.compile(rf"{re.escape(label)}", re.IGNORECASE))
-                if await radio.count() > 0:
-                    await radio.first.click(timeout=2000)
-                    return
-            except Exception:
-                continue
-        try:
-            toggle = page.locator("[data-testid*='one-way'], [data-testid*='oneway'], [class*='one-way'], [class*='oneway']").first
-            if await toggle.count() > 0:
-                await toggle.click(timeout=2000)
-        except Exception:
-            pass
-
-    async def _fill_airport_field(self, page, iata: str, index: int) -> bool:
-        origin_labels = ["From", "Departure", "Origin", "출발지", "출발"]
-        dest_labels = ["To", "Arrival", "Destination", "도착지", "도착"]
-        labels = origin_labels if index == 0 else dest_labels
-        try:
-            for name in labels:
-                for role in ["combobox", "textbox"]:
-                    field = page.get_by_role(role, name=re.compile(rf"{re.escape(name)}", re.IGNORECASE))
-                    if await field.count() > 0:
-                        await field.first.click(timeout=3000)
-                        await asyncio.sleep(0.3)
-                        await field.first.fill("")
-                        await asyncio.sleep(0.2)
-                        await field.first.fill(iata)
-                        await asyncio.sleep(2.5)
-                        for role2 in ["option", "button", "listitem", "link"]:
-                            try:
-                                option = page.get_by_role(role2, name=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                                if await option.count() > 0:
-                                    await option.click(timeout=3000)
-                                    return True
-                            except Exception:
-                                continue
-                        item = page.locator(
-                            "[class*='suggestion'], [class*='option'], [class*='result'], "
-                            "[class*='autocomplete'] li, [class*='dropdown'] li, "
-                            "[class*='airport'] li, [class*='station'] li"
-                        ).filter(has_text=re.compile(rf"{re.escape(iata)}", re.IGNORECASE)).first
-                        if await item.count() > 0:
-                            await item.click(timeout=3000)
-                            return True
-                        await page.keyboard.press("Enter")
-                        return True
-        except Exception as e:
-            logger.debug("TwayAir: field %d error: %s", index, e)
-        try:
-            inputs = page.locator("input[type='text'], input[type='search'], input[placeholder]")
-            if await inputs.count() > index:
-                field = inputs.nth(index)
-                await field.click(timeout=3000)
-                await field.fill("")
-                await asyncio.sleep(0.2)
-                await field.fill(iata)
-                await asyncio.sleep(2.5)
-                await page.keyboard.press("Enter")
-                return True
-        except Exception:
-            pass
-        return False
-
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        target = req.date_from
-        try:
-            for name in ["Departure", "Depart", "Date", "출발일", "가는 날"]:
-                field = page.get_by_role("textbox", name=re.compile(rf"{re.escape(name)}", re.IGNORECASE))
-                if await field.count() > 0:
-                    await field.first.click(timeout=3000)
-                    break
-            else:
-                date_el = page.locator("[class*='date'], [data-testid*='date'], [id*='date'], [class*='calendar']").first
-                if await date_el.count() > 0:
-                    await date_el.click(timeout=3000)
-            await asyncio.sleep(0.8)
-            target_my = target.strftime("%B %Y")
-            for _ in range(12):
-                content = await page.content()
-                if target_my.lower() in content.lower() or target.strftime("%Y.%m") in content:
-                    break
-                try:
-                    fwd = page.get_by_role("button", name=re.compile(r"(next|forward|>|›)", re.IGNORECASE))
-                    if await fwd.count() > 0:
-                        await fwd.first.click(timeout=2000)
-                        await asyncio.sleep(0.4)
-                        continue
-                except Exception:
-                    pass
-                try:
-                    fwd = page.locator("[class*='next'], [aria-label*='next']").first
-                    await fwd.click(timeout=2000)
-                    await asyncio.sleep(0.4)
-                except Exception:
-                    break
-            day = target.day
-            for fmt in [
-                f"{target.strftime('%B')} {day}, {target.year}",
-                f"{day} {target.strftime('%B')} {target.year}",
-                f"{target.strftime('%B')} {day}",
-                target.strftime("%Y-%m-%d"),
-                target.strftime("%Y.%m.%d"),
-            ]:
-                try:
-                    day_btn = page.locator(f"[aria-label*='{fmt}']").first
-                    if await day_btn.count() > 0:
-                        await day_btn.click(timeout=3000)
-                        return True
-                except Exception:
-                    continue
-            day_btn = page.locator(
-                "table button, .calendar button, [class*='calendar'] button, "
-                "[class*='datepicker'] button, [class*='calendar'] td"
-            ).filter(has_text=re.compile(rf"^{day}$")).first
-            if await day_btn.count() > 0:
-                await day_btn.click(timeout=3000)
-                return True
-            day_btn = page.get_by_role("button", name=re.compile(rf"^{day}$")).first
-            await day_btn.click(timeout=3000)
-            return True
-        except Exception as e:
-            logger.warning("TwayAir: date error: %s", e)
-            return False
-
-    async def _click_search(self, page) -> None:
-        for label in ["Search", "SEARCH", "Search Flights", "항공편 검색", "검색"]:
-            try:
-                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE))
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=5000)
-                    return
-            except Exception:
-                continue
-        try:
-            await page.locator("button[type='submit']").first.click(timeout=3000)
-        except Exception:
-            await page.keyboard.press("Enter")
-
-    async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        try:
-            await asyncio.sleep(3)
-            data = await page.evaluate("""() => {
-                if (window.__NEXT_DATA__) return window.__NEXT_DATA__;
-                if (window.__NUXT__) return window.__NUXT__;
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    try { const d = JSON.parse(s.textContent);
-                        if (d && (d.flights || d.journeys || d.fares || d.availability)) return d;
-                    } catch {}
-                }
-                return null;
-            }""")
-            if data:
-                return self._parse_response(data, req)
-        except Exception:
-            pass
-        return []
-
-    def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
-        if isinstance(data, list):
-            data = {"flights": data}
-        booking_url = self._build_booking_url(req)
-        offers: list[FlightOffer] = []
-        flights_raw = (
-            data.get("outboundFlights") or data.get("outbound") or data.get("journeys")
-            or data.get("flights") or data.get("availability", {}).get("trips", [])
-            or data.get("data", {}).get("flights", []) or data.get("data", {}).get("journeys", [])
-            or data.get("lowFareAvailability", {}).get("outboundOptions", [])
-            or data.get("flightList", []) or data.get("tripOptions", []) or []
-        )
-        if isinstance(flights_raw, dict):
-            flights_raw = flights_raw.get("outbound", []) or flights_raw.get("journeys", [])
-        if not isinstance(flights_raw, list):
-            flights_raw = []
-        for flight in flights_raw:
-            offer = self._parse_single_flight(flight, req, booking_url)
-            if offer:
-                offers.append(offer)
-        return offers
-
-    def _parse_single_flight(self, flight: dict, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
-        best_price = self._extract_best_price(flight)
-        if best_price is None or best_price <= 0:
-            return None
-        segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
-        segments: list[FlightSegment] = []
-        if segments_raw and isinstance(segments_raw, list):
-            for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
-        else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
-        total_dur = 0
-        if segments and segments[0].departure and segments[-1].arrival:
-            total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
-        route = FlightRoute(segments=segments, total_duration_seconds=max(total_dur, 0), stopovers=max(len(segments) - 1, 0))
-        flight_key = flight.get("journeyKey") or flight.get("id") or f"{flight.get('departureDate', '')}_{time.monotonic()}"
-        return FlightOffer(
-            id=f"tw_{hashlib.md5(str(flight_key).encode()).hexdigest()[:12]}",
-            price=round(best_price, 2), currency=req.currency,
-            price_formatted=f"{best_price:.2f} {req.currency}",
-            outbound=route, inbound=None, airlines=["T'way Air"], owner_airline="TW",
-            booking_url=booking_url, is_locked=False, source="twayair_direct", source_tier="free",
-        )
-
-    @staticmethod
-    def _extract_best_price(flight: dict) -> Optional[float]:
-        fares = flight.get("fares") or flight.get("fareProducts") or flight.get("bundles") or flight.get("fareBundles") or []
-        best = float("inf")
-        for fare in fares:
-            if isinstance(fare, dict):
-                for key in ["price", "amount", "totalPrice", "basePrice", "fareAmount", "totalAmount"]:
-                    val = fare.get(key)
-                    if isinstance(val, dict):
-                        val = val.get("amount") or val.get("value")
-                    if val is not None:
-                        try:
-                            v = float(val)
-                            if 0 < v < best:
-                                best = v
-                        except (TypeError, ValueError):
-                            pass
-        for key in ["price", "lowestFare", "totalPrice", "farePrice", "amount", "lowestPrice"]:
-            p = flight.get(key)
-            if p is not None:
-                try:
-                    v = float(p) if not isinstance(p, dict) else float(p.get("amount", 0))
-                    if 0 < v < best:
-                        best = v
-                except (TypeError, ValueError):
-                    pass
-        return best if best < float("inf") else None
-
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
-        dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
-        arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
-        flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
-        origin = seg.get("origin") or seg.get("departureStation") or seg.get("departureAirport") or default_origin
-        destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("arrivalAirport") or default_dest
-        carrier = seg.get("carrierCode") or seg.get("carrier") or seg.get("airline") or "TW"
-        return FlightSegment(
-            airline=carrier, airline_name="T'way Air", flight_no=flight_no,
-            origin=origin, destination=destination,
-            departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str), cabin_class="M",
-        )
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
-        logger.info("TwayAir %s→%s returned %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
+        logger.info("TwayAir %s→%s returned %d offers in %.1fs",
+                     req.origin, req.destination, len(offers), elapsed)
         h = hashlib.md5(f"twayair{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
         )
-
-    @staticmethod
-    def _parse_dt(s: Any) -> datetime:
-        if not s:
-            return datetime(2000, 1, 1)
-        s = str(s)
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            pass
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M"):
-            try:
-                return datetime.strptime(s[:len(fmt) + 2], fmt)
-            except (ValueError, IndexError):
-                continue
-        return datetime(2000, 1, 1)
 
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:

@@ -1,23 +1,27 @@
 """
-Norwegian Air hybrid connector — direct Amadeus DES API first, Playwright fallback.
+Norwegian Air hybrid scraper — cookie-farm + curl_cffi direct API.
 
 Norwegian's booking engine (booking.norwegian.com) is an Angular 18 SPA that
-calls api-des.norwegian.com (Amadeus Digital Experience Suite).
+calls api-des.norwegian.com (Amadeus Digital Experience Suite). The search API
+is behind Incapsula, which blocks raw HTTP clients. The token API is NOT
+behind Incapsula.
 
-Hybrid strategy (Mar 2026):
-1. Try direct HTTP via curl_cffi (Chrome TLS fingerprint):
-   a. Token: POST api-des.norwegian.com/v1/security/oauth2/token/initialization
-   b. Search: POST api-des.norwegian.com/airlines/DY/v2/search/air-bounds
-   - Token is cached and reused until close to expiry
-   - ~1–2s total (token + search), no browser needed
-2. If direct API fails → fall back to full Playwright browser flow
-   - Navigate to norwegian.com/en/ homepage, fill the search form, submit
-   - Intercept the Amadeus DES air-bounds API response
+Strategy (hybrid cookie-farm):
+1. ONCE per ~25 min: Playwright opens homepage, fills search form, submits.
+   This generates valid Incapsula cookies (reese84, visid_incap, etc.).
+   Extract all cookies via context.cookies().
+2. For each search: curl_cffi uses farmed cookies to:
+   a) POST token/initialization → get Bearer access_token (~0.4s)
+   b) POST airlines/DY/v2/search/air-bounds → get flight data (~0.6s)
+3. Parse airBoundGroups → FlightOffers
+
+Result: ~1s per search instead of ~45s with full Playwright.
 
 API details (discovered Mar 2026):
   Token: POST api-des.norwegian.com/v1/security/oauth2/token/initialization
+    Body: client_id, client_secret, grant_type=client_credentials, fact (JSON)
   Search: POST api-des.norwegian.com/airlines/DY/v2/search/air-bounds
-  Payload: {commercialFareFamilies, itineraries, travelers, searchPreferences}
+    Body: {commercialFareFamilies, itineraries, travelers, searchPreferences}
   Response: {data: {airBoundGroups: [{boundDetails, airBounds: [{prices, ...}]}]}}
   Prices are in CENTS (divide by 100)
   flightId format: SEG-DY1303-LGWOSL-2026-04-15-0920
@@ -27,12 +31,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import random
 import re
 import time
 from datetime import datetime, timedelta
 from typing import Optional
+
+from curl_cffi import requests as cffi_requests
 
 from models.flights import (
     FlightOffer,
@@ -44,23 +51,6 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-# ── Direct API constants ─────────────────────────────────────────────────
-_TOKEN_URL = "https://api-des.norwegian.com/v1/security/oauth2/token/initialization"
-_SEARCH_URL = "https://api-des.norwegian.com/airlines/DY/v2/search/air-bounds"
-_TOKEN_MARGIN = 60  # refresh token 60s before expiry
-
-# Cached token state (guarded by _dy_token_lock)
-_dy_token: str | None = None
-_dy_token_expiry: float = 0.0  # monotonic timestamp
-_dy_token_lock: Optional[asyncio.Lock] = None
-
-
-def _get_dy_token_lock() -> asyncio.Lock:
-    global _dy_token_lock
-    if _dy_token_lock is None:
-        _dy_token_lock = asyncio.Lock()
-    return _dy_token_lock
-
 _VIEWPORTS = [
     {"width": 1366, "height": 768},
     {"width": 1440, "height": 900},
@@ -70,95 +60,53 @@ _VIEWPORTS = [
 _LOCALES = ["en-GB", "en-US", "en-IE"]
 _TIMEZONES = ["Europe/London", "Europe/Berlin", "Europe/Oslo", "Europe/Paris"]
 
+_CLIENT_ID = "YnF1uDBnJMWsGEmAndoGljO0DgkBeWaE"
+_CLIENT_SECRET = "mrYaim0FdBrNRRZf"
+_TOKEN_URL = "https://api-des.norwegian.com/v1/security/oauth2/token/initialization"
+_SEARCH_URL = "https://api-des.norwegian.com/airlines/DY/v2/search/air-bounds"
+_IMPERSONATE = "chrome131"
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+_COOKIE_MAX_AGE = 25 * 60  # Re-farm cookies after 25 minutes
+
+# Shared cookie farm state
+_farm_lock: Optional[asyncio.Lock] = None
+_farmed_cookies: list[dict] = []
+_farm_timestamp: float = 0.0
 _pw_instance = None
 _browser = None
-_browser_lock: Optional[asyncio.Lock] = None
 
 
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
+def _get_farm_lock() -> asyncio.Lock:
+    global _farm_lock
+    if _farm_lock is None:
+        _farm_lock = asyncio.Lock()
+    return _farm_lock
 
 
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
+    """Shared headed Chromium for cookie farming (launched once, reused)."""
     global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Norwegian: Playwright browser launched (headed Chrome)")
+    if _browser and _browser.is_connected():
         return _browser
-
-
-async def _ensure_dy_token() -> str | None:
-    """Get a valid Bearer token for Amadeus DES, refreshing if needed."""
-    global _dy_token, _dy_token_expiry
-    lock = _get_dy_token_lock()
-    async with lock:
-        # Re-check inside the lock in case another coroutine already refreshed
-        if _dy_token and time.monotonic() < _dy_token_expiry:
-            return _dy_token
-        try:
-            from curl_cffi import requests as cffi_requests
-
-            ses = cffi_requests.Session(impersonate="chrome131")
-            r = ses.post(
-                _TOKEN_URL,
-                json={},
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "Origin": "https://www.norwegian.com",
-                    "Referer": "https://www.norwegian.com/",
-                },
-                timeout=10,
-            )
-            if r.status_code != 200:
-                logger.warning("Norwegian token init failed: HTTP %s", r.status_code)
-                return None
-            data = r.json()
-            tok = (
-                data.get("accessToken")
-                or data.get("access_token")
-                or data.get("token")
-            )
-            # Fallback: look for a JWT-shaped value (three base64url segments)
-            if not tok:
-                for v in data.values():
-                    if isinstance(v, str) and v.count(".") == 2 and len(v) > 50:
-                        tok = v
-                        break
-            if tok:
-                ttl = data.get("expiresIn", data.get("expires_in", 1799))
-                _dy_token = tok
-                _dy_token_expiry = time.monotonic() + int(ttl) - _TOKEN_MARGIN
-                logger.info("Norwegian: token acquired (TTL=%ss)", ttl)
-                return tok
-            logger.warning("Norwegian: no token found in init response")
-            return None
-        except Exception as e:
-            logger.warning("Norwegian: token init error: %s", e)
-            return None
+    from playwright.async_api import async_playwright
+    _pw_instance = await async_playwright().start()
+    try:
+        _browser = await _pw_instance.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+    except Exception:
+        _browser = await _pw_instance.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+    logger.info("Norwegian: Playwright browser launched for cookie farming")
+    return _browser
 
 
 class NorwegianConnectorClient:
-    """Norwegian hybrid connector — direct Amadeus DES API first, Playwright fallback."""
+    """Norwegian hybrid scraper — cookie-farm + curl_cffi direct API."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -167,116 +115,76 @@ class NorwegianConnectorClient:
         pass  # Browser is shared singleton
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        # Try direct API first (no browser)
-        try:
-            result = await self._search_via_api(req)
-            if result and result.total_results > 0:
-                return result
-            logger.info("Norwegian: direct API returned 0 results, falling back to Playwright")
-        except Exception as e:
-            logger.info("Norwegian: direct API failed (%s), falling back to Playwright", e)
+        """
+        Search Norwegian flights via cookie-farm + curl_cffi direct API.
 
-        # Fallback: full Playwright browser flow
-        return await self._search_via_playwright(req)
-
-    # ── Direct API path (curl_cffi) ──────────────────────────────────────
-
-    async def _search_via_api(self, req: FlightSearchRequest) -> FlightSearchResponse | None:
-        """Try direct HTTP to Amadeus DES air-bounds API using curl_cffi."""
-        global _dy_token, _dy_token_expiry
+        Fast path (~1s): curl_cffi with farmed Incapsula cookies.
+        Slow path (~18s): Playwright farms cookies first, then curl_cffi.
+        """
         t0 = time.monotonic()
-        token = await _ensure_dy_token()
-        if not token:
-            return None
 
         try:
-            from curl_cffi import requests as cffi_requests
+            cookies = await self._ensure_cookies(req)
+            if not cookies:
+                logger.warning("Norwegian: cookie farm failed, no cookies")
+                return self._empty(req)
 
-            # Build traveler list
-            travelers = []
-            traveler_id = 1
-            for _ in range(req.adults):
-                travelers.append({"id": str(traveler_id), "type": "ADULT"})
-                traveler_id += 1
-            for _ in range(req.children or 0):
-                travelers.append({"id": str(traveler_id), "type": "CHILD"})
-                traveler_id += 1
-            for _ in range(req.infants or 0):
-                travelers.append({"id": str(traveler_id), "type": "HELD_INFANT"})
-                traveler_id += 1
+            data = await self._api_search(req, cookies)
 
-            payload = {
-                "commercialFareFamilies": ["LOWFARE", "LOWPLUS", "FLEX"],
-                "itineraries": [
-                    {
-                        "originLocationCode": req.origin,
-                        "destinationLocationCode": req.destination,
-                        "departureDateTime": req.date_from.strftime("%Y-%m-%dT00:00:00.000"),
-                    }
-                ],
-                "travelers": travelers,
-                "searchPreferences": {
-                    "cabinPreferences": [
-                        {"cabin": "ECONOMY", "preferenceLevel": "PREFERRED"}
-                    ]
-                },
-            }
+            # If search failed (expired cookies), re-farm once and retry
+            if data is None:
+                logger.info("Norwegian: API search failed, re-farming cookies")
+                cookies = await self._farm_cookies(req)
+                if cookies:
+                    data = await self._api_search(req, cookies)
 
-            ses = cffi_requests.Session(impersonate="chrome131")
-            r = ses.post(
-                _SEARCH_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "Origin": "https://www.norwegian.com",
-                    "Referer": "https://booking.norwegian.com/",
-                },
-                timeout=20,
-            )
+            if not data:
+                logger.warning("Norwegian: no data after search")
+                return self._empty(req)
 
-            if r.status_code == 401:
-                # Token may have expired mid-session; clear cache and bail
-                lock = _get_dy_token_lock()
-                async with lock:
-                    _dy_token = None
-                    _dy_token_expiry = 0.0
-                logger.warning("Norwegian: 401 from air-bounds, token cleared")
-                return None
-
-            if r.status_code != 200:
-                logger.warning("Norwegian: air-bounds HTTP %s", r.status_code)
-                return None
-
-            data = r.json()
             elapsed = time.monotonic() - t0
             offers = self._parse_air_bounds(data, req)
             offers.sort(key=lambda o: o.price)
-            for o in offers:
-                o.source = "norwegian_api"
 
             logger.info(
-                "Norwegian %s→%s: %d offers in %.1fs (direct API)",
+                "Norwegian %s→%s returned %d offers in %.1fs (hybrid API)",
                 req.origin, req.destination, len(offers), elapsed,
             )
-            return self._build_response(offers, req)
+
+            search_hash = hashlib.md5(
+                f"norwegian{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+
+            return FlightSearchResponse(
+                search_id=f"fs_{search_hash}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=offers[0].currency if offers else req.currency,
+                offers=offers,
+                total_results=len(offers),
+            )
 
         except Exception as e:
-            logger.warning("Norwegian: direct API error: %s", e)
-            return None
+            logger.error("Norwegian hybrid error: %s", e)
+            return self._empty(req)
 
-    # ── Playwright fallback ──────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Cookie farm — Playwright generates Incapsula cookies
+    # ------------------------------------------------------------------
 
-    async def _search_via_playwright(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        """
-        Search Norwegian flights via Playwright.
+    async def _ensure_cookies(self, req: FlightSearchRequest) -> list[dict]:
+        """Return valid farmed cookies, farming new ones if needed."""
+        global _farmed_cookies, _farm_timestamp
+        lock = _get_farm_lock()
+        async with lock:
+            age = time.monotonic() - _farm_timestamp
+            if _farmed_cookies and age < _COOKIE_MAX_AGE:
+                return _farmed_cookies
+            return await self._farm_cookies(req)
 
-        Strategy: Navigate to norwegian.com/en/ homepage, fill the search form,
-        submit, and intercept the Amadeus DES air-bounds API response from the
-        booking.norwegian.com Angular SPA.
-        """
-        t0 = time.monotonic()
+    async def _farm_cookies(self, req: FlightSearchRequest) -> list[dict]:
+        """Open Playwright, do one search, extract Incapsula cookies."""
+        global _farmed_cookies, _farm_timestamp
 
         browser = await _get_browser()
         context = await browser.new_context(
@@ -294,74 +202,165 @@ class NorwegianConnectorClient:
             except ImportError:
                 page = await context.new_page()
 
-            # Set up response interception for air-bounds API
-            captured_data: dict = {}
-            api_response_event = asyncio.Event()
+            search_done = asyncio.Event()
 
             async def on_response(response):
                 try:
                     if "air-bounds" in response.url and response.status == 200:
-                        captured_data["json"] = await response.json()
-                        api_response_event.set()
+                        search_done.set()
                 except Exception:
                     pass
 
             page.on("response", on_response)
 
-            # Step 1: Load homepage
-            logger.info("Norwegian: loading homepage for %s→%s", req.origin, req.destination)
+            logger.info("Norwegian: farming cookies via %s→%s", req.origin, req.destination)
             await page.goto(
                 "https://www.norwegian.com/en/",
                 wait_until="domcontentloaded",
-                timeout=int(self.timeout * 1000),
+                timeout=30000,
             )
-
-            # Allow page JS to initialize
             await asyncio.sleep(2)
-
-            # Dismiss cookie banners (OneTrust + any overlays)
             await self._dismiss_cookies(page)
 
-            # Step 2: Fill search form
             await self._fill_search_form(page, req)
-
-            # Step 3: Dismiss cookies again (may reappear after interaction)
             await self._dismiss_cookies(page)
-
-            # Step 4: Submit search and wait for API response
             await self._click_search(page)
 
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
+            remaining = max(self.timeout - 5, 15)
             try:
-                await asyncio.wait_for(api_response_event.wait(), timeout=remaining)
+                await asyncio.wait_for(search_done.wait(), timeout=remaining)
             except asyncio.TimeoutError:
-                logger.warning("Norwegian: timed out waiting for air-bounds response")
-                return self._empty(req)
+                logger.warning("Norwegian: cookie farm search timed out")
+                return []
 
-            data = captured_data.get("json", {})
-            if not data:
-                logger.warning("Norwegian: captured empty response")
-                return self._empty(req)
-
-            elapsed = time.monotonic() - t0
-            offers = self._parse_air_bounds(data, req)
-            offers.sort(key=lambda o: o.price)
-
-            logger.info(
-                "Norwegian %s→%s returned %d offers in %.1fs (Playwright)",
-                req.origin, req.destination, len(offers), elapsed,
-            )
-
-            return self._build_response(offers, req)
+            cookies = await context.cookies()
+            _farmed_cookies = cookies
+            _farm_timestamp = time.monotonic()
+            logger.info("Norwegian: farmed %d cookies", len(cookies))
+            return cookies
 
         except Exception as e:
-            logger.error("Norwegian Playwright error: %s", e)
-            return self._empty(req)
+            logger.error("Norwegian: cookie farm error: %s", e)
+            return []
         finally:
             await context.close()
 
     # ------------------------------------------------------------------
-    # Form interaction (selectors verified Mar 2026)
+    # Direct API via curl_cffi
+    # ------------------------------------------------------------------
+
+    async def _api_search(
+        self, req: FlightSearchRequest, cookies: list[dict]
+    ) -> Optional[dict]:
+        """Get token + search via curl_cffi with farmed cookies."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._api_search_sync, req, cookies)
+
+    def _api_search_sync(
+        self, req: FlightSearchRequest, cookies: list[dict]
+    ) -> Optional[dict]:
+        """Synchronous curl_cffi token + search."""
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+
+        # Load farmed cookies into session
+        for c in cookies:
+            domain = c.get("domain", "")
+            sess.cookies.set(c["name"], c["value"], domain=domain)
+
+        # Step 1: Get OAuth2 token
+        date_str = req.date_from.strftime("%Y-%m-%dT00:00:00")
+        fact = json.dumps({
+            "keyValuePairs": [
+                {"key": "originLocationCode1", "value": req.origin},
+                {"key": "destinationLocationCode1", "value": req.destination},
+                {"key": "departureDateTime1", "value": date_str},
+                {"key": "market", "value": "EN"},
+                {"key": "channel", "value": "B2C"},
+            ]
+        })
+
+        try:
+            r_token = sess.post(
+                _TOKEN_URL,
+                data={
+                    "client_id": _CLIENT_ID,
+                    "client_secret": _CLIENT_SECRET,
+                    "grant_type": "client_credentials",
+                    "fact": fact,
+                },
+                headers={
+                    "User-Agent": _UA,
+                    "Origin": "https://booking.norwegian.com",
+                    "Referer": "https://booking.norwegian.com/",
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            logger.error("Norwegian: token request failed: %s", e)
+            return None
+
+        if r_token.status_code != 200:
+            logger.warning("Norwegian: token returned %d", r_token.status_code)
+            return None
+
+        access_token = r_token.json().get("access_token")
+        if not access_token:
+            logger.warning("Norwegian: no access_token in response")
+            return None
+
+        # Step 2: Search flights
+        search_body = {
+            "commercialFareFamilies": ["DYSTD"],
+            "itineraries": [{
+                "originLocationCode": req.origin,
+                "destinationLocationCode": req.destination,
+                "departureDateTime": f"{date_str}.000",
+                "directFlights": False,
+                "originLocationType": "airport",
+                "destinationLocationType": "airport",
+                "isRequestedBound": True,
+            }],
+            "travelers": self._build_travelers(req),
+            "searchPreferences": {"showSoldOut": True, "showMilesPrice": False},
+        }
+
+        try:
+            r_search = sess.post(
+                _SEARCH_URL,
+                json=search_body,
+                headers={
+                    "User-Agent": _UA,
+                    "Authorization": f"Bearer {access_token}",
+                    "Origin": "https://booking.norwegian.com",
+                    "Referer": "https://booking.norwegian.com/",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/plain, */*",
+                },
+                timeout=30,
+            )
+        except Exception as e:
+            logger.error("Norwegian: search request failed: %s", e)
+            return None
+
+        if r_search.status_code != 200:
+            logger.warning("Norwegian: search returned %d", r_search.status_code)
+            return None
+
+        return r_search.json()
+
+    @staticmethod
+    def _build_travelers(req: FlightSearchRequest) -> list[dict]:
+        travelers = []
+        for _ in range(req.adults):
+            travelers.append({"passengerTypeCode": "ADT"})
+        for _ in range(req.children or 0):
+            travelers.append({"passengerTypeCode": "CHD"})
+        for _ in range(req.infants or 0):
+            travelers.append({"passengerTypeCode": "INF"})
+        return travelers or [{"passengerTypeCode": "ADT"}]
+
+    # ------------------------------------------------------------------
+    # Form interaction for cookie farming (selectors verified Mar 2026)
     # ------------------------------------------------------------------
 
     async def _dismiss_cookies(self, page) -> None:
@@ -543,7 +542,7 @@ class NorwegianConnectorClient:
                     owner_airline="DY",
                     booking_url=booking_url,
                     is_locked=False,
-                    source="norwegian_direct",
+                    source="norwegian_api",
                     source_tier="free",
                 )
                 offers.append(offer)
@@ -634,9 +633,7 @@ class NorwegianConnectorClient:
             f"&InfantCount={req.infants or 0}"
         )
 
-    def _build_response(
-        self, offers: list[FlightOffer], req: FlightSearchRequest,
-    ) -> FlightSearchResponse:
+    def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
             f"norwegian{req.origin}{req.destination}{req.date_from}".encode()
         ).hexdigest()[:12]
@@ -644,10 +641,7 @@ class NorwegianConnectorClient:
             search_id=f"fs_{search_hash}",
             origin=req.origin,
             destination=req.destination,
-            currency=offers[0].currency if offers else (req.currency or "EUR"),
-            offers=offers,
-            total_results=len(offers),
+            currency=req.currency,
+            offers=[],
+            total_results=0,
         )
-
-    def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        return self._build_response([], req)

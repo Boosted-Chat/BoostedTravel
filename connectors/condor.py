@@ -1,28 +1,33 @@
 """
-Condor Playwright connector — navigates to condor.com and searches flights.
+Condor hybrid scraper — cookie-farm + curl_cffi direct API.
 
 Condor (IATA: DE) is a German leisure airline operating from Frankfurt (FRA),
 Munich (MUC), Düsseldorf (DUS), Hamburg (HAM) and other German airports to
 worldwide holiday destinations.
 
-The direct API is behind WAF — requires browser session.
+The TCA REST API (condor.com/tca/rest/vacancies) is accessible but requires
+valid browser-generated session cookies (WAF/bot-detection). Direct curl_cffi
+without cookies returns {"data": null, "messages": [...]}.
 
-Strategy:
-1. Navigate to condor.com/en/flights homepage
-2. Dismiss cookie consent banner (Usercentrics — "I agree")
-3. Fill search form (From, To, Outbound date, one-way selection)
-4. Intercept API responses (search / availability / offers endpoints)
-5. Parse results → FlightOffers
+Strategy (hybrid cookie-farm):
+1. ONCE per ~25 min: Playwright opens homepage, fills search form, submits.
+   This generates valid WAF cookies. Extract all cookies via context.cookies().
+2. For each search: curl_cffi uses farmed cookies to:
+   GET /tca/rest/vacancies?origin=X&destination=Y&outbound=DATE&adults=N
+3. Parse TCA response → FlightOffers
 
-Condor search form (verified Mar 2026):
-  - "Round Trip" dropdown (change to one-way)
-  - "From" input (origin)
-  - "To" input (destination)
-  - "Outbound flight on" date picker
-  - "Return flight on" date picker
-  - "1 Passenger, Economy" passenger/class selector
-  - "Search for flights" button
-  Cookie banner: Usercentrics with "I agree" / "Reject optional Cookies" / "Settings"
+Result: ~1-2s per search instead of ~25s with full Playwright.
+
+API details (discovered Mar 2026):
+  GET https://www.condor.com/tca/rest/us/vacancies
+    Params: origin, destination, outboundDate (YYYYMMDD), adults, flightMode (OW),
+            advanced (false), currency (USD), numberOfFlightDays (1)
+    Response: {data: [[{carrier, flightNumber, origin, destination, departure,
+               arrival, legs: [...], vacancyDetails: [{compartment, tariff,
+               priceDetails: [{reduction, components: [{type, value}], currency}]}]}]],
+               messages: [...]}
+    Prices are in CENTS (divide by 100)
+    Datetime format: 20260415T0715+0200
 """
 
 from __future__ import annotations
@@ -35,6 +40,8 @@ import re
 import time
 from datetime import datetime
 from typing import Any, Optional
+
+from curl_cffi import requests as cffi_requests
 
 from models.flights import (
     FlightOffer,
@@ -60,55 +67,288 @@ _TIMEZONES = [
     "Europe/Paris", "Europe/Vienna", "Europe/Zurich",
 ]
 
-# ── Shared browser singleton ──────────────────────────────────────────────
+_VACANCIES_URL = "https://www.condor.com/tca/rest/us/vacancies"
+_IMPERSONATE = "chrome124"
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+_COOKIE_MAX_AGE = 25 * 60  # Re-farm cookies after 25 minutes
+
+# ── Shared cookie farm state ──────────────────────────────────────────────
+_farm_lock: Optional[asyncio.Lock] = None
+_farmed_cookies: list[dict] = []
+_farm_timestamp: float = 0.0
 _pw_instance = None
 _browser = None
-_browser_lock: Optional[asyncio.Lock] = None
 
 
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
+def _get_farm_lock() -> asyncio.Lock:
+    global _farm_lock
+    if _farm_lock is None:
+        _farm_lock = asyncio.Lock()
+    return _farm_lock
 
 
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
+    """Shared headed Chromium for cookie farming (launched once, reused)."""
     global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("Condor: Playwright browser launched (headed Chrome)")
+    if _browser and _browser.is_connected():
         return _browser
+    from playwright.async_api import async_playwright
+
+    _pw_instance = await async_playwright().start()
+    try:
+        _browser = await _pw_instance.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+    except Exception:
+        _browser = await _pw_instance.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+    logger.info("Condor: Playwright browser launched for cookie farming")
+    return _browser
 
 
 class CondorConnectorClient:
-    """Condor Playwright connector — homepage form search + API interception."""
+    """Condor hybrid scraper — cookie-farm + curl_cffi direct API."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
 
     async def close(self):
-        pass
+        pass  # Browser is shared singleton
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """
+        Search Condor flights via cookie-farm + curl_cffi direct API.
+
+        Fast path (~1-2s): curl_cffi with farmed cookies → GET /tca/rest/vacancies.
+        Slow path (~20s): Playwright farms cookies first, then curl_cffi.
+        Fallback: Full Playwright interception if API fails.
+        """
         t0 = time.monotonic()
+
+        try:
+            cookies = await self._ensure_cookies(req)
+            if not cookies:
+                logger.warning("Condor: cookie farm failed, falling back to Playwright")
+                return await self._playwright_fallback(req, t0)
+
+            data = await self._api_search(req, cookies)
+
+            # If search failed (expired cookies), re-farm once and retry
+            if data is None:
+                logger.info("Condor: API search failed, re-farming cookies")
+                cookies = await self._farm_cookies(req)
+                if cookies:
+                    data = await self._api_search(req, cookies)
+
+            # If API still fails, fall back to full Playwright
+            if not data:
+                logger.warning("Condor: API search returned no data, falling back to Playwright")
+                return await self._playwright_fallback(req, t0)
+
+            elapsed = time.monotonic() - t0
+            offers = self._parse_response(data, req)
+            offers.sort(key=lambda o: o.price)
+
+            logger.info(
+                "Condor %s→%s returned %d offers in %.1fs (hybrid API)",
+                req.origin, req.destination, len(offers), elapsed,
+            )
+
+            search_hash = hashlib.md5(
+                f"condor{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+
+            return FlightSearchResponse(
+                search_id=f"fs_{search_hash}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=offers[0].currency if offers else (req.currency or "EUR"),
+                offers=offers,
+                total_results=len(offers),
+            )
+
+        except Exception as e:
+            logger.error("Condor hybrid error: %s", e)
+            return self._empty(req)
+
+    # ------------------------------------------------------------------
+    # Cookie farm — Playwright generates WAF cookies
+    # ------------------------------------------------------------------
+
+    async def _ensure_cookies(self, req: FlightSearchRequest) -> list[dict]:
+        """Return valid farmed cookies, farming new ones if needed."""
+        global _farmed_cookies, _farm_timestamp
+        lock = _get_farm_lock()
+        async with lock:
+            age = time.monotonic() - _farm_timestamp
+            if _farmed_cookies and age < _COOKIE_MAX_AGE:
+                return _farmed_cookies
+            return await self._farm_cookies(req)
+
+    async def _farm_cookies(self, req: FlightSearchRequest) -> list[dict]:
+        """Open Playwright, do one search, extract WAF/session cookies."""
+        global _farmed_cookies, _farm_timestamp
+
+        browser = await _get_browser()
+        context = await browser.new_context(
+            viewport=random.choice(_VIEWPORTS),
+            locale=random.choice(_LOCALES),
+            timezone_id=random.choice(_TIMEZONES),
+            service_workers="block",
+        )
+
+        try:
+            try:
+                from playwright_stealth import stealth_async
+                page = await context.new_page()
+                await stealth_async(page)
+            except ImportError:
+                page = await context.new_page()
+
+            search_done = asyncio.Event()
+
+            async def on_response(response):
+                try:
+                    url = response.url.lower()
+                    ct = response.headers.get("content-type", "")
+                    if (
+                        response.status == 200
+                        and "json" in ct
+                        and "/vacancies" in url
+                        and "lowfare" not in url
+                        and "tca/rest" in url
+                    ):
+                        search_done.set()
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+
+            logger.info("Condor: farming cookies via %s→%s", req.origin, req.destination)
+            await page.goto(
+                "https://www.condor.com/en/flights",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await asyncio.sleep(2)
+            await self._dismiss_cookies(page)
+
+            ok = await self._fill_search_form(page, req)
+            if not ok:
+                logger.warning("Condor: cookie farm form fill failed")
+                # Still extract cookies — visiting the page may be enough
+                cookies = await context.cookies()
+                if cookies:
+                    _farmed_cookies = cookies
+                    _farm_timestamp = time.monotonic()
+                    logger.info("Condor: farmed %d cookies (no search)", len(cookies))
+                    return cookies
+                return []
+
+            await self._dismiss_cookies(page)
+            await self._click_search(page)
+
+            remaining = max(self.timeout - 5, 15)
+            try:
+                await asyncio.wait_for(search_done.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                logger.warning("Condor: cookie farm search timed out")
+
+            cookies = await context.cookies()
+            _farmed_cookies = cookies
+            _farm_timestamp = time.monotonic()
+            logger.info("Condor: farmed %d cookies", len(cookies))
+            return cookies
+
+        except Exception as e:
+            logger.error("Condor: cookie farm error: %s", e)
+            return []
+        finally:
+            await context.close()
+
+    # ------------------------------------------------------------------
+    # Direct API via curl_cffi
+    # ------------------------------------------------------------------
+
+    async def _api_search(
+        self, req: FlightSearchRequest, cookies: list[dict],
+    ) -> Optional[dict]:
+        """GET /tca/rest/vacancies via curl_cffi with farmed cookies."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._api_search_sync, req, cookies)
+
+    def _api_search_sync(
+        self, req: FlightSearchRequest, cookies: list[dict],
+    ) -> Optional[dict]:
+        """Synchronous curl_cffi vacancies search."""
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+
+        # Load farmed cookies into session
+        for c in cookies:
+            domain = c.get("domain", "")
+            sess.cookies.set(c["name"], c["value"], domain=domain)
+
+        params = {
+            "flightMode": "OW",
+            "advanced": "false",
+            "origin": req.origin,
+            "destination": req.destination,
+            "outboundDate": req.date_from.strftime("%Y%m%d"),
+            "adults": str(req.adults),
+            "currency": "USD",
+            "numberOfFlightDays": "1",
+        }
+        if req.children:
+            params["children"] = str(req.children)
+        if req.infants:
+            params["infants"] = str(req.infants)
+
+        try:
+            r = sess.get(
+                _VACANCIES_URL,
+                params=params,
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US",
+                    "Referer": "https://www.condor.com/tca/us/flight/search",
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            logger.error("Condor: API request failed: %s", e)
+            return None
+
+        if r.status_code != 200:
+            logger.warning("Condor: API returned %d", r.status_code)
+            return None
+
+        data = r.json()
+
+        # Check for valid flight data (data is null or empty on failure)
+        raw = data.get("data")
+        if raw is None:
+            msgs = data.get("messages", [])
+            if msgs:
+                logger.warning("Condor: API error: %s", msgs[0].get("messageCode", "?"))
+            return None
+
+        if isinstance(raw, list) and len(raw) > 0:
+            return data
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Playwright fallback (full browser flow, used if API fails)
+    # ------------------------------------------------------------------
+
+    async def _playwright_fallback(
+        self, req: FlightSearchRequest, t0: float,
+    ) -> FlightSearchResponse:
+        """Full Playwright interception flow as fallback."""
         browser = await _get_browser()
         context = await browser.new_context(
             viewport=random.choice(_VIEWPORTS),
@@ -134,19 +374,12 @@ class CondorConnectorClient:
                     ct = response.headers.get("content-type", "")
                     if response.status != 200 or "json" not in ct:
                         return
-                    # Primary: Condor TCA vacancies endpoint (NOT lowFareInformation)
                     is_vacancies = (
                         "/vacancies" in url
                         and "lowfare" not in url
                         and "tca/rest" in url
                     )
-                    # Secondary: generic flight search APIs (for other possible endpoints)
-                    is_generic = (
-                        "availability" in url
-                        or "flights/search" in url
-                        or "air-bounds" in url
-                    )
-                    if is_vacancies or is_generic:
+                    if is_vacancies:
                         data = await response.json()
                         if data and isinstance(data, (dict, list)):
                             captured_data["json"] = data
@@ -156,21 +389,20 @@ class CondorConnectorClient:
 
             page.on("response", on_response)
 
-            logger.info("Condor: loading homepage for %s→%s", req.origin, req.destination)
+            logger.info("Condor: Playwright fallback for %s→%s", req.origin, req.destination)
             await page.goto(
                 "https://www.condor.com/en/flights",
                 wait_until="domcontentloaded",
                 timeout=int(self.timeout * 1000),
             )
             await asyncio.sleep(2.0)
-
             await self._dismiss_cookies(page)
             await asyncio.sleep(0.5)
             await self._dismiss_cookies(page)
 
             ok = await self._fill_search_form(page, req)
             if not ok:
-                logger.warning("Condor: form fill failed")
+                logger.warning("Condor: fallback form fill failed")
                 return self._empty(req)
 
             await self._click_search(page)
@@ -179,11 +411,13 @@ class CondorConnectorClient:
             try:
                 await asyncio.wait_for(api_event.wait(), timeout=remaining)
             except asyncio.TimeoutError:
-                logger.warning("Condor: timed out waiting for API response")
-                offers = await self._extract_from_dom(page, req)
-                if offers:
-                    return self._build_response(offers, req, time.monotonic() - t0)
+                logger.warning("Condor: fallback timed out waiting for API response")
                 return self._empty(req)
+
+            # Also update cookie farm from this successful browser session
+            global _farmed_cookies, _farm_timestamp
+            _farmed_cookies = await context.cookies()
+            _farm_timestamp = time.monotonic()
 
             data = captured_data.get("json", {})
             if not data:
@@ -194,12 +428,14 @@ class CondorConnectorClient:
             return self._build_response(offers, req, elapsed)
 
         except Exception as e:
-            logger.error("Condor Playwright error: %s", e)
+            logger.error("Condor Playwright fallback error: %s", e)
             return self._empty(req)
         finally:
             await context.close()
 
-    # ── Cookie dismissal ───────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Form interaction for cookie farming (selectors verified Mar 2026)
+    # ------------------------------------------------------------------
 
     async def _dismiss_cookies(self, page) -> None:
         # Condor uses Usercentrics: "I agree" / "Settings" / "Reject optional Cookies"
@@ -249,7 +485,9 @@ class CondorConnectorClient:
         except Exception:
             pass
 
-    # ── Form filling ───────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Form filling (reused for cookie farming)
+    # ------------------------------------------------------------------
 
     async def _fill_search_form(self, page, req: FlightSearchRequest) -> bool:
         # Set one-way (Condor defaults to "Round Trip")
@@ -447,31 +685,9 @@ class CondorConnectorClient:
         except Exception:
             await page.keyboard.press("Enter")
 
-    # ── DOM fallback ───────────────────────────────────────────────────
-
-    async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        try:
-            await asyncio.sleep(3)
-            data = await page.evaluate("""() => {
-                if (window.__NEXT_DATA__) return window.__NEXT_DATA__;
-                if (window.__NUXT__) return window.__NUXT__;
-                if (window.appData) return window.appData;
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    try {
-                        const d = JSON.parse(s.textContent);
-                        if (d && (d.flights || d.outbound || d.journeys || d.fares)) return d;
-                    } catch {}
-                }
-                return null;
-            }""")
-            if data:
-                return self._parse_response(data, req)
-        except Exception:
-            pass
-        return []
-
-    # ── Response parsing ───────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Response parsing (shared by API and Playwright paths)
+    # ------------------------------------------------------------------
 
     def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
         booking_url = self._build_booking_url(req)
@@ -585,11 +801,13 @@ class CondorConnectorClient:
 
         return offers
 
-    # ── Helpers ────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
-        logger.info("Condor %s→%s returned %d offers in %.1fs (Playwright)", req.origin, req.destination, len(offers), elapsed)
+        logger.info("Condor %s→%s returned %d offers in %.1fs (fallback)", req.origin, req.destination, len(offers), elapsed)
         search_hash = hashlib.md5(f"condor{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,

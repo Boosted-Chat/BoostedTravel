@@ -1,5 +1,5 @@
 """
-JetSMART Playwright connector — homepage form + Navitaire API interception.
+JetSMART Playwright scraper — homepage form + Navitaire API interception.
 
 JetSMART (IATA: JA) is a South American ultra-low-cost carrier (Navitaire-based)
 operating in Chile (SCL hub), Argentina, Peru, Colombia, and Brazil.
@@ -23,8 +23,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -62,7 +64,9 @@ _MARKET_MAP = {
     "BOG": "co", "MDE": "co", "CTG": "co", "CLO": "co",
 }
 
-_pw_instance = None
+# ── Shared browser singleton via CDP ────────────────────────────────────
+_CDP_PORT = 9461
+_chrome_proc = None
 _browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
@@ -75,32 +79,34 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
+    """Connect to a real Chrome instance via CDP (launched once, reused)."""
+    global _chrome_proc, _browser
     lock = _get_lock()
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
         from playwright.async_api import async_playwright
 
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-        logger.info("JetSMART: Playwright browser launched (headed Chrome)")
+        chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        user_data = os.path.join(os.environ.get("TEMP", "/tmp"), "chrome-cdp-jetsmart")
+        _chrome_proc = subprocess.Popen([
+            chrome_path,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={user_data}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+        ])
+        await asyncio.sleep(1.5)
+
+        pw = await async_playwright().start()
+        _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_CDP_PORT}")
+        logger.info("JetSMART: Connected to real Chrome via CDP (port %d)", _CDP_PORT)
         return _browser
 
 
 class JetSmartConnectorClient:
-    """JetSMART Playwright connector — homepage form + Navitaire API interception."""
+    """JetSMART Playwright scraper — homepage form + Navitaire API interception."""
 
     _TIMETABLE_URL = "https://jetsmart.com/farecache-lm/timetable"
 

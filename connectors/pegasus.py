@@ -1,18 +1,20 @@
 """
-Pegasus Airlines Playwright connector — navigates to flypgs.com and searches flights.
+Pegasus Airlines CDP Chrome scraper — navigates to flypgs.com and searches flights.
 
 Pegasus (IATA: PC) is Turkey's largest low-cost carrier, operating from
 Istanbul Sabiha Gökçen (SAW) and Ankara (ESB) to domestic and international
 destinations across Europe, Middle East and North Africa.
 
 The direct API is behind Akamai Bot Manager — requires browser session.
+Real Chrome via CDP passes Akamai better than Playwright's bundled Chromium.
 
-Strategy:
-1. Navigate to flypgs.com/en homepage
-2. Dismiss cookie consent banner
-3. Fill search form (origin, destination, date, one-way)
-4. Intercept API responses (availability / search endpoints)
-5. Parse results → FlightOffers
+Strategy (converted Mar 2026):
+1. Launch real system Chrome via CDP (persistent, avoids fingerprinting)
+2. Navigate to flypgs.com/en or direct booking URL
+3. Dismiss cookie consent banner
+4. Fill search form or use direct URL (bypasses form fill)
+5. Intercept API responses (availability / search endpoints)
+6. Parse results → FlightOffers
 """
 
 from __future__ import annotations
@@ -20,8 +22,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -58,9 +62,20 @@ _TURKEY_AIRPORTS = {
     "TEQ", "OGU", "BZI", "SFQ",
 }
 
-# ── Shared browser singleton ──────────────────────────────────────────────
+# ── CDP Chrome singleton ──────────────────────────────────────────────
+_CDP_PORT = 9454
+_USER_DATA_DIR = os.path.join(os.environ.get("TEMP", "/tmp"), "pegasus_cdp_data")
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+]
+
+_chrome_proc: subprocess.Popen | None = None
 _pw_instance = None
-_browser = None
+_cdp_browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -71,48 +86,63 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _find_chrome() -> str:
+    for p in _CHROME_PATHS:
+        if os.path.isfile(p):
+            return p
+    raise FileNotFoundError("Chrome not found")
+
+
+def _launch_chrome():
+    global _chrome_proc
+    if _chrome_proc and _chrome_proc.poll() is None:
+        return
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    chrome = _find_chrome()
+    _chrome_proc = subprocess.Popen(
+        [
+            chrome,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    logger.info("Pegasus: Chrome launched on CDP port %d (pid=%d)", _CDP_PORT, _chrome_proc.pid)
+
+
 async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
+    """Shared real Chrome via CDP (launched once, reused across searches)."""
+    global _pw_instance, _cdp_browser
     lock = _get_lock()
     async with lock:
-        # Always close and recreate browser for fresh start
-        if _browser and _browser.is_connected():
-            try:
-                await _browser.close()
-            except Exception:
-                pass
-            _browser = None
-        if _pw_instance:
-            try:
-                await _pw_instance.stop()
-            except Exception:
-                pass
-            _pw_instance = None
+        if _cdp_browser and _cdp_browser.is_connected():
+            return _cdp_browser
+        _launch_chrome()
+        await asyncio.sleep(2)
         from playwright.async_api import async_playwright
-
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.firefox.launch(
-                headless=False,
-            )
-            logger.info("Pegasus: Playwright browser launched (headed Firefox)")
-        except Exception as e:
-            logger.debug("Pegasus: Firefox launch failed (%s), falling back to Chromium", e)
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
-            logger.info("Pegasus: Playwright browser launched (headed Chromium)")
-        return _browser
+        if not _pw_instance:
+            _pw_instance = await async_playwright().start()
+        for attempt in range(5):
+            try:
+                _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{_CDP_PORT}"
+                )
+                logger.info("Pegasus: connected to Chrome via CDP")
+                return _cdp_browser
+            except Exception:
+                if attempt < 4:
+                    await asyncio.sleep(1)
+        raise RuntimeError(f"Pegasus: cannot connect to Chrome CDP on port {_CDP_PORT}")
 
 
 class PegasusConnectorClient:
-    """Pegasus Airlines Playwright connector — homepage form search + API interception."""
+    """Pegasus Airlines Playwright scraper — homepage form search + API interception."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -124,34 +154,16 @@ class PegasusConnectorClient:
         t0 = time.monotonic()
         browser = await _get_browser()
 
-        # Detect browser type for appropriate user agent
-        is_firefox = browser.browser_type.name == "firefox"
-        ua = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"
-            if is_firefox
-            else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
-
         context = await browser.new_context(
             viewport=random.choice(_VIEWPORTS),
             locale=random.choice(_LOCALES),
             timezone_id=random.choice(_TIMEZONES),
             service_workers="block",
-            user_agent=ua,
             extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
         )
 
         try:
             page = await context.new_page()
-            # Apply stealth only for Chromium browsers
-            if not is_firefox:
-                try:
-                    from playwright_stealth import Stealth
-                    stealth = Stealth()
-                    await stealth.apply_stealth_async(page)
-                    logger.debug("Pegasus: stealth applied successfully")
-                except (ImportError, Exception) as e:
-                    logger.debug("Pegasus: stealth not available: %s", e)
 
             all_captured: list = []
             api_event = asyncio.Event()
