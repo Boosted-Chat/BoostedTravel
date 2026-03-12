@@ -2,14 +2,16 @@
 
 <!-- mcp-name: com.boostedchat/travel -->
 
-Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. Zero browser, zero markup, zero config. Built for autonomous AI agents.
+Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 53 direct LCC connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents.
 
 ## Install
 
 ```bash
-pip install boostedtravel           # SDK only (zero dependencies)
+pip install boostedtravel           # SDK + 53 LCC connectors
 pip install boostedtravel[cli]      # SDK + CLI (adds typer, rich)
 ```
+
+**Dependencies:** `pydantic`, `httpx`, `playwright`, `beautifulsoup4`, `lxml`. The SDK client itself uses stdlib `urllib` for API calls (zero deps), while the local connectors need the above for browser automation.
 
 ## Authentication
 
@@ -270,6 +272,24 @@ if best:
     booking = bt.book(offer_id=unlocked.offer_id, passengers=[...], contact_email="...")
 ```
 
+## Local LCC Search (No API Key)
+
+The SDK includes 53 connectors for low-cost carriers that run directly on your machine. No API key, no backend, completely free:
+
+```python
+from boostedtravel.local import search_local
+
+# Fires all relevant LCC connectors — Ryanair, Wizz Air, EasyJet, etc.
+result = await search_local("GDN", "BCN", "2026-06-15")
+print(f"{result['total_results']} offers from local scrapers")
+```
+
+The full search (`bt.search()`) runs both local connectors and cloud providers simultaneously and merges results.
+
+### Supported LCC Airlines (53)
+
+Ryanair, Wizz Air, EasyJet, Norwegian, Vueling, Eurowings, Transavia, Pegasus, Southwest, AirAsia, IndiGo, SpiceJet, Akasa Air, Air India Express, VietJet, Cebu Pacific, Scoot, Lion Air, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, flydubai, Air Arabia, flynas, Jazeera, Condor, Play, SunExpress, Volotea, Smartwings, Jet2, airBaltic, Spirit, Frontier, Volaris, VivaAerobus, Allegiant, Flair, GOL, Azul, JetSmart, Flybondi, Porter, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR, Air Peace, FlySafair, Kiwi.com
+
 ## Quick Start (CLI)
 
 ```bash
@@ -344,11 +364,7 @@ Prices are cheaper because we connect directly to airlines — no OTA markup.
 
 ## For Agents
 
-The SDK uses **zero external dependencies** (only Python stdlib `urllib`). This means:
-- Safe to install in sandboxed environments
-- No dependency conflicts
-- Minimal attack surface
-- Works on Python 3.10+
+The SDK client uses **only Python stdlib** (`urllib`) for API calls — safe for sandboxed environments. The local LCC connectors additionally require `playwright`, `httpx`, and `beautifulsoup4` for browser automation.
 
 The `--json` flag on every CLI command outputs structured JSON for easy parsing by agents.
 

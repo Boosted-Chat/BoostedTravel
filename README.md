@@ -1,6 +1,6 @@
 # BoostedTravel
 
-Agent-native flight search & booking. 400+ airlines, straight from the terminal — no browser, no scraping. Built for AI agents and developers.
+Agent-native flight search & booking. 400+ airlines, 53 direct LCC connectors, virtual interlining — straight from the terminal. Built for AI agents and developers.
 
 **API Base URL:** `https://api.boostedchat.com`
 
@@ -18,6 +18,7 @@ Flight websites inflate prices with demand tracking, cookie-based pricing, and s
 | View details & price | Free (with tracking/inflation) | **Free** (no tracking) |
 | Book | Ticket + hidden markup | **$1 unlock + ticket price** |
 | Price goes up on repeat search? | Yes | **Never** |
+| LCC coverage | Missing many low-cost carriers | **53 direct airline connectors** |
 
 ## Quick Start
 
@@ -123,6 +124,83 @@ All commands accept `--json` for structured output and `--api-key` to override t
 2. **Unlock** ($1) — confirms live price with the airline, reserves for 30 minutes
 3. **Book** (free) — creates real airline PNR, e-ticket sent to passenger email
 
+### Two Search Modes
+
+| Mode | What it does | Speed | Auth |
+|------|-------------|-------|------|
+| **Cloud search** | Queries GDS/NDC providers (Duffel, Amadeus, Sabre, Travelport, Kiwi) via backend API | 2-15s | API key |
+| **Local search** | Fires 53 LCC connectors on your machine via Playwright + httpx | 5-25s | None |
+
+Both modes run simultaneously by default. Results are merged, deduplicated, currency-normalized, and sorted.
+
+### Virtual Interlining
+
+The combo engine builds cross-airline round-trips by combining one-way fares from different carriers. A Ryanair outbound + Wizz Air return can save 30-50% vs booking a round-trip on either airline alone.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│  AI Agents / CLI / SDK / MCP Server                 │
+├──────────────────┬──────────────────────────────────┤
+│  Local connectors │  Cloud API                      │
+│  (53 LCC scrapers │  (Duffel, Amadeus, Sabre,       │
+│   via Playwright) │   Travelport, Kiwi, etc.)       │
+├──────────────────┴──────────────────────────────────┤
+│            Merge + Dedup + Combo Engine              │
+│            (virtual interlining, currency norm)      │
+└─────────────────────────────────────────────────────┘
+```
+
+## Local LCC Connectors (53 Airlines)
+
+The Python SDK includes 53 built-in connectors that scrape low-cost carriers directly — no API key needed for local search. Each connector uses one of three proven strategies:
+
+| Strategy | How it works | Example airlines |
+|----------|-------------|-----------------|
+| **Direct API** | Reverse-engineered REST/GraphQL endpoints via `httpx`/`curl_cffi` | Ryanair, Wizz Air, Norwegian, Akasa |
+| **CDP Chrome** | Real Chrome + Playwright CDP for sites with bot detection | EasyJet, Southwest, Pegasus |
+| **API Interception** | Playwright page navigation + response interception | VietJet, Cebu Pacific, Lion Air |
+
+### Supported Airlines
+
+<details>
+<summary>Full list of 53 LCC connectors</summary>
+
+| Region | Airlines |
+|--------|----------|
+| **Europe** | Ryanair, Wizz Air, EasyJet, Norwegian, Vueling, Eurowings, Transavia, Pegasus, Condor, Play, SunExpress, Volotea, Smartwings, Jet2, airBaltic |
+| **Middle East & Africa** | flydubai, Air Arabia, flynas, Jazeera Airways, Air Peace, FlySafair |
+| **Asia-Pacific** | AirAsia, IndiGo, SpiceJet, Akasa Air, Air India Express, VietJet, Cebu Pacific, Scoot, Lion Air, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR |
+| **Americas** | Southwest, Spirit, Frontier, Volaris, VivaAerobus, Allegiant, Flair, GOL, Azul, JetSmart, Flybondi, Porter |
+| **Aggregator** | Kiwi.com (virtual interlining + LCC fallback) |
+
+</details>
+
+### Local Search (No API Key)
+
+```python
+from boostedtravel.local import search_local
+
+# Runs all relevant connectors on your machine — completely free
+result = await search_local("GDN", "BCN", "2026-06-15")
+```
+
+```bash
+# CLI local-only search
+boostedtravel search-local GDN BCN 2026-06-15
+```
+
+### Shared Browser Infrastructure
+
+All browser-based connectors share a common launcher (`connectors/browser.py`) with:
+
+- Automatic Chrome discovery (Windows, macOS, Linux)
+- Stealth headless mode (`--headless=new`) — undetectable by airline bot protection
+- Off-screen window positioning to avoid stealing focus
+- CDP persistent sessions for airlines that require cookie state
+- `BOOSTED_BROWSER_VISIBLE=1` to show browser windows for debugging
+
 ## Error Handling
 
 | Exception | HTTP | When |
@@ -136,9 +214,10 @@ All commands accept `--json` for structured output and `--api-key` to override t
 
 | Package | Install | What it is |
 |---------|---------|------------|
-| **Python SDK + CLI** | `pip install boostedtravel` | SDK + `boostedtravel` CLI command |
+| **Python SDK + CLI** | `pip install boostedtravel` | SDK + `boostedtravel` CLI + 53 local LCC connectors |
 | **JS/TS SDK + CLI** | `npm install -g boostedtravel` | SDK + `boostedtravel` CLI command |
-| **MCP Server** | `npx boostedtravel-mcp` | Model Context Protocol for Claude, Cursor, etc. |
+| **MCP Server** | `npx boostedtravel-mcp` | Model Context Protocol for Claude, Cursor, Windsurf |
+| **Remote MCP** | `https://api.boostedchat.com/mcp` | Streamable HTTP — no install needed |
 
 ## Documentation
 
@@ -147,7 +226,9 @@ All commands accept `--json` for structured output and `--api-key` to override t
 | [Getting Started](docs/getting-started.md) | Authentication, payment setup, search flags, cabin classes |
 | [API Guide](docs/api-guide.md) | Error handling, search results, workflows, unlock details, location resolution |
 | [Agent Guide](docs/agent-guide.md) | AI agent architecture, preference scoring, price tracking, rate limits |
-| [AGENTS.md](AGENTS.md) | Agent-specific instructions |
+| [Packages & SDKs](docs/packages.md) | Python SDK, JavaScript SDK, MCP Server, local connectors |
+| [CLI Reference](docs/cli-reference.md) | Commands, flags, examples |
+| [AGENTS.md](AGENTS.md) | Agent-specific instructions (for LLMs) |
 | [CLAUDE.md](CLAUDE.md) | Codebase context for Claude |
 
 ## API Docs

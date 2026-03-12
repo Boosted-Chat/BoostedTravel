@@ -228,12 +228,30 @@ class NineAirConnectorClient:
 
     async def _fill_city(self, page, field_type: str, code: str) -> bool:
         """Fill a departure or arrival city field."""
-        placeholders = {
-            "departure": ["出发城市", "出发地", "出发", "departure", "from", "起飞", "始发"],
-            "arrival": ["到达城市", "目的地", "到达", "arrival", "to", "降落", "终点"],
-        }
 
-        # Strategy 1: match by placeholder text
+        # Strategy 1: .cityInput:visible (9air-specific class, no placeholders)
+        try:
+            idx = 0 if field_type == "departure" else 1
+            city_inputs = page.locator(".cityInput:visible")
+            if await city_inputs.count() > idx:
+                inp = city_inputs.nth(idx)
+                await inp.click(timeout=3000)
+                await asyncio.sleep(0.5)
+                await inp.fill(code)
+                await asyncio.sleep(2.0)
+                if await self._click_city_suggestion(page):
+                    return True
+                await page.keyboard.press("Enter")
+                await asyncio.sleep(0.5)
+                return True
+        except Exception:
+            pass
+
+        # Strategy 2: match by placeholder text
+        placeholders = {
+            "departure": ["出发城市", "出发地", "出发", "departure", "from"],
+            "arrival": ["到达城市", "目的地", "到达", "arrival", "to"],
+        }
         for ph in placeholders.get(field_type, []):
             try:
                 inp = page.locator(f"input[placeholder*='{ph}']").first
@@ -241,7 +259,7 @@ class NineAirConnectorClient:
                     await inp.click(timeout=3000)
                     await asyncio.sleep(0.5)
                     await inp.fill(code)
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(2.0)
                     if await self._click_city_suggestion(page):
                         return True
                     await page.keyboard.press("Enter")
@@ -250,10 +268,10 @@ class NineAirConnectorClient:
             except Exception:
                 continue
 
-        # Strategy 2: positional — departure=first city input, arrival=second
+        # Strategy 3: positional — departure=first text input, arrival=second
         try:
             idx = 0 if field_type == "departure" else 1
-            search_section = page.locator("[class*=search], [class*=booking], [class*=trip], form").first
+            search_section = page.locator(".flight-searchbar:visible, .plane-search:visible, form.flight-way:visible").first
             if await search_section.count() > 0:
                 inputs = search_section.locator("input[type='text'], input:not([type])")
             else:
@@ -263,7 +281,7 @@ class NineAirConnectorClient:
                 await inp.click(timeout=3000)
                 await asyncio.sleep(0.5)
                 await inp.fill(code)
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2.0)
                 if await self._click_city_suggestion(page):
                     return True
                 await page.keyboard.press("Enter")
@@ -272,34 +290,13 @@ class NineAirConnectorClient:
         except Exception:
             pass
 
-        # Strategy 3: class-based selectors
-        class_variants = {
-            "departure": ["dep", "origin", "from", "start"],
-            "arrival": ["arr", "dest", "to", "end"],
-        }
-        for kw in class_variants.get(field_type, []):
-            for sel in (f"[class*={kw}] input", f"input[class*={kw}]",
-                        f"[data-type*={kw}] input", f"input[name*={kw}]"):
-                try:
-                    inp = page.locator(sel).first
-                    if await inp.count() > 0:
-                        await inp.click(timeout=3000)
-                        await asyncio.sleep(0.5)
-                        await inp.fill(code)
-                        await asyncio.sleep(1.5)
-                        if await self._click_city_suggestion(page):
-                            return True
-                        await page.keyboard.press("Enter")
-                        await asyncio.sleep(0.5)
-                        return True
-                except Exception:
-                    continue
-
         return False
 
     async def _click_city_suggestion(self, page) -> bool:
         """Click the first visible city suggestion in a dropdown."""
-        for sel in (".city-item", "[class*=city-option]",
+        for sel in (".panel-search-body:visible li",
+                    ".city-item", "[class*=city-option]",
+                    "[class*=city-content-list]:visible li",
                     "[class*=dropdown] li", "[class*=suggest] li",
                     ".ant-select-dropdown-menu-item",
                     "[class*=option]", "[class*=list] li",

@@ -6,7 +6,7 @@ hide:
 # BoostedTravel
 
 **Flight search & booking for AI agents and developers.**
-400+ airlines, straight from the terminal.
+400+ airlines, 53 direct LCC connectors, virtual interlining — straight from the terminal.
 
 <div class="install-cmd"><span class="prompt">$</span> pip install boostedtravel</div>
 

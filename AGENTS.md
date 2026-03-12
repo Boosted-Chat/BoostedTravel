@@ -6,6 +6,10 @@
 
 BoostedTravel is an agent-native, CLI-native flight search and booking tool. Instead of burning tokens on browser automation, scraping, or building your own flight integration — just call `boostedtravel search` from the terminal or use the SDK/MCP tools.
 
+It searches **400+ airlines** through two channels simultaneously:
+- **Cloud providers** (Duffel, Amadeus, Sabre, Travelport, Kiwi) — full-service and LCC airlines via NDC/GDS
+- **53 local LCC connectors** — direct airline scrapers that run on your machine, no API key needed
+
 It returns **real airline prices with zero price bias** — no demand-based inflation, no cookie tracking, no surge pricing. The same flight that costs $350 on a travel website is typically **$20–$50 cheaper** here because you're not paying for the brand of the website.
 
 **API Base URL:** `https://api.boostedchat.com`
@@ -28,7 +32,13 @@ Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate price
 ```
 POST /api/v1/flights/search
 ```
-Search 400+ airlines across multiple providers. Returns real-time prices with zero markup or bias. Completely free, no limits.
+Search 400+ airlines across multiple providers + 53 local LCC connectors. Returns real-time prices with zero markup or bias. Completely free, no limits.
+
+**Local-only search** (no API key, no backend):
+```python
+from boostedtravel.local import search_local
+result = await search_local("GDN", "BCN", "2026-06-15")
+```
 
 ### 2. Unlock ($1.00)
 ```

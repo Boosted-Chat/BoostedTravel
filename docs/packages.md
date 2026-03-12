@@ -1,14 +1,15 @@
 # Packages
 
-BoostedTravel is available as a Python SDK, JavaScript SDK, and MCP server.
+BoostedTravel is available as a Python SDK, JavaScript SDK, MCP server, and remote MCP endpoint.
 
 ## Overview
 
 | Package | Install | What it is |
 |---------|---------|------------|
-| **Python SDK + CLI** | `pip install boostedtravel` | SDK + `boostedtravel` CLI command |
+| **Python SDK + CLI** | `pip install boostedtravel` | SDK + CLI + 53 local LCC connectors |
 | **JS/TS SDK + CLI** | `npm install -g boostedtravel` | SDK + `boostedtravel` CLI command |
 | **MCP Server** | `npx boostedtravel-mcp` | Model Context Protocol for AI agents |
+| **Remote MCP** | `https://api.boostedchat.com/mcp` | Streamable HTTP — no install needed |
 
 ## Python SDK
 
@@ -21,7 +22,11 @@ pip install boostedtravel
 Provides:
 
 - `BoostedTravel` client class with `search()`, `unlock()`, `book()`, `me()`, `resolve_location()`, `setup_payment()`
+- **53 local LCC connectors** — scrape airline websites directly on your machine (Ryanair, Wizz Air, EasyJet, Norwegian, AirAsia, IndiGo, and 47 more)
+- `search_local()` — free local-only search, no API key needed
 - CLI command `boostedtravel` with all operations
+- Virtual interlining engine — cross-airline round-trips from one-way fares
+- Shared browser infrastructure — stealth Chrome launcher, CDP sessions, anti-bot handling
 - Typed response models: `FlightSearchResponse`, `UnlockResponse`, `BookingResponse`, `AgentProfile`
 - Exception classes: `AuthenticationError`, `PaymentRequiredError`, `OfferExpiredError`
 
@@ -30,6 +35,15 @@ from boostedtravel import BoostedTravel
 
 bt = BoostedTravel(api_key="trav_...")
 flights = bt.search("LHR", "JFK", "2026-04-15")
+```
+
+### Local Search (No API Key)
+
+```python
+from boostedtravel.local import search_local
+
+# Free, runs all relevant LCC connectors on your machine
+result = await search_local("GDN", "BCN", "2026-06-15")
 ```
 
 [Full Python SDK docs →](https://github.com/Boosted-Chat/BoostedTravel/tree/main/sdk/python)

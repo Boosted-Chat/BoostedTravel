@@ -39,7 +39,9 @@ from boostedtravel.models.flights import (
 logger = logging.getLogger(__name__)
 
 _BASE = "https://en.ch.com"
+_BASE_CN = "https://flights.ch.com"
 _SEARCH_URL = f"{_BASE}/Flights/SearchByTime"
+_SEARCH_URL_CN = f"{_BASE_CN}/Flights/SearchByTime"
 
 _HEADERS = {
     "User-Agent": (
@@ -52,6 +54,13 @@ _HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "Referer": f"{_BASE}/flights",
     "Origin": _BASE,
+}
+
+_HEADERS_CN = {
+    **_HEADERS,
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": f"{_BASE_CN}/",
+    "Origin": _BASE_CN,
 }
 
 
@@ -81,55 +90,65 @@ class SpringConnectorClient:
             "InfNum": str(req.infants),
         }
 
+        # Try English site first, then Chinese site for domestic routes
+        for base, search_url, headers, cookies in (
+            (_BASE, _SEARCH_URL, _HEADERS, {"lang": "en-us"}),
+            (_BASE_CN, _SEARCH_URL_CN, _HEADERS_CN, {"lang": "zh-cn"}),
+        ):
+            data = await self._api_call(base, search_url, form_data, headers, cookies)
+            if data and data.get("Code") == "0" and data.get("Route"):
+                offers = self._parse_routes(data, req)
+                if offers:
+                    elapsed = time.monotonic() - t0
+                    offers.sort(key=lambda o: o.price)
+                    logger.info(
+                        "Spring %s->%s returned %d offers in %.1fs (via %s)",
+                        req.origin, req.destination, len(offers), elapsed, base,
+                    )
+                    search_id = hashlib.md5(
+                        f"spring{req.origin}{req.destination}{req.date_from}".encode()
+                    ).hexdigest()[:12]
+                    return FlightSearchResponse(
+                        search_id=f"fs_{search_id}",
+                        origin=req.origin,
+                        destination=req.destination,
+                        currency=req.currency or "CNY",
+                        offers=offers,
+                        total_results=len(offers),
+                    )
+
+        # Neither site returned results
+        logger.info("Spring %s->%s: no results from either site", req.origin, req.destination)
+        return self._empty(req)
+
+    async def _api_call(
+        self, base: str, search_url: str, form_data: dict,
+        headers: dict, cookies: dict,
+    ) -> dict | None:
+        """Make a single API call to a Spring Airlines endpoint."""
         try:
             async with httpx.AsyncClient(
                 timeout=self.timeout, follow_redirects=True,
-                cookies={"lang": "en-us"},
+                cookies=cookies,
             ) as client:
                 # Get session cookie
                 await client.get(
-                    f"{_BASE}/flights",
-                    headers={"User-Agent": _HEADERS["User-Agent"], "Accept": "text/html,*/*"},
+                    base,
+                    headers={"User-Agent": headers["User-Agent"], "Accept": "text/html,*/*"},
                 )
-                # Search
-                resp = await client.post(_SEARCH_URL, data=form_data, headers=_HEADERS)
+                resp = await client.post(search_url, data=form_data, headers=headers)
         except httpx.HTTPError as exc:
-            logger.error("Spring API request failed: %s", exc)
-            return self._empty(req)
+            logger.debug("Spring API call to %s failed: %s", base, exc)
+            return None
 
         if resp.status_code != 200:
-            logger.warning("Spring API returned %d", resp.status_code)
-            return self._empty(req)
+            logger.debug("Spring %s returned %d", base, resp.status_code)
+            return None
 
         try:
-            data = resp.json()
+            return resp.json()
         except Exception:
-            logger.warning("Spring API returned non-JSON response")
-            return self._empty(req)
-
-        if data.get("Code") != "0":
-            logger.warning("Spring API error code: %s", data.get("Code"))
-            return self._empty(req)
-
-        offers = self._parse_routes(data, req)
-        elapsed = time.monotonic() - t0
-        offers.sort(key=lambda o: o.price)
-        logger.info(
-            "Spring %s->%s returned %d offers in %.1fs",
-            req.origin, req.destination, len(offers), elapsed,
-        )
-
-        search_id = hashlib.md5(
-            f"spring{req.origin}{req.destination}{req.date_from}".encode()
-        ).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{search_id}",
-            origin=req.origin,
-            destination=req.destination,
-            currency=req.currency or "CNY",
-            offers=offers,
-            total_results=len(offers),
-        )
+            return None
 
     def _parse_routes(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         raw_routes = data.get("Route", [])

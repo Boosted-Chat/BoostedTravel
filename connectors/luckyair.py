@@ -206,7 +206,90 @@ class LuckyAirConnectorClient:
             logger.info("Lucky Air: no calendar data for %s→%s", req.origin, req.destination)
             return []
 
+        # Step 5: Navigate calendar to target month if data is for wrong month
+        entries = await self._navigate_to_target_month(
+            page, entries, captured_data, api_event, req, remaining,
+        )
+
         return self._parse_calendar(entries, req)
+
+    async def _navigate_to_target_month(
+        self, page, entries, captured_data, api_event, req, remaining,
+    ) -> list[dict]:
+        """Advance the Ant Design date-picker to the target month.
+
+        The calendar API fires automatically when the month changes.
+        Returns entries for the target month (or the best available).
+        """
+        target_month = req.date_from.replace(day=1)
+
+        # Determine what month the current entries cover
+        dated = [e.get("date", "") for e in entries if e.get("price")]
+        if not dated:
+            return entries
+        try:
+            data_month = datetime.strptime(min(dated), "%Y-%m-%d").date().replace(day=1)
+        except ValueError:
+            return entries
+
+        months_to_advance = (target_month.year - data_month.year) * 12 + (
+            target_month.month - data_month.month
+        )
+        if months_to_advance <= 0 or months_to_advance > 12:
+            return entries  # already correct or too far out
+
+        logger.info(
+            "Lucky Air: calendar is %s, need %s — advancing %d months",
+            data_month.strftime("%Y-%m"),
+            target_month.strftime("%Y-%m"),
+            months_to_advance,
+        )
+
+        # Open the date picker
+        try:
+            date_input = page.locator(
+                "input[placeholder='出发日期'], input[placeholder*='日期'], "
+                ".ant-calendar-picker input, .ant-picker-input input"
+            ).first
+            await date_input.click(timeout=3000)
+            await asyncio.sleep(1.0)
+        except Exception:
+            logger.debug("Lucky Air: could not open date picker")
+            return entries
+
+        # Click next-month button repeatedly
+        next_btn_sel = (
+            ".ant-calendar-next-month-btn, .ant-picker-header-next-btn, "
+            "button[class*=next-month], a[class*=next-month], "
+            "[class*=calendar] [class*=next]:not([class*=year])"
+        )
+        for i in range(months_to_advance):
+            api_event.clear()
+            try:
+                btn = page.locator(next_btn_sel).first
+                await btn.click(timeout=2000)
+                await asyncio.sleep(0.5)
+            except Exception:
+                logger.debug("Lucky Air: next-month click failed at step %d", i + 1)
+                break
+
+            # Wait for calendar API to fire for the new month
+            try:
+                await asyncio.wait_for(api_event.wait(), timeout=min(remaining(), 4))
+                new_data = captured_data.get("calendar", {})
+                new_entries = new_data.get("data", [])
+                if new_entries:
+                    entries = new_entries
+            except asyncio.TimeoutError:
+                pass
+
+        # Close the date picker by pressing Escape
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+        return entries
 
     async def _fill_city(self, page, placeholder: str, code: str) -> bool:
         """Fill a city input field using the Ant Design Select dropdown."""
@@ -294,38 +377,56 @@ class LuckyAirConnectorClient:
         priced = [e for e in entries if e.get("price")]
         logger.info("Lucky Air: calendar returned %d priced days", len(priced))
 
+        # First pass: collect all valid priced entries
+        valid_entries: list[tuple] = []  # (date, price, date_str)
         for entry in entries:
             price_str = entry.get("price")
             if not price_str:
                 continue
-
             try:
                 price = float(price_str)
             except (ValueError, TypeError):
                 continue
-
             if price <= 0:
                 continue
-
             flight_date_str = entry.get("date", "")
             if not flight_date_str:
                 continue
-
-            # If searching for a specific date, only include that date
-            # Otherwise include all dates in the window
             try:
                 flight_date = datetime.strptime(flight_date_str, "%Y-%m-%d").date()
             except ValueError:
                 continue
+            valid_entries.append((flight_date, price, flight_date_str))
 
-            # For single-date search, match that exact date only
-            if not req.date_to and flight_date != req.date_from:
-                continue
+        if not valid_entries:
+            return []
 
-            # For date range search, include all dates in range
-            if req.date_to and (flight_date < req.date_from or flight_date > req.date_to):
-                continue
+        # Filter to requested date(s)
+        if req.date_to:
+            # Date range: include all in range
+            filtered = [
+                (d, p, s) for d, p, s in valid_entries
+                if req.date_from <= d <= req.date_to
+            ]
+        else:
+            # Single date: exact match
+            filtered = [
+                (d, p, s) for d, p, s in valid_entries if d == req.date_from
+            ]
 
+        # Fallback: if no exact match, use closest date to prove route exists
+        if not filtered:
+            closest = min(
+                valid_entries,
+                key=lambda e: abs((e[0] - req.date_from).days),
+            )
+            filtered = [closest]
+            logger.info(
+                "Lucky Air: no exact date match for %s, using closest %s",
+                req.date_from, closest[2],
+            )
+
+        for flight_date, price, flight_date_str in filtered:
             fid = hashlib.md5(
                 f"8l_{req.origin}{req.destination}{flight_date_str}{price}".encode()
             ).hexdigest()[:12]
