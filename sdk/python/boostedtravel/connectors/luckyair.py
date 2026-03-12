@@ -153,14 +153,16 @@ class LuckyAirConnectorClient:
             try:
                 url = response.url
                 if response.status == 200 and any(k in url for k in (
-                    "price/calendar", "calendar/fix", "flight/query",
+                    "price/calendar", "calendar/fix",
                     "searchflight", "availability",
                 )):
                     ct = response.headers.get("content-type", "")
                     if "json" in ct:
                         data = await response.json()
                         if data and isinstance(data, dict):
-                            if data.get("status") == "success" or "data" in data:
+                            # Must have a list "data" field (calendar prices)
+                            inner = data.get("data")
+                            if isinstance(inner, list) and inner:
                                 captured_data["calendar"] = data
                                 api_event.set()
             except Exception:
@@ -186,110 +188,88 @@ class LuckyAirConnectorClient:
         if req.origin != "KMG":
             await self._fill_city(page, "出发城市", req.origin)
 
-        # Step 3: Fill destination city → triggers calendar API automatically
+        # Step 3: Fill destination city
         logger.info("Lucky Air: selecting destination %s", req.destination)
         await self._fill_city(page, "到达城市", req.destination)
 
-        # Step 4: Wait for calendar API response
-        try:
-            await asyncio.wait_for(api_event.wait(), timeout=min(remaining(), 10))
-        except asyncio.TimeoutError:
-            logger.warning("Lucky Air: timed out waiting for calendar API")
-            return []
-
-        data = captured_data.get("calendar", {})
-        if not data:
-            return []
-
-        entries = data.get("data", [])
-        if not entries:
-            logger.info("Lucky Air: no calendar data for %s→%s", req.origin, req.destination)
-            return []
-
-        # Step 5: Navigate calendar to target month if data is for wrong month
-        entries = await self._navigate_to_target_month(
-            page, entries, captured_data, api_event, req, remaining,
-        )
-
-        return self._parse_calendar(entries, req)
-
-    async def _navigate_to_target_month(
-        self, page, entries, captured_data, api_event, req, remaining,
-    ) -> list[dict]:
-        """Advance the Ant Design date-picker to the target month.
-
-        The calendar API fires automatically when the month changes.
-        Returns entries for the target month (or the best available).
-        """
-        target_month = req.date_from.replace(day=1)
-
-        # Determine what month the current entries cover
-        dated = [e.get("date", "") for e in entries if e.get("price")]
-        if not dated:
-            return entries
-        try:
-            data_month = datetime.strptime(min(dated), "%Y-%m-%d").date().replace(day=1)
-        except ValueError:
-            return entries
-
-        months_to_advance = (target_month.year - data_month.year) * 12 + (
-            target_month.month - data_month.month
-        )
-        if months_to_advance <= 0 or months_to_advance > 12:
-            return entries  # already correct or too far out
-
-        logger.info(
-            "Lucky Air: calendar is %s, need %s — advancing %d months",
-            data_month.strftime("%Y-%m"),
-            target_month.strftime("%Y-%m"),
-            months_to_advance,
-        )
-
-        # Open the date picker
+        # Step 4: Click the date input to open the calendar picker
+        # The calendar API fires when the date picker is opened/navigated,
+        # NOT when cities are selected.
         try:
             date_input = page.locator(
                 "input[placeholder='出发日期'], input[placeholder*='日期'], "
                 ".ant-calendar-picker input, .ant-picker-input input"
             ).first
             await date_input.click(timeout=3000)
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.5)
         except Exception:
             logger.debug("Lucky Air: could not open date picker")
-            return entries
 
-        # Click next-month button repeatedly
+        # Step 5: Navigate to target month — triggers calendar API
+        entries = await self._navigate_calendar_to_month(
+            page, captured_data, api_event, req, remaining,
+        )
+
+        return self._parse_calendar(entries, req)
+
+    async def _navigate_calendar_to_month(
+        self, page, captured_data, api_event, req, remaining,
+    ) -> list[dict]:
+        """Navigate the Ant Design calendar to the target month.
+
+        Each month navigation triggers a calendar API call.
+        Returns the entries for the best available month.
+        """
+        target_month = req.date_from.replace(day=1)
         next_btn_sel = (
             ".ant-calendar-next-month-btn, .ant-picker-header-next-btn, "
             "button[class*=next-month], a[class*=next-month], "
             "[class*=calendar] [class*=next]:not([class*=year])"
         )
-        for i in range(months_to_advance):
+        best_entries: list[dict] = []
+
+        # Try navigating up to 12 months forward from current calendar position
+        for i in range(13):
+            # Wait for any calendar data that might have been triggered
+            if not api_event.is_set():
+                try:
+                    await asyncio.wait_for(api_event.wait(), timeout=min(remaining(), 4))
+                except asyncio.TimeoutError:
+                    pass
+
+            data = captured_data.get("calendar", {})
+            entries = data.get("data", []) if isinstance(data, dict) else []
+            if not isinstance(entries, list):
+                entries = []
+
+            if entries:
+                best_entries = entries
+                # Check if we've reached the target month
+                dated = [e.get("date", "") for e in entries if isinstance(e, dict) and e.get("price")]
+                if dated:
+                    try:
+                        entry_month = datetime.strptime(min(dated), "%Y-%m-%d").date().replace(day=1)
+                        if entry_month >= target_month:
+                            logger.info("Lucky Air: reached target month %s", entry_month.strftime("%Y-%m"))
+                            return entries
+                    except ValueError:
+                        pass
+
+            # Click next month
             api_event.clear()
             try:
                 btn = page.locator(next_btn_sel).first
+                if await btn.count() == 0:
+                    break
                 await btn.click(timeout=2000)
                 await asyncio.sleep(0.5)
             except Exception:
                 logger.debug("Lucky Air: next-month click failed at step %d", i + 1)
                 break
 
-            # Wait for calendar API to fire for the new month
-            try:
-                await asyncio.wait_for(api_event.wait(), timeout=min(remaining(), 4))
-                new_data = captured_data.get("calendar", {})
-                new_entries = new_data.get("data", [])
-                if new_entries:
-                    entries = new_entries
-            except asyncio.TimeoutError:
-                pass
-
-        # Close the date picker by pressing Escape
-        try:
-            await page.keyboard.press("Escape")
-        except Exception:
-            pass
-
-        return entries
+        if not best_entries:
+            logger.warning("Lucky Air: no calendar data found after navigation")
+        return best_entries
 
     async def _fill_city(self, page, placeholder: str, code: str) -> bool:
         """Fill a city input field using the Ant Design Select dropdown."""
