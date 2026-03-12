@@ -29,7 +29,7 @@ import { spawn } from 'child_process';
 const BASE_URL = (process.env.BOOSTEDTRAVEL_BASE_URL || 'https://api.boostedchat.com').replace(/\/$/, '');
 const API_KEY = process.env.BOOSTEDTRAVEL_API_KEY || '';
 const PYTHON = process.env.BOOSTEDTRAVEL_PYTHON || 'python3';
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 
 // ── Local Python Search ─────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ function searchLocal(params: Record<string, unknown>): Promise<Record<string, un
     const pythonCmd = process.platform === 'win32' ? 'python' : PYTHON;
     const child = spawn(pythonCmd, ['-m', 'boostedtravel.local'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 120_000,
+      timeout: 180_000,
     });
 
     let stdout = '';
