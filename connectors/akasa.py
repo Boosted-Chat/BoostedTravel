@@ -1,20 +1,19 @@
 """
-Akasa Air Playwright connector — navigates to akasaair.com and intercepts the
-Navitaire/NSK availability API response.
+Akasa Air hybrid connector — direct Navitaire NSK API first, Playwright fallback.
 
 Akasa Air (IATA: QP) is an Indian low-cost carrier (launched 2022).
 Website: www.akasaair.com — React (Next.js) SPA booking engine.
 
 Backend: Navitaire New Skies (NSK) via prod-bl.qp.akasaair.com.
-Direct HTTP to the API returns 403 — requires a browser session with valid
-auth token from /api/ibe/token/generateToken.
 
-Strategy:
-1. Navigate to akasaair.com homepage (loads search form)
-2. Set up Playwright response interception for availability/search API
-3. Fill the search form (one-way, origin, destination, date) and submit
-4. Capture the intercepted Navitaire JSON response
-5. Parse journeys + fares → FlightOffers
+Hybrid strategy (Mar 2026):
+1. Try direct HTTP via curl_cffi (Chrome TLS fingerprint):
+   a. Token: POST prod-bl.qp.akasaair.com/api/ibe/token/generateToken
+   b. Search: POST prod-bl.qp.akasaair.com/api/ibe/availability/search
+   - Token is cached and reused until close to expiry
+   - ~1–2s total (token + search), no browser needed
+2. If direct API fails → fall back to full Playwright browser flow
+   - Navigate to akasaair.com homepage, fill form, intercept API response
 
 API details (discovered Mar 2026):
   Token: POST prod-bl.qp.akasaair.com/api/ibe/token/generateToken
@@ -52,6 +51,24 @@ from models.flights import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Direct API constants ─────────────────────────────────────────────────
+_QP_BASE = "https://prod-bl.qp.akasaair.com"
+_TOKEN_URL = f"{_QP_BASE}/api/ibe/token/generateToken"
+_SEARCH_URL = f"{_QP_BASE}/api/ibe/availability/search"
+_TOKEN_MARGIN = 60  # refresh token 60s before expiry
+
+# Cached token state (guarded by _qp_token_lock)
+_qp_token: str | None = None
+_qp_token_expiry: float = 0.0  # monotonic timestamp
+_qp_token_lock: Optional[asyncio.Lock] = None
+
+
+def _get_qp_token_lock() -> asyncio.Lock:
+    global _qp_token_lock
+    if _qp_token_lock is None:
+        _qp_token_lock = asyncio.Lock()
+    return _qp_token_lock
 
 _VIEWPORTS = [
     {"width": 1366, "height": 768},
@@ -100,8 +117,65 @@ async def _get_browser():
         return _browser
 
 
+async def _ensure_qp_token() -> str | None:
+    """Get a valid Navitaire NSK token for Akasa, refreshing if needed."""
+    global _qp_token, _qp_token_expiry
+    lock = _get_qp_token_lock()
+    async with lock:
+        # Re-check inside the lock in case another coroutine already refreshed
+        if _qp_token and time.monotonic() < _qp_token_expiry:
+            return _qp_token
+        try:
+            from curl_cffi import requests as cffi_requests
+
+            ses = cffi_requests.Session(impersonate="chrome131")
+            r = ses.post(
+                _TOKEN_URL,
+                json={"LanguageCode": "en", "market": "en-IN"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Origin": "https://www.akasaair.com",
+                    "Referer": "https://www.akasaair.com/",
+                },
+                timeout=10,
+            )
+            if r.status_code != 200:
+                logger.warning("Akasa token init failed: HTTP %s", r.status_code)
+                return None
+            data = r.json()
+            tok = (
+                data.get("data", {}).get("token")
+                or data.get("token")
+                or data.get("accessToken")
+                or data.get("access_token")
+            )
+            # Fallback: look for a JWT-shaped value (three base64url segments)
+            if not tok:
+                for v in data.values():
+                    if isinstance(v, str) and v.count(".") == 2 and len(v) > 50:
+                        tok = v
+                        break
+            if tok:
+                ttl = (
+                    data.get("data", {}).get("expiresIn")
+                    or data.get("expiresIn")
+                    or data.get("expires_in")
+                    or 3600
+                )
+                _qp_token = tok
+                _qp_token_expiry = time.monotonic() + int(ttl) - _TOKEN_MARGIN
+                logger.info("Akasa: token acquired (TTL=%ss)", ttl)
+                return tok
+            logger.warning("Akasa: no token found in generateToken response")
+            return None
+        except Exception as e:
+            logger.warning("Akasa: token init error: %s", e)
+            return None
+
+
 class AkasaConnectorClient:
-    """Akasa Air Playwright connector — intercepts Navitaire availability API."""
+    """Akasa Air hybrid connector — direct Navitaire NSK API first, Playwright fallback."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -110,6 +184,99 @@ class AkasaConnectorClient:
         pass  # Browser is shared singleton
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        # Try direct API first (no browser)
+        try:
+            result = await self._search_via_api(req)
+            if result and result.total_results > 0:
+                return result
+            logger.info("Akasa: direct API returned 0 results, falling back to Playwright")
+        except Exception as e:
+            logger.info("Akasa: direct API failed (%s), falling back to Playwright", e)
+
+        # Fallback: full Playwright browser flow
+        return await self._search_via_playwright(req)
+
+    # ── Direct API path (curl_cffi) ──────────────────────────────────────
+
+    async def _search_via_api(self, req: FlightSearchRequest) -> FlightSearchResponse | None:
+        """Try direct HTTP to Navitaire NSK availability/search API via curl_cffi."""
+        global _qp_token, _qp_token_expiry
+        t0 = time.monotonic()
+        token = await _ensure_qp_token()
+        if not token:
+            return None
+
+        try:
+            from curl_cffi import requests as cffi_requests
+
+            # Build pax info
+            pax = {"ADT": req.adults, "CHD": req.children or 0, "INF": req.infants or 0}
+
+            payload = {
+                "model": {
+                    "contentType": "json",
+                    "fareFilters": {"type": "Cheapest"},
+                    "loyaltyFilter": {"accountNumber": None, "programCode": None},
+                    "paxInfo": pax,
+                    "promotionCode": "",
+                    "tripDetails": {
+                        "beginDate": req.date_from.strftime("%Y-%m-%d"),
+                        "endDate": req.date_from.strftime("%Y-%m-%d"),
+                        "destStation": req.destination,
+                        "originStation": req.origin,
+                        "tripType": "OneWay",
+                        "channel": "Web",
+                    },
+                }
+            }
+
+            ses = cffi_requests.Session(impersonate="chrome131")
+            r = ses.post(
+                _SEARCH_URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Origin": "https://www.akasaair.com",
+                    "Referer": "https://www.akasaair.com/",
+                },
+                timeout=20,
+            )
+
+            if r.status_code == 401:
+                # Token expired; clear cache under lock
+                lock = _get_qp_token_lock()
+                async with lock:
+                    _qp_token = None
+                    _qp_token_expiry = 0.0
+                logger.warning("Akasa: 401 from availability/search, token cleared")
+                return None
+
+            if r.status_code != 200:
+                logger.warning("Akasa: availability/search HTTP %s", r.status_code)
+                return None
+
+            data = r.json()
+            elapsed = time.monotonic() - t0
+            offers = self._parse_navitaire_response(data, req)
+            offers.sort(key=lambda o: o.price)
+            for o in offers:
+                o.source = "akasa_api"
+
+            logger.info(
+                "Akasa %s→%s: %d offers in %.1fs (direct API)",
+                req.origin, req.destination, len(offers), elapsed,
+            )
+            return self._build_response(offers, req)
+
+        except Exception as e:
+            logger.warning("Akasa: direct API error: %s", e)
+            return None
+
+    # ── Playwright fallback ──────────────────────────────────────────────
+
+    async def _search_via_playwright(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
         browser = await _get_browser()
         context = await browser.new_context(
@@ -197,18 +364,7 @@ class AkasaConnectorClient:
                 req.origin, req.destination, len(offers), elapsed,
             )
 
-            search_hash = hashlib.md5(
-                f"akasa{req.origin}{req.destination}{req.date_from}".encode()
-            ).hexdigest()[:12]
-
-            return FlightSearchResponse(
-                search_id=f"fs_{search_hash}",
-                origin=req.origin,
-                destination=req.destination,
-                currency=offers[0].currency if offers else req.currency,
-                offers=offers,
-                total_results=len(offers),
-            )
+            return self._build_response(offers, req)
 
         except Exception as e:
             logger.error("Akasa Playwright error: %s", e)
@@ -591,7 +747,9 @@ class AkasaConnectorClient:
             f"&adults={req.adults}&tripType=O"
         )
 
-    def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    def _build_response(
+        self, offers: list[FlightOffer], req: FlightSearchRequest,
+    ) -> FlightSearchResponse:
         h = hashlib.md5(
             f"akasa{req.origin}{req.destination}{req.date_from}".encode()
         ).hexdigest()[:12]
@@ -599,7 +757,10 @@ class AkasaConnectorClient:
             search_id=f"fs_{h}",
             origin=req.origin,
             destination=req.destination,
-            currency=req.currency,
-            offers=[],
-            total_results=0,
+            currency=offers[0].currency if offers else (req.currency or "INR"),
+            offers=offers,
+            total_results=len(offers),
         )
+
+    def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        return self._build_response([], req)
