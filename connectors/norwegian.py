@@ -183,6 +183,7 @@ class NorwegianConnectorClient:
 
     async def _search_via_api(self, req: FlightSearchRequest) -> FlightSearchResponse | None:
         """Try direct HTTP to Amadeus DES air-bounds API using curl_cffi."""
+        global _dy_token, _dy_token_expiry
         t0 = time.monotonic()
         token = await _ensure_dy_token()
         if not token:

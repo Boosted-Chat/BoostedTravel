@@ -200,6 +200,7 @@ class AkasaConnectorClient:
 
     async def _search_via_api(self, req: FlightSearchRequest) -> FlightSearchResponse | None:
         """Try direct HTTP to Navitaire NSK availability/search API via curl_cffi."""
+        global _qp_token, _qp_token_expiry
         t0 = time.monotonic()
         token = await _ensure_qp_token()
         if not token:
