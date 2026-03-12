@@ -126,7 +126,7 @@ class SouthwestConnectorClient:
         self.timeout = timeout
 
     async def close(self):
-        pass  # Browser is shared singleton
+        pass  # Browser and cookie farm state are shared singletons
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
@@ -344,7 +344,7 @@ class SouthwestConnectorClient:
                 continue
 
             if r.status_code != 200:
-                logger.debug("Southwest: API %s returned %d", url, r.status_code)
+                logger.warning("Southwest: API %s returned HTTP %d", url, r.status_code)
                 continue
 
             try:
@@ -363,8 +363,8 @@ class SouthwestConnectorClient:
                 return data
 
             # Check if it looks like a valid but empty response
-            if isinstance(data, dict) and data.get("success") is not None:
-                logger.debug("Southwest: API %s returned valid but empty response", url)
+            if isinstance(data, dict) and data.get("success") is True:
+                logger.debug("Southwest: API %s returned success but no flight data", url)
                 return data
 
         return None
