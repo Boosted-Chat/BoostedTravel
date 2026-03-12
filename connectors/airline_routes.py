@@ -287,6 +287,8 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
     "peach": {"JP", "KR", "TW", "CN", "HK", "TH"},
     "zipair": {"JP", "KR", "TH", "SG", "US", "CA"},
     "spring": {"CN", "JP", "KR", "TH", "KH", "MY"},
+    "luckyair": {"CN", "TH", "MM", "LA", "KH", "VN", "BD"},
+    "9air": {"CN"},
     "jejuair": {"KR", "JP", "TW", "PH", "VN", "TH", "SG", "MY", "GU"},
     "twayair": {"KR", "JP", "TW", "VN", "TH", "PH", "SG", "GU"},
     "batikair": {"ID", "MY", "SG", "TH", "AU"},

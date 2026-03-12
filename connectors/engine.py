@@ -78,6 +78,8 @@ from connectors.nokair import NokAirConnectorClient
 from connectors.airpeace import AirPeaceConnectorClient
 from connectors.airindiaexpress import AirIndiaExpressConnectorClient
 from connectors.batikair import BatikAirConnectorClient
+from connectors.luckyair import LuckyAirConnectorClient
+from connectors.nineair import NineAirConnectorClient
 
 from models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, FlightSearchResponse
 
@@ -132,6 +134,8 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("airpeace_direct", AirPeaceConnectorClient, 25.0),
     ("airindiaexpress_direct", AirIndiaExpressConnectorClient, 25.0),
     ("batikair_direct", BatikAirConnectorClient, 25.0),
+    ("luckyair_direct", LuckyAirConnectorClient, 30.0),
+    ("9air_direct", NineAirConnectorClient, 30.0),
 ]
 
 
