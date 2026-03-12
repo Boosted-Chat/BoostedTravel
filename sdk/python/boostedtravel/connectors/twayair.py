@@ -131,7 +131,7 @@ async def _get_nodriver_page():
         try:
             from boostedtravel.connectors.browser import stealth_position_arg
             _nd_browser = await uc.start(
-                headless=False,
+                headless=True,
                 browser_args=["--window-size=1440,900", *stealth_position_arg()],
             )
         except Exception as e:

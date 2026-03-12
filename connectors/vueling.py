@@ -182,13 +182,13 @@ async def _get_browser():
         _pw_instance = await async_playwright().start()
         try:
             _browser = await _pw_instance.chromium.launch(
-                headless=False,
+                headless=True,
                 channel="chrome",
                 args=["--disable-blink-features=AutomationControlled", *stealth_args()],
             )
         except Exception:
             _browser = await _pw_instance.chromium.launch(
-                headless=False,
+                headless=True,
                 args=["--disable-blink-features=AutomationControlled", "--no-sandbox", *stealth_args()],
             )
         logger.info("Vueling: Playwright browser launched (headed Chrome)")

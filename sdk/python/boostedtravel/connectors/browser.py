@@ -81,25 +81,35 @@ def _is_visible() -> bool:
     return os.environ.get("BOOSTED_BROWSER_VISIBLE", "").strip() in ("1", "true", "yes")
 
 
+def is_headless() -> bool:
+    """Returns True when browsers should run headless (default).
+
+    Set BOOSTED_BROWSER_VISIBLE=1 to force headed mode for debugging.
+    """
+    return not _is_visible()
+
+
 def stealth_args() -> list[str]:
     """
-    Chrome CLI args that push the window off-screen and minimize it.
+    Chrome CLI args for invisible operation.
 
-    When BOOSTED_BROWSER_VISIBLE=1, returns empty list (normal window).
+    Default: --headless=new (Chrome's modern undetectable headless).
+    When BOOSTED_BROWSER_VISIBLE=1, returns empty list (normal headed window).
     """
     if _is_visible():
         return []
     return [
+        "--headless=new",
         "--window-position=-2400,-2400",
         "--window-size=800,600",
     ]
 
 
 def stealth_position_arg() -> list[str]:
-    """Off-screen window position only (for connectors that set their own --window-size)."""
+    """Headless + off-screen position (for connectors that set their own --window-size)."""
     if _is_visible():
         return []
-    return ["--window-position=-2400,-2400"]
+    return ["--headless=new", "--window-position=-2400,-2400"]
 
 
 def stealth_popen_kwargs() -> dict:
@@ -242,21 +252,22 @@ async def launch_headed_browser(
 
     args = [*stealth_args(), *(extra_args or [])]
 
+    headless = is_headless()
     pw = await async_playwright().start()
     _launched_pw_instances.append(pw)
     try:
         browser = await pw.chromium.launch(
-            headless=False,
+            headless=headless,
             channel=channel,
             args=args if args else None,
         )
     except Exception:
         # Fallback: no channel (use bundled Chromium)
         browser = await pw.chromium.launch(
-            headless=False,
+            headless=headless,
             args=args if args else None,
         )
-    logger.info("Headed browser launched (channel=%s, visible=%s)", channel, _is_visible())
+    logger.info("Browser launched (channel=%s, headless=%s)", channel, headless)
     return browser
 
 

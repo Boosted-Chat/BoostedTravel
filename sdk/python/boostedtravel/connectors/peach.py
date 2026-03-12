@@ -41,7 +41,7 @@ from boostedtravel.connectors.browser import stealth_args, stealth_popen_kwargs
 
 logger = logging.getLogger(__name__)
 
-_CDP_PORT = 9451
+_CDP_PORT = 9468
 _USER_DATA_DIR = os.path.join(os.environ.get("TEMP", "/tmp"), "peach_cdp_data")
 _CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",

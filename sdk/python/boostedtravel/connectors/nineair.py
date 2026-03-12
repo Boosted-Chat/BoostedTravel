@@ -73,13 +73,13 @@ async def _get_browser():
     _pw_instance = await async_playwright().start()
     try:
         _browser = await _pw_instance.chromium.launch(
-            headless=False,
+            headless=True,
             channel="chrome",
             args=[*stealth_args(), "--lang=zh-CN"],
         )
     except Exception:
         _browser = await _pw_instance.chromium.launch(
-            headless=False,
+            headless=True,
             args=[*stealth_args(), "--lang=zh-CN"],
         )
     logger.info("9 Air: browser launched")

@@ -614,21 +614,24 @@ class MultiProvider:
 
         Two offers are considered duplicates if they have:
         - Same airlines
-        - Same departure time (within 5 min)
-        - Same arrival time (within 5 min)
-        - Same price (within 2%)
+        - Same departure time (within 10 min)
+        - Same arrival time (within 10 min)
 
-        When duplicates found, keep the cheaper one.
+        When duplicates found, keep the cheaper one (using normalized price
+        for correct cross-currency comparison).
         """
         if not offers:
             return []
+
+        def _norm_price(o: FlightOffer) -> float:
+            return o.price_normalized if o.price_normalized is not None else o.price
 
         seen: dict[str, FlightOffer] = {}
         for offer in offers:
             key = self._dedup_key(offer)
             if key in seen:
-                # Keep the cheaper one
-                if offer.price < seen[key].price:
+                # Keep the cheaper one (normalized for cross-currency comparison)
+                if _norm_price(offer) < _norm_price(seen[key]):
                     seen[key] = offer
             else:
                 seen[key] = offer

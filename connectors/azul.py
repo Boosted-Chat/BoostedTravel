@@ -55,7 +55,7 @@ _CHROME_PATHS = [
     "/usr/bin/google-chrome-stable",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ]
-_CDP_PORT = 9333
+_CDP_PORT = 9467
 _USER_DATA_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", ".azul_chrome_data"
 )
