@@ -33,7 +33,11 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
-from curl_cffi import requests as cffi_requests
+try:
+    from curl_cffi import requests as cffi_requests
+    HAS_CURL = True
+except ImportError:
+    HAS_CURL = False
 
 from models.flights import (
     FlightOffer,
@@ -317,7 +321,7 @@ class FlynasConnectorClient:
 
         Returns parsed JSON dict on success, None on failure (403 = Akamai block).
         """
-        if not _are_cookies_fresh():
+        if not HAS_CURL or not _are_cookies_fresh():
             return None
 
         loop = asyncio.get_event_loop()

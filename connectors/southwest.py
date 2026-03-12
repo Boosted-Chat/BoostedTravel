@@ -32,7 +32,11 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
-from curl_cffi import requests as cffi_requests
+try:
+    from curl_cffi import requests as cffi_requests
+    HAS_CURL = True
+except ImportError:
+    HAS_CURL = False
 
 from models.flights import (
     FlightOffer,
@@ -41,7 +45,6 @@ from models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from connectors.browser import stealth_args
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +79,6 @@ _farmed_cookies: list[dict] = []
 _farm_timestamp: float = 0.0
 
 # -- Shared browser singleton --
-_pw_instance = None
 _browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
@@ -97,26 +99,15 @@ def _get_farm_lock() -> asyncio.Lock:
 
 async def _get_browser():
     """Shared headed Chromium for cookie farming and Playwright fallback (launched once, reused)."""
-    global _pw_instance, _browser
+    global _browser
     lock = _get_lock()
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
-        from playwright.async_api import async_playwright
 
-        _pw_instance = await async_playwright().start()
-        try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                channel="chrome",
-                args=["--disable-blink-features=AutomationControlled", *stealth_args()],
-            )
-        except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", *stealth_args()],
-            )
-        logger.info("Southwest: Playwright browser launched (headed Chrome)")
+        from connectors.browser import launch_headed_browser
+        _browser = await launch_headed_browser()
+        logger.info("Southwest: browser launched for hybrid flow")
         return _browser
 
 
@@ -176,6 +167,8 @@ class SouthwestConnectorClient:
     async def _bootstrap_session(self) -> list[dict]:
         """Try to get session cookies by visiting the homepage with curl_cffi."""
         global _farmed_cookies, _farm_timestamp
+        if not HAS_CURL:
+            return []
         loop = asyncio.get_event_loop()
         try:
             cookies = await loop.run_in_executor(None, self._bootstrap_session_sync)
@@ -273,6 +266,8 @@ class SouthwestConnectorClient:
         Attempts primary endpoint first, then mobile endpoint.
         Returns parsed JSON on success, None on failure.
         """
+        if not HAS_CURL:
+            return None
         cookies = await self._ensure_cookies()
         if not cookies:
             logger.info("Southwest: no cookies available for API search")

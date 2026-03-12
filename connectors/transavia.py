@@ -133,6 +133,9 @@ class TransaviaConnectorClient:
         t0 = time.monotonic()
 
         try:
+            if not HAS_CURL:
+                return await self._playwright_fallback(req, t0)
+
             cookies = await self._ensure_cookies()
             if not cookies:
                 logger.warning("Transavia: cookie farm failed, falling back to Playwright")
