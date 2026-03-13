@@ -64,58 +64,17 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
-def _find_chrome() -> str:
-    for p in _CHROME_PATHS:
-        if os.path.isfile(p):
-            return p
-    raise FileNotFoundError("Chrome not found")
-
-
-def _launch_chrome():
-    global _chrome_proc
-    if _chrome_proc and _chrome_proc.poll() is None:
-        return
-    os.makedirs(_USER_DATA_DIR, exist_ok=True)
-    chrome = _find_chrome()
-    _chrome_proc = subprocess.Popen(
-        [
-            chrome,
-            f"--remote-debugging-port={_CDP_PORT}",
-            f"--user-data-dir={_USER_DATA_DIR}",
-            "--disable-blink-features=AutomationControlled",
-            "--no-first-run", "--no-default-browser-check",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            *stealth_args(),
-        ],
-        **stealth_popen_kwargs(),
-    )
-    logger.info("Peach: Chrome launched on CDP port %d (pid=%d)", _CDP_PORT, _chrome_proc.pid)
-
-
 async def _get_browser():
-    global _pw_instance, _cdp_browser
+    """Shared real Chrome via CDP (launched once, reused across searches)."""
+    global _pw_instance, _cdp_browser, _chrome_proc
     lock = _get_lock()
     async with lock:
         if _cdp_browser and _cdp_browser.is_connected():
             return _cdp_browser
-        _launch_chrome()
-        await asyncio.sleep(2)
-        from playwright.async_api import async_playwright
-        if not _pw_instance:
-            _pw_instance = await async_playwright().start()
-        for attempt in range(5):
-            try:
-                _cdp_browser = await _pw_instance.chromium.connect_over_cdp(
-                    f"http://127.0.0.1:{_CDP_PORT}"
-                )
-                logger.info("Peach: connected to Chrome via CDP")
-                return _cdp_browser
-            except Exception:
-                if attempt < 4:
-                    await asyncio.sleep(1)
-        raise RuntimeError(f"Peach: cannot connect to Chrome CDP on port {_CDP_PORT}")
+        from connectors.browser import get_or_launch_cdp
+        _cdp_browser, _chrome_proc = await get_or_launch_cdp(_CDP_PORT, _USER_DATA_DIR)
+        logger.info("Peach: Chrome ready via CDP (port %d)", _CDP_PORT)
+        return _cdp_browser
 
 
 class PeachConnectorClient:

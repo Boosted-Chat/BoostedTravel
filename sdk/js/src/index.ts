@@ -130,31 +130,129 @@ export interface BoostedTravelConfig {
   timeout?: number;
 }
 
+// ── Error codes ───────────────────────────────────────────────────────────
+// Machine-readable error codes for agent decision-making.
+
+export const ErrorCode = {
+  // Transient (safe to retry after short delay)
+  SUPPLIER_TIMEOUT: 'SUPPLIER_TIMEOUT',
+  RATE_LIMITED: 'RATE_LIMITED',
+  SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
+  NETWORK_ERROR: 'NETWORK_ERROR',
+  // Validation (fix input, then retry)
+  INVALID_IATA: 'INVALID_IATA',
+  INVALID_DATE: 'INVALID_DATE',
+  INVALID_PASSENGERS: 'INVALID_PASSENGERS',
+  UNSUPPORTED_ROUTE: 'UNSUPPORTED_ROUTE',
+  MISSING_PARAMETER: 'MISSING_PARAMETER',
+  INVALID_PARAMETER: 'INVALID_PARAMETER',
+  // Business (requires human decision)
+  AUTH_INVALID: 'AUTH_INVALID',
+  PAYMENT_REQUIRED: 'PAYMENT_REQUIRED',
+  PAYMENT_DECLINED: 'PAYMENT_DECLINED',
+  OFFER_EXPIRED: 'OFFER_EXPIRED',
+  OFFER_NOT_UNLOCKED: 'OFFER_NOT_UNLOCKED',
+  FARE_CHANGED: 'FARE_CHANGED',
+  ALREADY_BOOKED: 'ALREADY_BOOKED',
+  BOOKING_FAILED: 'BOOKING_FAILED',
+} as const;
+
+export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
+
+export const ErrorCategory = {
+  TRANSIENT: 'transient',
+  VALIDATION: 'validation',
+  BUSINESS: 'business',
+} as const;
+
+export type ErrorCategoryType = (typeof ErrorCategory)[keyof typeof ErrorCategory];
+
+const CODE_TO_CATEGORY: Record<string, ErrorCategoryType> = {
+  [ErrorCode.SUPPLIER_TIMEOUT]: ErrorCategory.TRANSIENT,
+  [ErrorCode.RATE_LIMITED]: ErrorCategory.TRANSIENT,
+  [ErrorCode.SERVICE_UNAVAILABLE]: ErrorCategory.TRANSIENT,
+  [ErrorCode.NETWORK_ERROR]: ErrorCategory.TRANSIENT,
+  [ErrorCode.INVALID_IATA]: ErrorCategory.VALIDATION,
+  [ErrorCode.INVALID_DATE]: ErrorCategory.VALIDATION,
+  [ErrorCode.INVALID_PASSENGERS]: ErrorCategory.VALIDATION,
+  [ErrorCode.UNSUPPORTED_ROUTE]: ErrorCategory.VALIDATION,
+  [ErrorCode.MISSING_PARAMETER]: ErrorCategory.VALIDATION,
+  [ErrorCode.INVALID_PARAMETER]: ErrorCategory.VALIDATION,
+  [ErrorCode.AUTH_INVALID]: ErrorCategory.BUSINESS,
+  [ErrorCode.PAYMENT_REQUIRED]: ErrorCategory.BUSINESS,
+  [ErrorCode.PAYMENT_DECLINED]: ErrorCategory.BUSINESS,
+  [ErrorCode.OFFER_EXPIRED]: ErrorCategory.BUSINESS,
+  [ErrorCode.OFFER_NOT_UNLOCKED]: ErrorCategory.BUSINESS,
+  [ErrorCode.FARE_CHANGED]: ErrorCategory.BUSINESS,
+  [ErrorCode.ALREADY_BOOKED]: ErrorCategory.BUSINESS,
+  [ErrorCode.BOOKING_FAILED]: ErrorCategory.BUSINESS,
+};
+
+function inferErrorCode(statusCode: number, detail: string): string {
+  const d = detail.toLowerCase();
+  if (statusCode === 401) return ErrorCode.AUTH_INVALID;
+  if (statusCode === 402) return d.includes('declined') ? ErrorCode.PAYMENT_DECLINED : ErrorCode.PAYMENT_REQUIRED;
+  if (statusCode === 410) return ErrorCode.OFFER_EXPIRED;
+  if (statusCode === 422) {
+    if (d.includes('iata') || d.includes('airport')) return ErrorCode.INVALID_IATA;
+    if (d.includes('date')) return ErrorCode.INVALID_DATE;
+    if (d.includes('passenger')) return ErrorCode.INVALID_PASSENGERS;
+    if (d.includes('route')) return ErrorCode.UNSUPPORTED_ROUTE;
+    return ErrorCode.INVALID_PARAMETER;
+  }
+  if (statusCode === 429) return ErrorCode.RATE_LIMITED;
+  if (statusCode === 503) return ErrorCode.SERVICE_UNAVAILABLE;
+  if (statusCode === 504) return ErrorCode.SUPPLIER_TIMEOUT;
+  if (statusCode === 409) return ErrorCode.ALREADY_BOOKED;
+  return statusCode >= 500 ? ErrorCode.BOOKING_FAILED : ErrorCode.INVALID_PARAMETER;
+}
+
 // ── Errors ────────────────────────────────────────────────────────────────
 
 export class BoostedTravelError extends Error {
   statusCode: number;
   response: Record<string, unknown>;
+  errorCode: string;
+  errorCategory: ErrorCategoryType;
+  isRetryable: boolean;
 
-  constructor(message: string, statusCode = 0, response: Record<string, unknown> = {}) {
+  constructor(message: string, statusCode = 0, response: Record<string, unknown> = {}, errorCode = '') {
     super(message);
     this.name = 'BoostedTravelError';
     this.statusCode = statusCode;
     this.response = response;
+    this.errorCode = errorCode || (response.error_code as string) || '';
+    this.errorCategory = CODE_TO_CATEGORY[this.errorCode] || ErrorCategory.BUSINESS;
+    this.isRetryable = this.errorCategory === ErrorCategory.TRANSIENT;
   }
 }
 
 export class AuthenticationError extends BoostedTravelError {
   constructor(message: string, response: Record<string, unknown> = {}) {
-    super(message, 401, response);
+    super(message, 401, response, ErrorCode.AUTH_INVALID);
     this.name = 'AuthenticationError';
   }
 }
 
 export class PaymentRequiredError extends BoostedTravelError {
   constructor(message: string, response: Record<string, unknown> = {}) {
-    super(message, 402, response);
+    const code = message.toLowerCase().includes('declined') ? ErrorCode.PAYMENT_DECLINED : ErrorCode.PAYMENT_REQUIRED;
+    super(message, 402, response, code);
     this.name = 'PaymentRequiredError';
+  }
+}
+
+export class OfferExpiredError extends BoostedTravelError {
+  constructor(message: string, response: Record<string, unknown> = {}) {
+    super(message, 410, response, ErrorCode.OFFER_EXPIRED);
+    this.name = 'OfferExpiredError';
+  }
+}
+
+export class ValidationError extends BoostedTravelError {
+  constructor(message: string, statusCode = 422, response: Record<string, unknown> = {}, errorCode = '') {
+    super(message, statusCode, response, errorCode || ErrorCode.INVALID_PARAMETER);
+    this.name = 'ValidationError';
   }
 }
 
@@ -337,21 +435,26 @@ export class BoostedTravel {
   /**
    * Book a flight — FREE after unlock.
    * Creates a real airline reservation with PNR.
+   *
+   * Always provide idempotencyKey to prevent double-bookings on retry.
    */
   async book(
     offerId: string,
     passengers: Passenger[],
     contactEmail: string,
     contactPhone = '',
+    idempotencyKey = '',
   ): Promise<BookingResult> {
     this.requireApiKey();
-    return this.post<BookingResult>('/api/v1/bookings/book', {
+    const body: Record<string, unknown> = {
       offer_id: offerId,
       booking_type: 'flight',
       passengers,
       contact_email: contactEmail,
       contact_phone: contactPhone,
-    });
+    };
+    if (idempotencyKey) body.idempotency_key = idempotencyKey;
+    return this.post<BookingResult>('/api/v1/bookings/book', body);
   }
 
   /**
@@ -438,9 +541,12 @@ export class BoostedTravel {
 
       if (!resp.ok) {
         const detail = (data as Record<string, string>).detail || `API error (${resp.status})`;
+        const code = (data as Record<string, string>).error_code || inferErrorCode(resp.status, detail);
         if (resp.status === 401) throw new AuthenticationError(detail, data);
         if (resp.status === 402) throw new PaymentRequiredError(detail, data);
-        throw new BoostedTravelError(detail, resp.status, data);
+        if (resp.status === 410) throw new OfferExpiredError(detail, data);
+        if (resp.status === 422) throw new ValidationError(detail, resp.status, data, code);
+        throw new BoostedTravelError(detail, resp.status, data, code);
       }
 
       return data as T;

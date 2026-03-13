@@ -29,10 +29,14 @@ User request → Agent parses intent → Resolve locations → Search (free)
 from boostedtravel import (
     BoostedTravel, BoostedTravelError,
     PaymentRequiredError, OfferExpiredError,
+    ErrorCode, ErrorCategory,
 )
+import uuid
 
-# Retry on expired offers
+# Retry on expired offers with idempotency protection
 def resilient_book(bt, origin, dest, date, passengers, email, max_retries=2):
+    idempotency_key = str(uuid.uuid4())  # prevents double-booking on retry
+
     for attempt in range(max_retries + 1):
         flights = bt.search(origin, dest, date)
         if not flights.offers:
@@ -44,11 +48,17 @@ def resilient_book(bt, origin, dest, date, passengers, email, max_retries=2):
                 offer_id=unlocked.offer_id,
                 passengers=[{**p, "id": pid} for p, pid in zip(passengers, flights.passenger_ids)],
                 contact_email=email,
+                idempotency_key=idempotency_key,
             )
             return booking
         except OfferExpiredError:
             if attempt < max_retries:
                 print(f"Offer expired, retrying ({attempt + 1}/{max_retries})...")
+                continue
+            raise
+        except BoostedTravelError as e:
+            if e.is_retryable and attempt < max_retries:
+                import time; time.sleep(2 ** attempt)
                 continue
             raise
         except PaymentRequiredError:

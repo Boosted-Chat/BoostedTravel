@@ -247,40 +247,126 @@ class NineAirConnectorClient:
         """Fill a departure or arrival city field.
 
         Departure: type IATA in .cityInput → click .panel-search-body suggestion.
-        Arrival:   Escape city grid → type Chinese name → click suggestion.
+        Arrival:   Set via Vue 2 reactive model on the flight-way form component,
+                   because the el-popover overlay blocks all Playwright clicks on
+                   the city grid items, and dispatchEvent only updates DOM text
+                   without touching the Vue model.
         """
-        idx = 0 if field_type == "departure" else 1
-        cn_name = _IATA_CN.get(code)
+        cn_name = _IATA_CN.get(code, "")
 
-        # Strategy 1: type in .cityInput → use search suggestions
+        if field_type == "departure":
+            return await self._fill_city_departure(page, code, cn_name)
+
+        # ── Arrival: Vue model manipulation ─────────────────────────────
+        return await self._fill_city_via_vue(page, code, cn_name)
+
+    async def _fill_city_departure(self, page, code: str, cn_name: str) -> bool:
+        """Set departure city via the search-suggestion UI (works normally)."""
         try:
             city_inputs = page.locator(".cityInput:visible")
-            if await city_inputs.count() > idx:
-                inp = city_inputs.nth(idx)
-                await inp.click(timeout=5000)
-                await asyncio.sleep(0.5)
-                # Close popup if arrival grid is covering things
-                if field_type == "arrival":
-                    await page.keyboard.press("Escape")
-                    await asyncio.sleep(0.3)
-                    await inp.click(timeout=3000)
-                    await asyncio.sleep(0.3)
-                # Try Chinese name first for arrival (IATA doesn't show suggestions)
-                terms = [cn_name, code] if (field_type == "arrival" and cn_name) else [code, cn_name] if cn_name else [code]
-                for term in terms:
-                    if not term:
-                        continue
-                    await inp.fill(term)
-                    await asyncio.sleep(2.0)
-                    if await self._click_city_suggestion(page):
-                        return True
-                await page.keyboard.press("Enter")
-                await asyncio.sleep(0.5)
-                return True
+            if await city_inputs.count() < 1:
+                return False
+            inp = city_inputs.nth(0)
+            await inp.click(timeout=5000)
+            await asyncio.sleep(0.5)
+            terms = [code, cn_name] if cn_name else [code]
+            for term in terms:
+                if not term:
+                    continue
+                await inp.fill(term)
+                await asyncio.sleep(2.0)
+                if await self._click_city_suggestion(page):
+                    return True
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.5)
+            return True
         except Exception:
-            pass
+            return False
 
-        return False
+    async def _fill_city_via_vue(self, page, code: str, cn_name: str) -> bool:
+        """Set arrival city by directly updating the Vue 2 reactive model.
+
+        The 9 Air homepage is a Vue 2 SPA using Element-UI el-popover for the
+        city picker.  After selecting departure, an el-popover overlay opens
+        for arrival that intercepts ALL Playwright clicks.  The only reliable
+        way to set the arrival city is to manipulate the Vue component data:
+
+        1.  ``flight-way`` form component (``form.e_address``) — the search
+            payload source.
+        2.  ``flyDest`` / ``flyDept`` cross-references.
+        3.  The visible ``fly-input`` arrival component (display state).
+        """
+        ok = await page.evaluate(
+            r"""([code, cnName]) => {
+                const cityObj = { name: cnName || code, code: code, type: "CITY" };
+
+                /* 1. Update flight-way form component (the search payload) */
+                const formEl = document.querySelector('.flight-way');
+                if (!formEl || !formEl.__vue__) return false;
+                const fvm = formEl.__vue__;
+                fvm.$set(fvm.form, 'e_address', cityObj);
+
+                /* 2. Update flyDept.arrCode/arrType and flyDest.depCode/depType
+                      These cross-references control route validation. */
+                const depCode = fvm.form.s_address ? fvm.form.s_address.code : '';
+                fvm.$set(fvm, 'flyDept', {
+                    depCode: depCode, depType: 'CITY',
+                    arrCode: code, arrType: 'CITY',
+                });
+                fvm.$set(fvm, 'flyDest', {
+                    depCode: code, depType: 'CITY',
+                    arrCode: depCode, arrType: 'CITY',
+                });
+
+                /* 3. Update visible fly-input arrival component (display + model) */
+                const flyInputs = document.querySelectorAll('.fly-input');
+                let visIdx = 0;
+                for (const el of flyInputs) {
+                    if (el.getBoundingClientRect().width > 0 && el.__vue__) {
+                        visIdx++;
+                        if (visIdx === 2) {
+                            const vm = el.__vue__;
+                            vm.showCityValue = cnName || code;
+                            vm.defaultCity = cityObj;
+                            try { vm.selectCity(cityObj); } catch(e) {}
+                            try { vm.$emit('input', cityObj); } catch(e) {}
+                            break;
+                        }
+                    }
+                }
+
+                /* 4. Also update the hidden fly-input (idx 1) which is the
+                      real model input for the arrival field */
+                if (flyInputs[1] && flyInputs[1].__vue__) {
+                    const vm = flyInputs[1].__vue__;
+                    vm.showCityValue = cnName || code;
+                    vm.defaultCity = cityObj;
+                    try { vm.selectCity(cityObj); } catch(e) {}
+                    try { vm.$emit('input', cityObj); } catch(e) {}
+                }
+
+                /* 5. Close any open popover so it doesn't block date/search */
+                document.querySelectorAll('.el-popover.area-pop').forEach(el => {
+                    if (el.__vue__) {
+                        try { el.__vue__.doClose(); } catch(e) {}
+                    }
+                    el.style.display = 'none';
+                });
+                /* Also press escape via DOM to dismiss overlays */
+                document.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Escape', keyCode: 27, bubbles: true
+                }));
+
+                return fvm.form.e_address && fvm.form.e_address.code === code;
+            }""",
+            [code, cn_name],
+        )
+        if ok:
+            await asyncio.sleep(0.5)
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+            logger.debug("9 Air: arrival set via Vue model → %s (%s)", cn_name, code)
+        return bool(ok)
 
     async def _click_city_suggestion(self, page) -> bool:
         """Click the first visible city suggestion in a dropdown."""

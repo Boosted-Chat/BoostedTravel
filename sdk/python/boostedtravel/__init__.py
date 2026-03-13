@@ -15,7 +15,16 @@ Full API (search + unlock + book):
     bt.book(flights.offers[0].id, passenger={...})
 """
 
-from boostedtravel.client import BoostedTravel
+from boostedtravel.client import (
+    BoostedTravel,
+    BoostedTravelError,
+    AuthenticationError,
+    PaymentRequiredError,
+    OfferExpiredError,
+    ValidationError,
+    ErrorCode,
+    ErrorCategory,
+)
 from boostedtravel.models import (
     FlightOffer,
     FlightSearchResult,
@@ -27,9 +36,16 @@ from boostedtravel.models import (
     AgentProfile,
 )
 
-__version__ = "0.2.3"
+__version__ = "0.2.5"
 __all__ = [
     "BoostedTravel",
+    "BoostedTravelError",
+    "AuthenticationError",
+    "PaymentRequiredError",
+    "OfferExpiredError",
+    "ValidationError",
+    "ErrorCode",
+    "ErrorCategory",
     "FlightOffer",
     "FlightSearchResult",
     "FlightSegment",

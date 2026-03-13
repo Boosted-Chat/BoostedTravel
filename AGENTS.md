@@ -373,54 +373,59 @@ boostedtravel search LON BCN 2026-04-01 --adults 2 --json
 
 ## Error Handling
 
-The SDK raises specific exceptions for each failure mode:
+The SDK raises specific exceptions for each failure mode. All errors include machine-readable `error_code` and `error_category` fields so agents can programmatically decide how to react.
+
+### Error Categories
+
+| Category | Meaning | Agent action |
+|----------|---------|-------------|
+| `transient` | Temporary failure (network, rate limit, supplier timeout) | Retry after short delay (1-5s) |
+| `validation` | Bad input (invalid IATA, bad date, missing param) | Fix the request, then retry |
+| `business` | Requires human decision (payment declined, fare expired) | Inform user, do not auto-retry |
+
+### Error Codes Reference
+
+| Error Code | Category | HTTP | Description |
+|------------|----------|------|-------------|
+| `SUPPLIER_TIMEOUT` | transient | 504 | Airline API didn't respond in time |
+| `RATE_LIMITED` | transient | 429 | Too many requests — wait and retry |
+| `SERVICE_UNAVAILABLE` | transient | 503 | Backend temporarily down |
+| `NETWORK_ERROR` | transient | 0 | Client-side connection failure |
+| `INVALID_IATA` | validation | 422 | Bad airport/city code — use resolve_location |
+| `INVALID_DATE` | validation | 422 | Date in wrong format or in the past |
+| `INVALID_PASSENGERS` | validation | 422 | Passenger data missing or malformed |
+| `UNSUPPORTED_ROUTE` | validation | 422 | No providers serve this route |
+| `MISSING_PARAMETER` | validation | 422 | Required field missing |
+| `INVALID_PARAMETER` | validation | 422 | Field value out of range or wrong type |
+| `AUTH_INVALID` | business | 401 | API key missing or invalid |
+| `PAYMENT_REQUIRED` | business | 402 | No payment method (call setup_payment) |
+| `PAYMENT_DECLINED` | business | 402 | Stripe charge failed |
+| `OFFER_EXPIRED` | business | 410 | Offer no longer available — search again |
+| `OFFER_NOT_UNLOCKED` | business | 403 | Tried to book without unlocking first |
+| `FARE_CHANGED` | business | 409 | Price changed since search — re-unlock |
+| `ALREADY_BOOKED` | business | 409 | Duplicate booking (idempotency_key matched) |
+| `BOOKING_FAILED` | business | 500 | Booking failed at airline level |
+
+### Exception Classes
 
 | Exception | HTTP Code | When it happens |
 |-----------|-----------|-----------------|
 | `AuthenticationError` | 401 | Missing or invalid API key |
-| `PaymentRequiredError` | 402 | No payment method set up (call `setup-payment` first) |
+| `PaymentRequiredError` | 402 | No payment method or payment declined |
 | `OfferExpiredError` | 410 | Offer no longer available (search again) |
+| `ValidationError` | 422 | Bad input parameters |
 | `BoostedTravelError` | any | Base class — catches all API errors |
 
-### Handling Invalid Locations
-
-```python
-from boostedtravel import BoostedTravel, BoostedTravelError
-
-bt = BoostedTravel()  # reads BOOSTEDTRAVEL_API_KEY
-
-try:
-    flights = bt.search("INVALID", "JFK", "2026-04-15")
-except BoostedTravelError as e:
-    if e.status_code == 422:
-        # Invalid location code — resolve first
-        locations = bt.resolve_location("London")
-        flights = bt.search(locations[0]["iata_code"], "JFK", "2026-04-15")
-```
-
-### Handling Unavailable Routes
-
-```python
-flights = bt.search("GDN", "SYD", "2026-04-15")
-if not flights.offers:
-    print("No flights found on this route/date — try different dates or nearby airports")
-    # Try alternate airports
-    for loc in bt.resolve_location("Sydney"):
-        alt = bt.search("GDN", loc["iata_code"], "2026-04-15")
-        if alt.offers:
-            print(f"Found {alt.total_results} offers via {loc['iata_code']}")
-            break
-```
-
-### Complete Error Handling Pattern
+### Using Error Codes in Agent Logic
 
 ```python
 from boostedtravel import (
     BoostedTravel, BoostedTravelError,
-    AuthenticationError, PaymentRequiredError, OfferExpiredError,
+    AuthenticationError, PaymentRequiredError, OfferExpiredError, ValidationError,
+    ErrorCode, ErrorCategory,
 )
 
-bt = BoostedTravel()  # reads BOOSTEDTRAVEL_API_KEY
+bt = BoostedTravel()
 
 try:
     flights = bt.search("LHR", "JFK", "2026-04-15")
@@ -428,18 +433,133 @@ try:
     booking = bt.book(
         offer_id=unlocked.offer_id,
         passengers=[{"id": flights.passenger_ids[0], "given_name": "John", "family_name": "Doe",
-                     "born_on": "1990-01-15", "gender": "m", "title": "mr"}],
+                     "born_on": "1990-01-15", "gender": "m", "title": "mr",
+                     "email": "john@example.com"}],
         contact_email="john@example.com",
+        idempotency_key="booking-attempt-abc123",  # prevents double-booking on retry
     )
-    print(f"Booked! PNR: {booking.booking_reference}")
-except AuthenticationError:
-    print("Invalid API key — check BOOSTEDTRAVEL_API_KEY")
-except PaymentRequiredError:
-    print("Set up payment first: boostedtravel setup-payment")
-except OfferExpiredError:
-    print("Offer expired — search again for fresh results")
 except BoostedTravelError as e:
-    print(f"API error ({e.status_code}): {e.message}")
+    if e.is_retryable:
+        # Transient error — safe to retry after delay
+        print(f"Temporary error ({e.error_code}), retrying...")
+    elif e.error_category == ErrorCategory.VALIDATION:
+        # Bad input — fix and retry
+        print(f"Fix input: {e.error_code} — {e.message}")
+    else:
+        # Business error — needs human decision
+        print(f"Cannot proceed: {e.error_code} — {e.message}")
+```
+
+```typescript
+// JavaScript/TypeScript
+import { BoostedTravel, BoostedTravelError, ErrorCode, ErrorCategory } from 'boostedtravel';
+
+try {
+  const booking = await bt.book(offerId, passengers, email, '', 'booking-attempt-abc123');
+} catch (e) {
+  if (e instanceof BoostedTravelError) {
+    if (e.isRetryable) { /* retry after delay */ }
+    else if (e.errorCategory === ErrorCategory.VALIDATION) { /* fix input */ }
+    else { /* escalate to human */ }
+  }
+}
+```
+
+## Safety & Idempotency (For AI Agents)
+
+This section documents the safety guarantees that make BoostedTravel safe for autonomous agents to use without human supervision of every call.
+
+### Operation Safety Classification
+
+| Operation | Side effects | Cost | Safe to retry | Idempotent |
+|-----------|-------------|------|--------------|------------|
+| `search_flights` | None (read-only) | Free | Yes | Yes |
+| `resolve_location` | None (read-only) | Free | Yes | Yes |
+| `get_agent_profile` | None (read-only) | Free | Yes | Yes |
+| `setup_payment` | Updates payment method | Free | Yes | Yes (last write wins) |
+| `unlock_flight_offer` | Charges $1, reserves offer | $1 | **No** — charges again | **No** |
+| `book_flight` | Creates airline reservation | Free | **Only with idempotency_key** | **With key: yes** |
+
+### Idempotency Keys (Preventing Double-Bookings)
+
+LLMs and MCP clients (Claude, Cursor) may retry tool calls on timeout or error. Without protection, a retried `book_flight` could create a duplicate reservation.
+
+**Always provide `idempotency_key` when booking:**
+
+```python
+import uuid
+
+# Generate a deterministic key per booking attempt
+key = f"{offer_id}-{passenger_name}-{datetime.utcnow().strftime('%Y%m%d')}"
+# Or use a random UUID stored in agent memory
+key = str(uuid.uuid4())
+
+booking = bt.book(
+    offer_id=unlocked.offer_id,
+    passengers=[...],
+    contact_email="john@example.com",
+    idempotency_key=key,
+)
+```
+
+**How it works:**
+- First call with key `"abc123"` → creates booking, returns `BookingResult`
+- Second call with same key `"abc123"` → returns the **same** `BookingResult` (no duplicate)
+- Different key `"def456"` → creates a **new** booking
+
+### The Quote-Before-Book Pattern
+
+BoostedTravel enforces a mandatory "quote" step (unlock) before booking:
+
+```
+search_flights (free, read-only)
+    ↓
+unlock_flight_offer ($1, confirms live price)
+    ↓  ← agent shows confirmed price to user, gets approval
+book_flight (free, creates reservation)
+```
+
+**Why this matters for agents:**
+1. Search prices are snapshots — the airline may have changed the price
+2. The unlock step confirms the **actual current price** with the airline
+3. If the confirmed price differs from the search price, the agent should inform the user
+4. The user can decide whether to proceed at the new price or search again
+5. The 30-minute reservation window prevents stale bookings
+
+### Error Recovery Patterns
+
+```python
+def safe_book(bt, origin, dest, date, passengers, email, max_retries=2):
+    """Book with automatic retry on transient errors and offer expiry."""
+    idempotency_key = str(uuid.uuid4())
+
+    for attempt in range(max_retries + 1):
+        flights = bt.search(origin, dest, date)
+        if not flights.offers:
+            return None  # No flights available
+
+        try:
+            unlocked = bt.unlock(flights.cheapest.id)
+
+            # Show price to user if it changed significantly
+            # (agent should implement this check)
+
+            return bt.book(
+                offer_id=unlocked.offer_id,
+                passengers=[{**p, "id": pid} for p, pid in zip(passengers, flights.passenger_ids)],
+                contact_email=email,
+                idempotency_key=idempotency_key,
+            )
+        except OfferExpiredError:
+            if attempt < max_retries:
+                continue  # Search again, fresh offers
+            raise
+        except BoostedTravelError as e:
+            if e.is_retryable and attempt < max_retries:
+                import time
+                time.sleep(2 ** attempt)  # exponential backoff
+                continue
+            raise
 ```
 
 ## Complete Search-to-Booking Workflow

@@ -48,13 +48,127 @@ from boostedtravel.models import (
 DEFAULT_BASE_URL = "https://api.boostedchat.com"
 
 
-class BoostedTravelError(Exception):
-    """Base exception for BoostedTravel SDK."""
+# ── Error codes ──────────────────────────────────────────────────────────
+# Machine-readable error codes for agent decision-making.
+# Each code has a category that tells the agent how to react:
+#   transient  — retry after a short delay (network blip, rate limit, supplier timeout)
+#   validation — fix the request and retry (bad input, unsupported route)
+#   business   — requires human decision (payment declined, fare expired, policy violation)
 
-    def __init__(self, message: str, status_code: int = 0, response: dict | None = None):
+class ErrorCode:
+    """Machine-readable error codes returned in BoostedTravelError.error_code."""
+    # ── Transient (safe to retry) ──
+    SUPPLIER_TIMEOUT = "SUPPLIER_TIMEOUT"
+    RATE_LIMITED = "RATE_LIMITED"
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
+    NETWORK_ERROR = "NETWORK_ERROR"
+
+    # ── Validation (fix input, then retry) ──
+    INVALID_IATA = "INVALID_IATA"
+    INVALID_DATE = "INVALID_DATE"
+    INVALID_PASSENGERS = "INVALID_PASSENGERS"
+    UNSUPPORTED_ROUTE = "UNSUPPORTED_ROUTE"
+    MISSING_PARAMETER = "MISSING_PARAMETER"
+    INVALID_PARAMETER = "INVALID_PARAMETER"
+
+    # ── Business (human decision needed) ──
+    AUTH_INVALID = "AUTH_INVALID"
+    PAYMENT_REQUIRED = "PAYMENT_REQUIRED"
+    PAYMENT_DECLINED = "PAYMENT_DECLINED"
+    OFFER_EXPIRED = "OFFER_EXPIRED"
+    OFFER_NOT_UNLOCKED = "OFFER_NOT_UNLOCKED"
+    FARE_CHANGED = "FARE_CHANGED"
+    ALREADY_BOOKED = "ALREADY_BOOKED"
+    BOOKING_FAILED = "BOOKING_FAILED"
+
+
+class ErrorCategory:
+    """Error categories — tells agent whether to retry, fix input, or escalate."""
+    TRANSIENT = "transient"
+    VALIDATION = "validation"
+    BUSINESS = "business"
+
+
+_CODE_TO_CATEGORY = {
+    ErrorCode.SUPPLIER_TIMEOUT: ErrorCategory.TRANSIENT,
+    ErrorCode.RATE_LIMITED: ErrorCategory.TRANSIENT,
+    ErrorCode.SERVICE_UNAVAILABLE: ErrorCategory.TRANSIENT,
+    ErrorCode.NETWORK_ERROR: ErrorCategory.TRANSIENT,
+    ErrorCode.INVALID_IATA: ErrorCategory.VALIDATION,
+    ErrorCode.INVALID_DATE: ErrorCategory.VALIDATION,
+    ErrorCode.INVALID_PASSENGERS: ErrorCategory.VALIDATION,
+    ErrorCode.UNSUPPORTED_ROUTE: ErrorCategory.VALIDATION,
+    ErrorCode.MISSING_PARAMETER: ErrorCategory.VALIDATION,
+    ErrorCode.INVALID_PARAMETER: ErrorCategory.VALIDATION,
+    ErrorCode.AUTH_INVALID: ErrorCategory.BUSINESS,
+    ErrorCode.PAYMENT_REQUIRED: ErrorCategory.BUSINESS,
+    ErrorCode.PAYMENT_DECLINED: ErrorCategory.BUSINESS,
+    ErrorCode.OFFER_EXPIRED: ErrorCategory.BUSINESS,
+    ErrorCode.OFFER_NOT_UNLOCKED: ErrorCategory.BUSINESS,
+    ErrorCode.FARE_CHANGED: ErrorCategory.BUSINESS,
+    ErrorCode.ALREADY_BOOKED: ErrorCategory.BUSINESS,
+    ErrorCode.BOOKING_FAILED: ErrorCategory.BUSINESS,
+}
+
+
+def _infer_error_code(status_code: int, detail: str) -> str:
+    """Infer a machine-readable error code from HTTP status and detail text."""
+    detail_lower = detail.lower()
+    if status_code == 401:
+        return ErrorCode.AUTH_INVALID
+    if status_code == 402:
+        if "declined" in detail_lower:
+            return ErrorCode.PAYMENT_DECLINED
+        return ErrorCode.PAYMENT_REQUIRED
+    if status_code == 410:
+        return ErrorCode.OFFER_EXPIRED
+    if status_code == 422:
+        if "iata" in detail_lower or "airport" in detail_lower:
+            return ErrorCode.INVALID_IATA
+        if "date" in detail_lower:
+            return ErrorCode.INVALID_DATE
+        if "passenger" in detail_lower:
+            return ErrorCode.INVALID_PASSENGERS
+        if "route" in detail_lower:
+            return ErrorCode.UNSUPPORTED_ROUTE
+        return ErrorCode.INVALID_PARAMETER
+    if status_code == 429:
+        return ErrorCode.RATE_LIMITED
+    if status_code == 503:
+        return ErrorCode.SERVICE_UNAVAILABLE
+    if status_code == 504:
+        return ErrorCode.SUPPLIER_TIMEOUT
+    if status_code == 409:
+        return ErrorCode.ALREADY_BOOKED
+    return ErrorCode.BOOKING_FAILED if status_code >= 500 else ErrorCode.INVALID_PARAMETER
+
+
+class BoostedTravelError(Exception):
+    """
+    Base exception for BoostedTravel SDK.
+
+    Attributes:
+        message: Human-readable error description.
+        status_code: HTTP status code (0 for client-side errors).
+        error_code: Machine-readable code (e.g., 'OFFER_EXPIRED'). See ErrorCode.
+        error_category: One of 'transient', 'validation', 'business'. See ErrorCategory.
+        response: Raw error response dict from the API.
+        is_retryable: True if the error is transient (safe to retry after delay).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 0,
+        response: dict | None = None,
+        error_code: str = "",
+    ):
         self.message = message
         self.status_code = status_code
         self.response = response or {}
+        self.error_code = error_code or self.response.get("error_code", "")
+        self.error_category = _CODE_TO_CATEGORY.get(self.error_code, ErrorCategory.BUSINESS)
+        self.is_retryable = self.error_category == ErrorCategory.TRANSIENT
         super().__init__(message)
 
 
@@ -64,12 +178,17 @@ class AuthenticationError(BoostedTravelError):
 
 
 class PaymentRequiredError(BoostedTravelError):
-    """Payment method not set up."""
+    """Payment method not set up or payment declined."""
     pass
 
 
 class OfferExpiredError(BoostedTravelError):
-    """Offer is no longer available."""
+    """Offer is no longer available — search again."""
+    pass
+
+
+class ValidationError(BoostedTravelError):
+    """Request parameters are invalid — fix input and retry."""
     pass
 
 
@@ -258,9 +377,14 @@ class BoostedTravel:
         passengers: list[dict | Passenger],
         contact_email: str,
         contact_phone: str = "",
+        idempotency_key: str = "",
     ) -> BookingResult:
         """
         Book a flight — creates a real airline reservation.
+
+        IMPORTANT: Always provide an idempotency_key to prevent double-bookings
+        if your agent retries this call. Use any unique string (UUID, session ID,
+        or deterministic hash of offer_id + passenger names).
 
         Args:
             offer_id: The offer ID (must be unlocked first).
@@ -269,6 +393,9 @@ class BoostedTravel:
                 family_name, born_on (YYYY-MM-DD), gender, title.
             contact_email: Contact email for the booking.
             contact_phone: Contact phone (optional).
+            idempotency_key: Unique key for this booking attempt. If the same key
+                is sent twice, the second call returns the original booking instead
+                of creating a duplicate. Strongly recommended for safety.
 
         Returns:
             BookingResult with PNR, fees, and confirmation.
@@ -281,13 +408,15 @@ class BoostedTravel:
             else:
                 pax_list.append(p)
 
-        body = {
+        body: dict[str, Any] = {
             "offer_id": offer_id,
             "booking_type": "flight",
             "passengers": pax_list,
             "contact_email": contact_email,
             "contact_phone": contact_phone,
         }
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
         data = self._post("/api/v1/bookings/book", body)
         return BookingResult.from_dict(data)
 
@@ -395,17 +524,23 @@ class BoostedTravel:
                 err = {"detail": body_text}
 
             detail = err.get("detail", f"API error ({e.code})")
+            code = err.get("error_code") or _infer_error_code(e.code, detail)
 
             if e.code == 401:
-                raise AuthenticationError(detail, status_code=401, response=err) from e
+                raise AuthenticationError(detail, status_code=401, response=err, error_code=code) from e
             elif e.code == 402:
-                raise PaymentRequiredError(detail, status_code=402, response=err) from e
+                raise PaymentRequiredError(detail, status_code=402, response=err, error_code=code) from e
             elif e.code == 410:
-                raise OfferExpiredError(detail, status_code=410, response=err) from e
+                raise OfferExpiredError(detail, status_code=410, response=err, error_code=code) from e
+            elif e.code == 422:
+                raise ValidationError(detail, status_code=422, response=err, error_code=code) from e
             else:
-                raise BoostedTravelError(detail, status_code=e.code, response=err) from e
+                raise BoostedTravelError(detail, status_code=e.code, response=err, error_code=code) from e
         except URLError as e:
-            raise BoostedTravelError(f"Connection failed: {e.reason}") from e
+            raise BoostedTravelError(
+                f"Connection failed: {e.reason}",
+                error_code=ErrorCode.NETWORK_ERROR,
+            ) from e
 
     def __repr__(self) -> str:
         masked = self.api_key[:8] + "..." if len(self.api_key) > 8 else "***"
