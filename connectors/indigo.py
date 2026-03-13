@@ -394,10 +394,6 @@ class IndiGoConnectorClient:
             if not clicked:
                 for pat in placeholder_patterns:
                     try:
-                        loc = page.locator(f"input[placeholder]").filter(
-                            has=page.locator(f":scope")
-                        )
-                        # Use get_by_placeholder for regex matching
                         loc = page.get_by_placeholder(re.compile(pat, re.IGNORECASE))
                         if await loc.count() > 0:
                             await loc.first.click(timeout=3000)
