@@ -152,16 +152,28 @@ def _get_ctx_lock() -> asyncio.Lock:
     return _ctx_lock
 
 
-async def _get_browser():
-    """Shared headed Chrome (launched once, reused)."""
+async def _get_browser(proxy: dict):
+    """Shared headed Chrome with US proxy (launched once, reused)."""
     global _pw_instance, _browser
     lock = _get_lock()
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
-        from connectors.browser import launch_headed_browser
-        _browser = await launch_headed_browser()
-        logger.info("Allegiant: browser launched")
+        from playwright.async_api import async_playwright
+
+        _pw_instance = await async_playwright().start()
+        try:
+            _browser = await _pw_instance.chromium.launch(
+                headless=True,
+                channel="chrome",
+                args=["--disable-blink-features=AutomationControlled", *stealth_args()],
+            )
+        except Exception:
+            _browser = await _pw_instance.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", *stealth_args()],
+            )
+        logger.info("Allegiant: headed Chrome launched")
         return _browser
 
 
@@ -201,7 +213,7 @@ async def _ensure_warm_ctx(proxy: dict):
         if _ctx_ready and _warm_ctx:
             return _warm_ctx
 
-        browser = await _get_browser()
+        browser = await _get_browser(proxy)
         if _warm_ctx:
             try:
                 await _warm_ctx.close()
