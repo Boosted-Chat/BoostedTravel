@@ -78,10 +78,11 @@ const TOOLS = [
     name: 'search_flights',
     description:
       'Search for flights between any two cities/airports worldwide. ' +
-      'Runs 48 LCC scrapers LOCALLY (Ryanair, EasyJet, Spring Airlines, Lucky Air, etc.) ' +
+      'Runs 53 LCC scrapers LOCALLY (Ryanair, EasyJet, Spring Airlines, Lucky Air, etc.) ' +
       'plus aggregators. No API key needed for search — completely FREE.\n\n' +
       'Returns flight offers with prices, airlines, times, and booking URLs.\n\n' +
-      'If BOOSTEDTRAVEL_API_KEY is set, also queries premium GDS/NDC sources (Amadeus, Duffel).',
+      'If BOOSTEDTRAVEL_API_KEY is set, also queries premium GDS/NDC sources (Amadeus, Duffel).\n\n' +
+      'This is a read-only operation with no side effects. Safe to call multiple times.',
     inputSchema: {
       type: 'object',
       required: ['origin', 'destination', 'date_from'],
@@ -100,7 +101,9 @@ const TOOLS = [
   },
   {
     name: 'resolve_location',
-    description: "Convert a city/airport name to IATA codes. Use when user says 'London' instead of 'LON'.",
+    description:
+      "Convert a city/airport name to IATA codes. Use when user says 'London' instead of 'LON'.\n\n" +
+      'Read-only. Safe to call multiple times.',
     inputSchema: {
       type: 'object',
       required: ['query'],
@@ -112,8 +115,12 @@ const TOOLS = [
   {
     name: 'unlock_flight_offer',
     description:
-      'Unlock a flight offer for booking — $1 fee. Confirms latest price and reserves for 30 minutes. ' +
-      'Requires payment method (call setup_payment first).',
+      'Unlock a flight offer for booking — $1 proof-of-intent fee.\n\n' +
+      'This is the "quote" step: confirms the latest price with the airline and reserves the offer for 30 minutes. ' +
+      'ALWAYS call this before book_flight so the user can see the confirmed price.\n\n' +
+      'If the confirmed price differs from the search price, inform the user before proceeding.\n\n' +
+      'Requires payment method (call setup_payment first).\n\n' +
+      'SAFETY: Charges $1. Not idempotent — calling twice on the same offer will charge twice.',
     inputSchema: {
       type: 'object',
       required: ['offer_id'],
@@ -126,7 +133,14 @@ const TOOLS = [
     name: 'book_flight',
     description:
       'Book an unlocked flight — creates real airline reservation with PNR. FREE after unlock.\n\n' +
-      'Requirements: 1) Offer must be unlocked first 2) Provide passenger_id from search 3) Full passenger details needed.',
+      'FLOW: search_flights → unlock_flight_offer (quote) → book_flight\n' +
+      'Requirements: 1) Offer must be unlocked first 2) passenger_ids from search 3) Full passenger details\n\n' +
+      'SAFETY: Always provide idempotency_key to prevent double-bookings if this call is retried. ' +
+      'Use any unique string (e.g., UUID). If the same key is sent twice, returns the original booking.\n\n' +
+      'ERROR HANDLING: Errors include error_code and error_category fields.\n' +
+      '  transient (SUPPLIER_TIMEOUT, RATE_LIMITED) → safe to retry after short delay\n' +
+      '  validation (INVALID_IATA, INVALID_DATE) → fix input, then retry\n' +
+      '  business (OFFER_EXPIRED, PAYMENT_DECLINED) → requires human decision',
     inputSchema: {
       type: 'object',
       required: ['offer_id', 'passengers', 'contact_email'],
@@ -151,13 +165,15 @@ const TOOLS = [
           },
         },
         contact_email: { type: 'string', description: 'Booking contact email' },
+        idempotency_key: { type: 'string', description: 'Unique key to prevent double-bookings on retry (e.g., UUID). Strongly recommended.' },
       },
     },
   },
   {
     name: 'setup_payment',
     description:
-      "Set up payment method. Required before unlock/book. For testing use token 'tok_visa'. Only needed once.",
+      "Set up payment method. Required before unlock/book. For testing use token 'tok_visa'. Only needed once.\n\n" +
+      'Idempotent — safe to call multiple times (updates the payment method).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -168,7 +184,9 @@ const TOOLS = [
   },
   {
     name: 'get_agent_profile',
-    description: "Get agent profile, payment status, and usage stats (searches, unlocks, bookings, fees).",
+    description:
+      "Get agent profile, payment status, and usage stats (searches, unlocks, bookings, fees).\n\n" +
+      'Read-only. Safe to call multiple times.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];
@@ -254,12 +272,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
     }
 
     case 'book_flight': {
-      const result = await apiRequest('POST', '/api/v1/bookings/book', {
+      const body: Record<string, unknown> = {
         offer_id: args.offer_id,
         booking_type: 'flight',
         passengers: args.passengers,
         contact_email: args.contact_email,
-      });
+      };
+      if (args.idempotency_key) body.idempotency_key = args.idempotency_key;
+      const result = await apiRequest('POST', '/api/v1/bookings/book', body);
       return JSON.stringify(result, null, 2);
     }
 

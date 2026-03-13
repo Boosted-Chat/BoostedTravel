@@ -194,6 +194,7 @@ async def connect_cdp(port: int):
     """
     from playwright.async_api import async_playwright
     pw = await async_playwright().start()
+    _launched_pw_instances.append(pw)
     browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
     return browser
 
@@ -209,18 +210,26 @@ async def get_or_launch_cdp(
     """
     Try connecting to existing Chrome on port, or launch a new one.
 
-    Returns (browser, proc_or_None).
+    Returns (browser, proc_or_None).  Playwright instances are tracked
+    in ``_launched_pw_instances`` so ``cleanup_all_browsers()`` can stop
+    them later.
     """
     from playwright.async_api import async_playwright
 
     # Try connecting to already-running Chrome
+    pw = None
     try:
         pw = await async_playwright().start()
         browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+        _launched_pw_instances.append(pw)
         logger.info("Connected to existing Chrome on port %d", port)
         return browser, None
     except Exception:
-        pass
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
 
     # Launch new Chrome
     proc = await launch_cdp_chrome(
@@ -230,6 +239,7 @@ async def get_or_launch_cdp(
         startup_wait=startup_wait,
     )
     pw = await async_playwright().start()
+    _launched_pw_instances.append(pw)
     browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
     return browser, proc
 
