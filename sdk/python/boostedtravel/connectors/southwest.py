@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
 import time
@@ -95,6 +96,33 @@ def _get_farm_lock() -> asyncio.Lock:
     if _farm_lock is None:
         _farm_lock = asyncio.Lock()
     return _farm_lock
+
+
+def _get_proxy() -> Optional[dict]:
+    """Read proxy config from SOUTHWEST_PROXY env var.
+
+    Southwest is geo-restricted to US IPs. Set SOUTHWEST_PROXY to a US proxy
+    URL, e.g. ``http://user:pass@us-proxy.example.com:10001``.
+    The proxy is applied to both curl_cffi (as a URL string) and Playwright
+    (as a ``{server, username, password}`` dict).
+    """
+    raw = os.environ.get("SOUTHWEST_PROXY", "").strip()
+    if not raw:
+        return None
+    from urllib.parse import urlparse
+    p = urlparse(raw)
+    result: dict[str, str] = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+    if p.username:
+        result["username"] = p.username
+    if p.password:
+        result["password"] = p.password
+    return result
+
+
+def _get_proxy_url() -> Optional[str]:
+    """Return the raw SOUTHWEST_PROXY URL for use with curl_cffi."""
+    raw = os.environ.get("SOUTHWEST_PROXY", "").strip()
+    return raw if raw else None
 
 
 async def _get_browser():
@@ -185,6 +213,7 @@ class SouthwestConnectorClient:
     def _bootstrap_session_sync() -> list[dict]:
         """Synchronous: visit southwest.com homepage to capture session cookies."""
         sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        proxy_url = _get_proxy_url()
         try:
             r = sess.get(
                 _HOMEPAGE_URL,
@@ -195,6 +224,7 @@ class SouthwestConnectorClient:
                 },
                 timeout=15,
                 allow_redirects=True,
+                proxies={"https": proxy_url, "http": proxy_url} if proxy_url else None,
             )
             if r.status_code == 200:
                 cookies = []
@@ -217,7 +247,9 @@ class SouthwestConnectorClient:
                 return _farmed_cookies
 
             browser = await _get_browser()
+            proxy = _get_proxy()
             context = await browser.new_context(
+                proxy=proxy if proxy else None,
                 viewport=random.choice(_VIEWPORTS),
                 locale=random.choice(_LOCALES),
                 timezone_id=random.choice(_TIMEZONES),
@@ -296,6 +328,7 @@ class SouthwestConnectorClient:
     ) -> Optional[dict]:
         """Synchronous curl_cffi search -- tries primary then mobile endpoint."""
         sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        proxy_url = _get_proxy_url()
 
         # Load cookies into session
         for c in cookies:
@@ -334,7 +367,10 @@ class SouthwestConnectorClient:
         # Try primary endpoint, then mobile endpoint
         for url in [_SEARCH_URL, _MOBILE_SEARCH_URL]:
             try:
-                r = sess.post(url, json=body, headers=headers, timeout=15)
+                r = sess.post(
+                    url, json=body, headers=headers, timeout=15,
+                    proxies={"https": proxy_url, "http": proxy_url} if proxy_url else None,
+                )
             except Exception as e:
                 logger.debug("Southwest: API request to %s failed: %s", url, e)
                 continue
@@ -374,7 +410,9 @@ class SouthwestConnectorClient:
     ) -> FlightSearchResponse:
         """Full Playwright interception flow as fallback."""
         browser = await _get_browser()
+        proxy = _get_proxy()
         context = await browser.new_context(
+            proxy=proxy if proxy else None,
             viewport=random.choice(_VIEWPORTS),
             locale=random.choice(_LOCALES),
             timezone_id=random.choice(_TIMEZONES),
