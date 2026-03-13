@@ -8,7 +8,7 @@ Strategy:
 1. Navigate to airasia.com/en/gb homepage (English version)
 2. Dismiss cookie consent banner
 3. Fill search form (origin, destination, date, one-way)
-4. Intercept API responses (Navitaire availability/search endpoints)
+4. Intercept API responses (Navitaire availability/search/fares endpoints)
 5. Parse results -> FlightOffers
 
 Homepage observations (Mar 2026):
@@ -17,7 +17,10 @@ Homepage observations (Mar 2026):
 - Trip type: "Round-trip" default -- need to switch to "One-way"
 - Search button: "Search Flights" (accessible button)
 - Autocomplete: Dropdown with airport suggestions after typing IATA
-- API: Navitaire-style calls to availability/search/fares endpoints
+- API: Navitaire-style calls across multiple endpoint patterns:
+    aggregated-results, availability, flights/search, fares, offers,
+    /api/nsk, navi, nskts, booking/search, _next/data, bifrost
+- Response: JSON with searchResults.trips[].flightsList[] or pageProps envelope
 """
 
 from __future__ import annotations
@@ -135,22 +138,65 @@ class AirAsiaConnectorClient:
             captured_data: dict = {}
             api_event = asyncio.Event()
 
+            # Navitaire / AirAsia API endpoint patterns (aligned with cebupacific/scoot)
+            _URL_PATTERNS = (
+                "aggregated-results",
+                "availability",
+                "search/flights",
+                "flights/search",
+                "flightsearch",
+                "low-fare",
+                "lowest-fare",
+                "fares",
+                "offers",
+                "/api/search",
+                "/api/nsk",
+                "navi",
+                "nskts",
+                "booking/search",
+                "air-bounds",
+                "search-results",
+                "_next/data",
+                "bifrost",
+            )
+            _FLIGHT_KEYS = frozenset({
+                "searchResults", "trips", "flights", "journeys",
+                "outboundFlights", "availability", "data", "results",
+                "lowFareAvailability", "outbound", "fares", "flightsList",
+                "offers", "airBoundGroups",
+            })
+
             async def on_response(response):
                 try:
+                    if response.status != 200:
+                        return
                     url = response.url.lower()
                     ct = response.headers.get("content-type", "")
-                    if "json" in ct and (
-                        "aggregated-results" in url
-                        or "availability" in url
-                        or "search/flights" in url
-                        or "low-fare" in url
-                    ):
-                        data = await response.json()
-                        if isinstance(data, dict) and "searchResults" in data:
-                            captured_data["json"] = data
-                            captured_data["url"] = response.url
-                            api_event.set()
-                            logger.info("AirAsia: captured flight data from %s (status=%d)", response.url[:120], response.status)
+                    if "json" not in ct:
+                        return
+                    if not any(k in url for k in _URL_PATTERNS):
+                        return
+                    data = await response.json()
+                    if not data or not isinstance(data, (dict, list)):
+                        return
+                    # Unwrap Next.js pageProps envelope if present
+                    if isinstance(data, dict) and "pageProps" in data:
+                        inner = data["pageProps"]
+                        if isinstance(inner, dict):
+                            data = inner.get("aggregatorResponse") or inner
+                    # Accept lists directly (array of flights)
+                    if isinstance(data, list):
+                        captured_data["json"] = data
+                        captured_data["url"] = response.url
+                        api_event.set()
+                        logger.info("AirAsia: captured flight data from %s (status=%d)", response.url[:120], response.status)
+                        return
+                    # Accept dicts that contain flight-related keys
+                    if any(k in data for k in _FLIGHT_KEYS):
+                        captured_data["json"] = data
+                        captured_data["url"] = response.url
+                        api_event.set()
+                        logger.info("AirAsia: captured flight data from %s (status=%d)", response.url[:120], response.status)
                 except Exception:
                     pass
 
@@ -414,6 +460,11 @@ class AirAsiaConnectorClient:
     def _parse_response(self, data: Any, req: FlightSearchRequest) -> list[FlightOffer]:
         if isinstance(data, list):
             data = {"flights": data}
+        # Unwrap Next.js pageProps / aggregatorResponse envelope
+        if isinstance(data, dict) and "pageProps" in data:
+            inner = data["pageProps"]
+            if isinstance(inner, dict):
+                data = inner.get("aggregatorResponse") or inner
         currency = req.currency
         booking_url = self._build_booking_url(req)
         offers: list[FlightOffer] = []
