@@ -56,11 +56,16 @@ _TIMEZONES = [
     "Europe/Paris", "Europe/Rome", "Europe/Madrid",
 ]
 
-_MAX_ATTEMPTS = 2
+_MAX_ATTEMPTS = 3
 _DEBUG_PORT = 9446
 _USER_DATA_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".wizzair_chrome_data"
 )
+
+# ── Session lifecycle ─────────────────────────────────────────────────────
+_SESSION_MAX_AGE = 20 * 60       # KPSDK tokens expire; re-farm after 20 min
+_MIN_REQUEST_SPACING = 1.5       # Min seconds between API requests
+_429_BACKOFF_BASE = 3.0          # Base backoff seconds on 429 (doubles per retry)
 
 # ── Shared state ──────────────────────────────────────────────────────────
 _browser_lock: Optional[asyncio.Lock] = None
@@ -70,6 +75,8 @@ _chrome_proc = None
 _persistent_page = None          # stays on wizzair.com — KPSDK JS active
 _api_version: Optional[str] = None  # e.g. "28.1.0"
 _page_ready = False              # True once KPSDK is loaded
+_session_farm_ts: float = 0.0   # monotonic time when page was last farmed
+_last_request_ts: float = 0.0   # monotonic time of last API request
 
 
 def _find_chrome() -> Optional[str]:
@@ -177,23 +184,44 @@ async def _get_browser():
         return _browser
 
 
+async def _invalidate_session(reason: str = ""):
+    """Close the persistent page and reset session state for re-farming."""
+    global _persistent_page, _page_ready, _api_version, _session_farm_ts
+    if reason:
+        logger.info("Wizzair: invalidating session — %s", reason)
+    if _persistent_page:
+        try:
+            await _persistent_page.close()
+        except Exception:
+            pass
+    _persistent_page = None
+    _page_ready = False
+    _api_version = None
+    _session_farm_ts = 0.0
+
+
 async def _ensure_persistent_page():
     """Return a persistent page sitting on wizzair.com with KPSDK loaded.
 
     On first call: navigates to homepage, waits for KPSDK JS to solve the
     challenge, and intercepts asset API calls to discover the version.
-    On subsequent calls: returns the cached page if still alive.
+    On subsequent calls: returns the cached page if still alive and not stale.
     """
-    global _persistent_page, _api_version, _page_ready
+    global _persistent_page, _api_version, _page_ready, _session_farm_ts
 
-    # Reuse existing page if alive (no lock needed for read check)
+    # Reuse existing page if alive AND not expired
     if _persistent_page and _page_ready:
-        try:
-            await _persistent_page.evaluate("1")
-            return _persistent_page, _api_version
-        except Exception:
-            _persistent_page = None
-            _page_ready = False
+        session_age = time.monotonic() - _session_farm_ts
+        if session_age >= _SESSION_MAX_AGE:
+            await _invalidate_session(
+                f"KPSDK session expired ({session_age:.0f}s > {_SESSION_MAX_AGE}s)"
+            )
+        else:
+            try:
+                await _persistent_page.evaluate("1")
+                return _persistent_page, _api_version
+            except Exception:
+                await _invalidate_session("page health-check failed")
 
     # Get browser first (acquires lock internally)
     browser = await _get_browser()
@@ -282,6 +310,7 @@ async def _ensure_persistent_page():
 
     _persistent_page = page
     _page_ready = True
+    _session_farm_ts = time.monotonic()
     # Give KPSDK JS time to complete its challenge-response cycle.
     # Without this delay, the first fetch gets 429'd.
     await asyncio.sleep(5)
@@ -305,10 +334,23 @@ class WizzairConnectorClient:
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
         search_url = self._build_booking_url(req)
+        got_429 = False
 
         for attempt in range(1, _MAX_ATTEMPTS + 1):
+            # Exponential backoff between retries (longer after 429)
+            if attempt > 1:
+                if got_429:
+                    backoff = _429_BACKOFF_BASE * (2 ** (attempt - 2))
+                    logger.info("Wizzair: 429 backoff %.1fs before attempt %d", backoff, attempt)
+                    await asyncio.sleep(backoff)
+                    got_429 = False
+                else:
+                    await asyncio.sleep(1.0 * (attempt - 1))
+
             try:
-                data = await self._attempt_search(search_url, req)
+                data, was_429 = await self._attempt_search(search_url, req)
+                if was_429:
+                    got_429 = True
                 if data is not None:
                     elapsed = time.monotonic() - t0
                     outbound = self._parse_flights(data.get("outboundFlights") or [])
@@ -343,15 +385,23 @@ class WizzairConnectorClient:
 
     async def _attempt_search(
         self, url: str, req: FlightSearchRequest
-    ) -> Optional[dict]:
+    ) -> tuple[Optional[dict], bool]:
         """Use persistent page + page.evaluate(fetch) to call the search API.
 
         KPSDK JS running in the page hooks the fetch and automatically
         injects x-kpsdk-h, x-kpsdk-ct, x-kpsdk-v headers.
+
+        Returns (data_or_None, was_429).
         """
-        global _persistent_page, _page_ready
+        global _persistent_page, _page_ready, _last_request_ts
 
         page, version = await _ensure_persistent_page()
+
+        # Enforce minimum spacing between API requests
+        now = time.monotonic()
+        elapsed_since_last = now - _last_request_ts
+        if elapsed_since_last < _MIN_REQUEST_SPACING:
+            await asyncio.sleep(_MIN_REQUEST_SPACING - elapsed_since_last)
 
         # Build the API request body (protocol: wizzair.json)
         flight_list = [
@@ -389,6 +439,7 @@ class WizzairConnectorClient:
         )
 
         try:
+            _last_request_ts = time.monotonic()
             result = await page.evaluate("""
                 async ([url, bodyJson]) => {
                     try {
@@ -421,29 +472,23 @@ class WizzairConnectorClient:
             """, [api_url, body_json])
 
             if result and result.get("ok"):
-                return result["data"]
+                return result["data"], False
 
             status = result.get("status", 0) if result else 0
             error = result.get("error", "") if result else ""
             logger.warning("Wizzair: API returned %d: %s", status, error[:200])
 
-            # 429 = KPSDK challenge expired → reset page, re-farm
+            # 429 = KPSDK challenge expired → invalidate session, re-farm
             if status == 429:
-                logger.info("Wizzair: 429 — KPSDK expired, re-farming...")
-                _persistent_page = None
-                _page_ready = False
-                try:
-                    await page.close()
-                except Exception:
-                    pass
+                await _invalidate_session("429 — KPSDK token expired")
+                return None, True
 
-            return None
+            return None, False
 
         except Exception as e:
             logger.error("Wizzair: page.evaluate failed: %s", e)
-            _persistent_page = None
-            _page_ready = False
-            return None
+            await _invalidate_session("page.evaluate exception")
+            return None, False
 
     def _build_offers(
         self,
