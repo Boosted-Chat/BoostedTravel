@@ -60,11 +60,11 @@
 | 6 | eurowings | EW | — | `done` | copilot-eurowings-fix | 2026-03-13T20:51Z | cookie-farm hybrid: curl_cffi + CF cookies |
 | 7 | flynas | XY | — | `done` | copilot-eurowings-fix | 2026-03-13T21:00Z | persistent headed Chrome, bypass Akamai headless detection |
 | 8 | gol | G3 | [#34](https://github.com/Boosted-Chat/BoostedTravel/issues/34) | `done` | claude-connector-fix | 2026-03-13T21:07Z | Switched to headed Chrome. Akamai blocked headless; UUID now populates via waitForFunction. Tested GRU->GIG (5), CGH->SDU (24). |
-| 9 | indigo | 6E | [#17](https://github.com/Boosted-Chat/BoostedTravel/issues/17) | `claimed` | claude-connector-fix | 2026-03-13T21:08Z | |
+| 9 | indigo | 6E | [#17](https://github.com/Boosted-Chat/BoostedTravel/issues/17) | `done` | claude-connector-fix | 2026-03-13T21:08Z | headed Chrome + city-selection selectors (73 offers DEL→BOM) |
 | 10 | jet2 | LS | [#32](https://github.com/Boosted-Chat/BoostedTravel/issues/32) | `done` | copilot-eurowings-fix | 2026-03-13T21:30Z | persistent headed Chrome for Akamai bypass |
 | 11 | jetsmart | JA | — | `done` | copilot-batikair-fix | 2026-03-13T21:17Z | Already fixed — timetable API. Tested SCL→LIM (1 offer, 60790 CLP, 2.1s). |
 | 12 | jetstar | JQ | [#31](https://github.com/Boosted-Chat/BoostedTravel/issues/31) | `claimed` | copilot-eurowings-fix | 2026-03-14T00:00Z | |
-| 13 | lionair | JT | [#35](https://github.com/Boosted-Chat/BoostedTravel/issues/35) | `broken` | | | |
+| 13 | lionair | JT | [#35](https://github.com/Boosted-Chat/BoostedTravel/issues/35) | `claimed` | copilot-main | 2026-03-13T22:00Z | |
 | 14 | luckyair | 8L | — | `broken` | | | |
 | 15 | nineair | AQ | — | `broken` | | | |
 | 16 | norwegian | DY | [#22](https://github.com/Boosted-Chat/BoostedTravel/issues/22) | `claimed` | copilot-batikair-fix | 2026-03-13T21:17Z | |
