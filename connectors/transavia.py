@@ -311,9 +311,9 @@ class TransaviaConnectorClient:
         try:
             r = sess.get(booking_url, headers=html_headers, timeout=15)
             if r.status_code != 200:
-                logger.warning("Transavia: booking page returned %d", r.status_code)
+                logger.debug("Transavia: booking page returned %d, continuing with session cookies", r.status_code)
         except Exception as e:
-            logger.warning("Transavia: booking page request failed: %s", e)
+            logger.debug("Transavia: booking page request failed, continuing: %s", e)
 
         # Step 3: Fetch flight availability from the API
         # Try even if booking page returned non-200 — the session cookies
