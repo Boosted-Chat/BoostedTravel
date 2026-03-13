@@ -42,6 +42,27 @@ _GOL_BASE = "https://b2c.voegol.com.br"
 _CDP_PORT = 9447
 _USER_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", ".gol_chrome_data")
 
+# ── JavaScript helpers for session UUID detection ────────────────────────────
+# GOL's Angular SPA uses ngrx/store with a UUID-prefixed sessionStorage key.
+# The prefix may change across deployments, so we match any UUID_@<prefix> key.
+_UUID_READY_JS = """() => {
+    for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_@/.test(key))
+            return true;
+    }
+    return false;
+}"""
+
+_UUID_EXTRACT_JS = """() => {
+    for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        const m = key.match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(_@[^:]+)/);
+        if (m) return {uuid: m[1], prefix: m[2]};
+    }
+    return null;
+}"""
+
 _pw_instance = None
 _cdp_browser = None
 _chrome_proc = None
@@ -143,25 +164,23 @@ async def _ensure_persistent_page():
 
     logger.info("GOL: loading Angular SPA...")
     await page.goto(f"{_GOL_BASE}/compra", wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(6)
 
-    # Dismiss LGPD/cookie overlays
+    # Dismiss LGPD/cookie overlays early — popups can block Angular init
     await _dismiss_cookies(page)
 
-    # Verify Angular booted (session UUID exists)
-    for _ in range(10):
-        uuid = await page.evaluate("""() => {
-            for (let i = 0; i < sessionStorage.length; i++) {
-                const key = sessionStorage.key(i);
-                const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
-                if (m) return m[1];
-            }
-            return null;
-        }""")
-        if uuid:
-            logger.info("GOL: Angular SPA ready (UUID=%s...)", uuid[:8])
-            break
-        await asyncio.sleep(1)
+    # Wait for Angular to boot: session UUID appears in sessionStorage.
+    # Use waitForFunction for reliable SPA timing instead of fixed sleep + polling.
+    try:
+        await page.wait_for_function(_UUID_READY_JS, timeout=30000)
+    except Exception:
+        logger.warning("GOL: waitForFunction timed out, retrying with sleep")
+        await asyncio.sleep(10)
+
+    info = await page.evaluate(_UUID_EXTRACT_JS)
+    if info:
+        logger.info("GOL: Angular SPA ready (UUID=%s...)", info["uuid"][:8])
+    else:
+        logger.warning("GOL: Angular SPA loaded but no session UUID found")
 
     _persistent_page = page
     return page
@@ -220,29 +239,27 @@ class GolConnectorClient:
 
         page = await _ensure_persistent_page()
 
-        # Extract session UUID
-        uuid = await page.evaluate("""() => {
-            for (let i = 0; i < sessionStorage.length; i++) {
-                const key = sessionStorage.key(i);
-                const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
-                if (m) return m[1];
-            }
-            return null;
-        }""")
-        if not uuid:
+        # Extract session UUID — wait briefly for Angular state to be ready
+        try:
+            await page.wait_for_function(_UUID_READY_JS, timeout=8000)
+        except Exception:
+            pass
+
+        info = await page.evaluate(_UUID_EXTRACT_JS)
+        if not info:
             logger.warning("GOL: no session UUID, resetting page")
             _persistent_page = None
             page = await _ensure_persistent_page()
-            uuid = await page.evaluate("""() => {
-                for (let i = 0; i < sessionStorage.length; i++) {
-                    const key = sessionStorage.key(i);
-                    const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
-                    if (m) return m[1];
-                }
-                return null;
-            }""")
-            if not uuid:
+            try:
+                await page.wait_for_function(_UUID_READY_JS, timeout=15000)
+            except Exception:
+                pass
+            info = await page.evaluate(_UUID_EXTRACT_JS)
+            if not info:
                 return self._empty(req)
+
+        uuid = info["uuid"]
+        store_prefix = info["prefix"]  # e.g. "_@SiteGolB2C"
 
         # Build sessionStorage search payload
         dep_date = req.date_from.isoformat()
@@ -289,14 +306,15 @@ class GolConnectorClient:
             "CHD": req.children, "INF": req.infants, "UNN": 0,
         }
 
-        # Inject search params into sessionStorage
-        await page.evaluate("""({uuid, search, journey, passengers}) => {
-            sessionStorage.setItem(uuid + '_@SiteGolB2C:search', JSON.stringify(search));
-            sessionStorage.setItem(uuid + '_@SiteGolB2C:search-properties', JSON.stringify({journey: journey}));
-            sessionStorage.setItem(uuid + '_@SiteGolB2C:passengers', JSON.stringify(passengers));
+        # Inject search params into sessionStorage using discovered prefix
+        await page.evaluate("""({uuid, prefix, search, journey, passengers}) => {
+            sessionStorage.setItem(uuid + prefix + ':search', JSON.stringify(search));
+            sessionStorage.setItem(uuid + prefix + ':search-properties', JSON.stringify({journey: journey}));
+            sessionStorage.setItem(uuid + prefix + ':passengers', JSON.stringify(passengers));
             sessionStorage.setItem('flightSelectionScreen', JSON.stringify('v2'));
         }""", {
             "uuid": uuid,
+            "prefix": store_prefix,
             "search": search_payload,
             "journey": journey_type,
             "passengers": passengers,
