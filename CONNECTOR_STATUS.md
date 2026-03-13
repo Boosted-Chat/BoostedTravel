@@ -79,9 +79,9 @@
 
 | # | Connector | IATA | Issue | Status | Claimed by | Timestamp | Commit/PR |
 |---|-----------|------|-------|--------|------------|-----------|-----------|
-| 23 | airarabia | G9 | — | `broken` | | | |
-| 24 | jazeera | J9 | — | `claimed` | copilot-batikair-fix | 2026-03-14T03:00Z | |
-| 25 | jejuair | 7C | — | `broken` | | | |
+| 23 | airarabia | G9 | — | `done` | copilot-eurowings-fix | 2026-03-14T02:30Z | relax date filter for monthly featured offers |
+| 24 | jazeera | J9 | — | `done` | copilot-batikair-fix | 2026-03-14T03:00Z | Validated working — direct API, 5 routes tested, 3 fare classes KWI→DXB 25.70 KWD |
+| 25 | jejuair | 7C | — | `done` | copilot-batikair-fix | 2026-03-14T03:00Z | Validated working — direct API, 4 routes tested, 7 offers GMP→CJU 21500 KRW |
 
 ### Blocked / Special (6)
 
