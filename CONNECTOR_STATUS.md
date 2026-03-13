@@ -59,7 +59,7 @@
 | 5 | easyjet | U2 | [#20](https://github.com/Boosted-Chat/BoostedTravel/issues/20) | `claimed` | copilot-batikair-fix | 2026-03-13T18:20Z | |
 | 6 | eurowings | EW | — | `done` | copilot-eurowings-fix | 2026-03-13T20:51Z | cookie-farm hybrid: curl_cffi + CF cookies |
 | 7 | flynas | XY | — | `done` | copilot-eurowings-fix | 2026-03-13T21:00Z | persistent headed Chrome, bypass Akamai headless detection |
-| 8 | gol | G3 | [#34](https://github.com/Boosted-Chat/BoostedTravel/issues/34) | `claimed` | claude-connector-fix | 2026-03-13T21:05Z | |
+| 8 | gol | G3 | [#34](https://github.com/Boosted-Chat/BoostedTravel/issues/34) | `done` | claude-connector-fix | 2026-03-13T21:07Z | Switched to headed Chrome. Akamai blocked headless; UUID now populates via waitForFunction. Tested GRU->GIG (5), CGH->SDU (24). |
 | 9 | indigo | 6E | [#17](https://github.com/Boosted-Chat/BoostedTravel/issues/17) | `broken` | | | |
 | 10 | jet2 | LS | [#32](https://github.com/Boosted-Chat/BoostedTravel/issues/32) | `broken` | | | |
 | 11 | jetsmart | JA | — | `broken` | | | |

@@ -1,18 +1,18 @@
 """
-GOL Linhas Aéreas hybrid scraper — CDP Chrome + Angular navigation.
+GOL Linhas Aereas hybrid scraper -- headed Chrome + Angular navigation.
 
 GOL (IATA: G3) is Brazil's largest low-cost carrier.
-Website: b2c.voegol.com.br — Angular SPA booking flow.
+Website: b2c.voegol.com.br -- Angular SPA booking flow.
 
-Strategy (CDP Chrome + Angular navigation):
-1. Launch real Chrome via CDP subprocess (bypasses Akamai Bot Manager)
-2. Navigate to b2c.voegol.com.br/compra once — Angular boots
-3. For each search: inject sessionStorage search params → navigate to results page
-   → Angular resolver fires BFF request → intercept response
+Strategy (persistent headed Chrome + Angular navigation):
+1. Launch persistent headed Chrome (Akamai blocks headless)
+2. Navigate to b2c.voegol.com.br/compra once -- Angular boots
+3. For each search: inject sessionStorage search params -> navigate to results page
+   -> Angular resolver fires BFF request -> intercept response
 4. Navigate back to /compra for next search
-5. Parse offers → FlightOffer objects
+5. Parse offers -> FlightOffer objects
 
-Persistent page kept alive — first search ~8s (Angular boot), subsequent ~3-5s.
+Persistent page kept alive -- first search ~8s (Angular boot), subsequent ~3-5s.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import asyncio
 import hashlib
 import logging
 import os
-import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -33,17 +32,14 @@ from models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from connectors.browser import stealth_args, stealth_popen_kwargs
 
 logger = logging.getLogger(__name__)
 
 _GOL_BASE = "https://b2c.voegol.com.br"
-_CDP_PORT = 9447
 _USER_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", ".gol_chrome_data")
 
 _pw_instance = None
-_cdp_browser = None
-_chrome_proc = None
+_pw_context = None
 _persistent_page = None
 _page_lock: Optional[asyncio.Lock] = None
 
@@ -55,15 +51,37 @@ def _get_lock() -> asyncio.Lock:
     return _page_lock
 
 
-async def _get_browser():
-    global _pw_instance, _cdp_browser, _chrome_proc
-    if _cdp_browser and _cdp_browser.is_connected():
-        return _cdp_browser
-    from connectors.browser import get_or_launch_cdp
-    _user_data = os.path.abspath(_USER_DATA_DIR)
-    _cdp_browser, _chrome_proc = await get_or_launch_cdp(_CDP_PORT, _user_data)
-    logger.info("GOL: Chrome ready via CDP (port %d)", _CDP_PORT)
-    return _cdp_browser
+async def _get_context():
+    """Persistent headed Chrome context -- cookies survive across searches."""
+    global _pw_instance, _pw_context
+    if _pw_context:
+        try:
+            _pw_context.pages
+            return _pw_context
+        except Exception:
+            _pw_context = None
+
+    from playwright.async_api import async_playwright
+
+    os.makedirs(os.path.abspath(_USER_DATA_DIR), exist_ok=True)
+    _pw_instance = await async_playwright().start()
+
+    _pw_context = await _pw_instance.chromium.launch_persistent_context(
+        os.path.abspath(_USER_DATA_DIR),
+        channel="chrome",
+        headless=False,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--window-position=-2400,-2400",
+            "--window-size=1366,768",
+        ],
+        viewport={"width": 1366, "height": 768},
+        locale="pt-BR",
+        timezone_id="America/Sao_Paulo",
+        service_workers="block",
+    )
+    logger.info("GOL: persistent Chrome context ready")
+    return _pw_context
 
 
 async def _ensure_persistent_page():
@@ -78,13 +96,7 @@ async def _ensure_persistent_page():
         except Exception:
             pass
 
-    browser = await _get_browser()
-    contexts = browser.contexts
-    if contexts:
-        ctx = contexts[0]
-    else:
-        ctx = await browser.new_context()
-
+    ctx = await _get_context()
     page = await ctx.new_page()
 
     logger.info("GOL: loading Angular SPA...")
@@ -94,20 +106,21 @@ async def _ensure_persistent_page():
     # Dismiss LGPD/cookie overlays
     await _dismiss_cookies(page)
 
-    # Verify Angular booted (session UUID exists)
-    for _ in range(10):
-        uuid = await page.evaluate("""() => {
+    # Wait for Angular to boot and populate session UUID
+    try:
+        uuid = await page.wait_for_function("""() => {
             for (let i = 0; i < sessionStorage.length; i++) {
                 const key = sessionStorage.key(i);
                 const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
                 if (m) return m[1];
             }
             return null;
-        }""")
-        if uuid:
-            logger.info("GOL: Angular SPA ready (UUID=%s...)", uuid[:8])
-            break
-        await asyncio.sleep(1)
+        }""", timeout=15000)
+        uuid_val = await uuid.json_value()
+        if uuid_val:
+            logger.info("GOL: Angular SPA ready (UUID=%s...)", uuid_val[:8])
+    except Exception:
+        logger.warning("GOL: Angular UUID not found after 15s")
 
     _persistent_page = page
     return page
