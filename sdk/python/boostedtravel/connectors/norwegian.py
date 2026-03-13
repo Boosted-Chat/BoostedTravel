@@ -33,8 +33,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -48,7 +50,7 @@ from boostedtravel.models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from boostedtravel.connectors.browser import stealth_args
+from boostedtravel.connectors.browser import stealth_popen_kwargs, find_chrome, _launched_procs
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,10 @@ _SEARCH_URL = "https://api-des.norwegian.com/airlines/DY/v2/search/air-bounds"
 _IMPERSONATE = "chrome131"
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 _COOKIE_MAX_AGE = 25 * 60  # Re-farm cookies after 25 minutes
+_DEBUG_PORT = 9460
+_USER_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", ".norwegian_chrome_profile"
+)
 
 # Shared cookie farm state
 _farm_lock: Optional[asyncio.Lock] = None
@@ -75,6 +81,7 @@ _farmed_cookies: list[dict] = []
 _farm_timestamp: float = 0.0
 _pw_instance = None
 _browser = None
+_chrome_proc = None
 
 
 def _get_farm_lock() -> asyncio.Lock:
@@ -85,24 +92,55 @@ def _get_farm_lock() -> asyncio.Lock:
 
 
 async def _get_browser():
-    """Shared headed Chromium for cookie farming (launched once, reused)."""
-    global _pw_instance, _browser
-    if _browser and _browser.is_connected():
-        return _browser
+    """Launch real headed Chrome via CDP for cookie farming (Incapsula blocks headless)."""
+    global _pw_instance, _browser, _chrome_proc
+    if _browser:
+        try:
+            if _browser.is_connected():
+                return _browser
+        except Exception:
+            pass
+
     from playwright.async_api import async_playwright
-    _pw_instance = await async_playwright().start()
+
+    # Try connecting to existing Chrome on the port first
+    pw = None
     try:
-        _browser = await _pw_instance.chromium.launch(
-            headless=True,
-            channel="chrome",
-            args=["--disable-blink-features=AutomationControlled", *stealth_args()],
-        )
+        pw = await async_playwright().start()
+        _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+        _pw_instance = pw
+        logger.info("Norwegian: connected to existing Chrome on port %d", _DEBUG_PORT)
+        return _browser
     except Exception:
-        _browser = await _pw_instance.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox", *stealth_args()],
-        )
-    logger.info("Norwegian: Playwright browser launched for cookie farming")
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
+    # Launch Chrome HEADED (no --headless) — Incapsula blocks headless Chrome.
+    chrome = find_chrome()
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    args = [
+        chrome,
+        f"--remote-debugging-port={_DEBUG_PORT}",
+        f"--user-data-dir={_USER_DATA_DIR}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-http2",
+        "--window-position=-2400,-2400",
+        "--window-size=1366,768",
+        "about:blank",
+    ]
+    _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
+    _launched_procs.append(_chrome_proc)
+    await asyncio.sleep(2.0)
+
+    pw = await async_playwright().start()
+    _pw_instance = pw
+    _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+    logger.info("Norwegian: Chrome launched headed on CDP port %d (pid %d)", _DEBUG_PORT, _chrome_proc.pid)
     return _browser
 
 
@@ -184,73 +222,41 @@ class NorwegianConnectorClient:
             return await self._farm_cookies(req)
 
     async def _farm_cookies(self, req: FlightSearchRequest) -> list[dict]:
-        """Open Playwright, do one search, extract Incapsula cookies."""
+        """Visit booking.norwegian.com to get valid Incapsula cookies."""
         global _farmed_cookies, _farm_timestamp
 
         browser = await _get_browser()
-        context = await browser.new_context(
+        context = browser.contexts[0] if browser.contexts else await browser.new_context(
             viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
         )
 
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
+            page = await context.new_page()
 
-            search_done = asyncio.Event()
-
-            async def on_response(response):
-                try:
-                    if "air-bounds" in response.url and response.status == 200:
-                        search_done.set()
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            logger.info("Norwegian: farming cookies via %s→%s", req.origin, req.destination)
+            logger.info("Norwegian: farming Incapsula cookies from booking.norwegian.com")
             await page.goto(
-                "https://www.norwegian.com/en/",
+                "https://booking.norwegian.com/booking/",
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
-            await asyncio.sleep(2)
-            await self._dismiss_cookies(page)
+            await asyncio.sleep(3)
 
-            # Extract cookies from page load (Incapsula sets them on first visit)
-            page_cookies = await context.cookies()
-
-            await self._fill_search_form(page, req)
-            await self._dismiss_cookies(page)
-            await self._click_search(page)
-
-            remaining = max(self.timeout - 5, 15)
-            try:
-                await asyncio.wait_for(search_done.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning("Norwegian: cookie farm search timed out, using page-load cookies")
-
-            # Get final cookies (may have more after search)
             cookies = await context.cookies()
-            if not cookies:
-                cookies = page_cookies
             if cookies:
                 _farmed_cookies = cookies
                 _farm_timestamp = time.monotonic()
-                logger.info("Norwegian: farmed %d cookies", len(cookies))
+                incap = [c for c in cookies if "incap" in c["name"].lower() or "reese84" in c["name"].lower()]
+                logger.info("Norwegian: farmed %d cookies (%d Incapsula)", len(cookies), len(incap))
             return cookies
 
         except Exception as e:
             logger.error("Norwegian: cookie farm error: %s", e)
             return []
         finally:
-            await context.close()
+            try:
+                await page.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Direct API via curl_cffi
@@ -371,7 +377,16 @@ class NorwegianConnectorClient:
     # ------------------------------------------------------------------
 
     async def _dismiss_cookies(self, page) -> None:
-        """Remove OneTrust cookie banner via JS (avoids click-interception)."""
+        """Remove OneTrust cookie banner — click accept first, then JS cleanup."""
+        try:
+            for label in ["Accept All Cookies", "Accept all", "Accept"]:
+                btn = page.get_by_role("button", name=label)
+                if await btn.count() > 0:
+                    await btn.first.click(timeout=3000)
+                    await asyncio.sleep(0.5)
+                    break
+        except Exception:
+            pass
         try:
             await page.evaluate("""() => {
                 const ot = document.getElementById('onetrust-consent-sdk');

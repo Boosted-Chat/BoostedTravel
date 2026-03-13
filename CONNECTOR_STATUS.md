@@ -67,8 +67,8 @@
 | 13 | lionair | JT | [#35](https://github.com/Boosted-Chat/BoostedTravel/issues/35) | `claimed` | copilot-main | 2026-03-13T22:00Z | |
 | 14 | luckyair | 8L | — | `broken` | | | |
 | 15 | nineair | AQ | — | `broken` | | | |
-| 16 | norwegian | DY | [#22](https://github.com/Boosted-Chat/BoostedTravel/issues/22) | `claimed` | copilot-batikair-fix | 2026-03-13T21:17Z | |
-| 17 | peach | MM | [#36](https://github.com/Boosted-Chat/BoostedTravel/issues/36) | `broken` | | | |
+| 16 | norwegian | DY | [#22](https://github.com/Boosted-Chat/BoostedTravel/issues/22) | `done` | copilot-batikair-fix | 2026-03-13T21:17Z | Headed CDP Chrome for Incapsula cookies; 20 offers OSL→LGW 1.1s cached |
+| 17 | peach | MM | [#36](https://github.com/Boosted-Chat/BoostedTravel/issues/36) | `claimed` | claude-connector-fix | 2026-03-13T21:42Z | |
 | 18 | pegasus | PC | [#37](https://github.com/Boosted-Chat/BoostedTravel/issues/37) | `broken` | | | |
 | 19 | porter | — | [#24](https://github.com/Boosted-Chat/BoostedTravel/issues/24) | `broken` | | | |
 | 20 | scoot | TR | [#30](https://github.com/Boosted-Chat/BoostedTravel/issues/30) | `broken` | | | |
