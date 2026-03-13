@@ -72,6 +72,20 @@ _UA = (
 _SEC_CH_UA = '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"'
 _COOKIE_MAX_AGE = 15 * 60  # Re-farm cookies after 15 minutes
 
+# Common browser-like headers to satisfy Incapsula
+_BROWSER_HEADERS = {
+    "User-Agent": _UA,
+    "Origin": _BOOKING_ORIGIN,
+    "Referer": f"{_BOOKING_ORIGIN}/",
+    "sec-ch-ua": _SEC_CH_UA,
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 # Shared cookie farm state
 _farm_lock: Optional[asyncio.Lock] = None
 _farmed_cookies: list[dict] = []
@@ -285,20 +299,6 @@ class NorwegianConnectorClient:
             domain = c.get("domain", "")
             sess.cookies.set(c["name"], c["value"], domain=domain)
 
-        # Common browser-like headers to satisfy Incapsula
-        _browser_headers = {
-            "User-Agent": _UA,
-            "Origin": _BOOKING_ORIGIN,
-            "Referer": f"{_BOOKING_ORIGIN}/",
-            "sec-ch-ua": _SEC_CH_UA,
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-site",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-
         # Step 1: Get OAuth2 token
         date_str = req.date_from.strftime("%Y-%m-%dT00:00:00")
         fact = json.dumps({
@@ -321,7 +321,7 @@ class NorwegianConnectorClient:
                     "fact": fact,
                 },
                 headers={
-                    **_browser_headers,
+                    **_BROWSER_HEADERS,
                     "Content-Type": "application/x-www-form-urlencoded",
                     "Accept": "*/*",
                 },
@@ -361,7 +361,7 @@ class NorwegianConnectorClient:
                 _SEARCH_URL,
                 json=search_body,
                 headers={
-                    **_browser_headers,
+                    **_BROWSER_HEADERS,
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/plain, */*",
