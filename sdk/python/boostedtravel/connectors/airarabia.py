@@ -217,10 +217,13 @@ class AirArabiaConnectorClient:
     def _parse_featured(
         self, data: dict, req: FlightSearchRequest, currency: str
     ) -> list[FlightOffer]:
-        """Parse FeaturedOffers response, filtering to the requested route and dates."""
+        """Parse FeaturedOffers response, filtering to the requested route.
+
+        FeaturedOffers returns ~1 best-deal per route per month.  The departure
+        date is whichever day is cheapest, so we accept any date in the queried
+        month(s) rather than filtering to the exact requested date range.
+        """
         offers: list[FlightOffer] = []
-        date_from = req.date_from
-        date_to = req.date_to or req.date_from
 
         for group in data.get("BestOffersGroups", []):
             origin_code = group.get("OriginAirportCode", "")
@@ -235,12 +238,6 @@ class AirArabiaConnectorClient:
                 arr_str = bo.get("ArrivalDateTimeLocal", "")
                 dep_dt = self._parse_dt(dep_str)
                 arr_dt = self._parse_dt(arr_str)
-
-                # Filter to requested date range
-                if dep_dt.year > 2000:
-                    dep_date = dep_dt.date()
-                    if dep_date < date_from or dep_date > date_to:
-                        continue
 
                 total = bo.get("Total")
                 if total is None or float(total) <= 0:
