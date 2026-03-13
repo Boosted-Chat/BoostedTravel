@@ -14,8 +14,8 @@ Strategy (hybrid, updated Mar 2026):
      Datetime format: YYYYMMDDTHHMM (e.g. 202603120810)
   2. FALLBACK: Full Playwright homepage form-fill + API interception (old path).
 
-  Note: The schedule JSON URL uses the ORIGIN-DEST direction. If that 404s,
-  try DEST-ORIGIN (the JSON often contains both directions in one file).
+  Note: The schedule JSON URL uses {ORIGIN}-{DEST} or {DEST}-{ORIGIN} naming.
+  Both files are tried — the reverse-direction file often has fresher data.
 """
 
 from __future__ import annotations
@@ -23,22 +23,24 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
 
 from curl_cffi import requests as cffi_requests
 
-from boostedtravel.models.flights import (
+from models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
-from boostedtravel.connectors.browser import stealth_args
+from connectors.browser import find_chrome, stealth_popen_kwargs, _launched_procs
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +54,13 @@ _VIEWPORTS = [
     {"width": 1280, "height": 720},
 ]
 
+_DEBUG_PORT = 9461
+_USER_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", ".volotea_chrome_profile"
+)
 _pw_instance = None
 _browser = None
+_chrome_proc = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -65,8 +72,15 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_browser():
-    """Launch headed Chrome via Playwright."""
-    global _pw_instance, _browser
+    """Launch real headed Chrome via CDP (Incapsula blocks headless & new contexts).
+
+    Incapsula on volotea.com blocks pages opened in Playwright-created contexts
+    (browser.new_context()) but allows pages in Chrome's default context — the
+    one Chrome creates for the initial URL.  So we launch Chrome with
+    ``https://www.volotea.com/en/`` as the startup URL, then attach via CDP and
+    grab ``browser.contexts[0]``.
+    """
+    global _pw_instance, _browser, _chrome_proc
     lock = _get_lock()
     async with lock:
         if _browser:
@@ -78,24 +92,45 @@ async def _get_browser():
 
         from playwright.async_api import async_playwright
 
-        if _pw_instance:
-            try:
-                await _pw_instance.stop()
-            except Exception:
-                pass
-        _pw_instance = await async_playwright().start()
-
+        # Try connecting to existing Chrome on the port first
+        pw = None
         try:
-            _browser = await _pw_instance.chromium.launch(
-                headless=True, channel="chrome",
-                args=["--disable-blink-features=AutomationControlled", *stealth_args()],
-            )
+            pw = await async_playwright().start()
+            _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+            _pw_instance = pw
+            logger.info("Volotea: connected to existing Chrome on port %d", _DEBUG_PORT)
+            return _browser
         except Exception:
-            _browser = await _pw_instance.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", *stealth_args()],
-            )
-        logger.info("Volotea: browser launched")
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+
+        # Launch Chrome HEADED with the Volotea homepage so the default
+        # context passes Incapsula.
+        chrome = find_chrome()
+        os.makedirs(_USER_DATA_DIR, exist_ok=True)
+        args = [
+            chrome,
+            f"--remote-debugging-port={_DEBUG_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-http2",
+            "--window-position=-2400,-2400",
+            "--window-size=1366,768",
+            "https://www.volotea.com/en/",
+        ]
+        _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
+        _launched_procs.append(_chrome_proc)
+        await asyncio.sleep(4.0)
+
+        pw = await async_playwright().start()
+        _pw_instance = pw
+        _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+        logger.info("Volotea: Chrome launched headed on CDP port %d (pid %d)", _DEBUG_PORT, _chrome_proc.pid)
         return _browser
 
 
@@ -120,10 +155,9 @@ class VoloteaConnectorClient:
         # Try direct API first (no auth needed)
         offers = await self._api_search(req)
 
-        if offers is not None:
+        if offers:
             elapsed = time.monotonic() - t0
-            if offers:
-                offers.sort(key=lambda o: o.price)
+            offers.sort(key=lambda o: o.price)
             logger.info(
                 "Volotea %s→%s returned %d offers in %.1fs (schedule API)",
                 req.origin, req.destination, len(offers), elapsed,
@@ -161,50 +195,46 @@ class VoloteaConnectorClient:
         reverse_key = f"{req.destination}-{req.origin}"
 
         sess = cffi_requests.Session(impersonate=_IMPERSONATE)
-
-        # Try primary direction
-        data = self._fetch_schedule(sess, route_key)
-
-        # If 404, try reverse direction (file often contains both)
-        if data is None:
-            data = self._fetch_schedule(sess, reverse_key)
-
-        if data is None:
-            return None
-
-        # The JSON is a dict like {"ATH-BCN": [...], "BCN-ATH": [...]}
-        flights = None
-        if isinstance(data, dict):
-            flights = data.get(route_key)
-            if not flights:
-                # Try case variations
-                for key in data:
-                    if key.upper() == route_key.upper():
-                        flights = data[key]
-                        break
-        elif isinstance(data, list):
-            flights = data
-
-        if not flights or not isinstance(flights, list):
-            return []
-
-        # Filter to target date and parse
         target_date = req.date_from.strftime("%Y%m%d")
         booking_url = self._build_booking_url(req)
-        offers: list[FlightOffer] = []
 
-        for flight in flights:
-            if not isinstance(flight, dict):
+        # Try both file directions — the "reverse" file often has fresher data
+        # containing both route directions, while the primary may be stale.
+        for try_key in (route_key, reverse_key):
+            data = self._fetch_schedule(sess, try_key)
+            if data is None:
                 continue
-            dep_str = flight.get("Departure", "")
-            if not dep_str.startswith(target_date):
+
+            # The JSON is a dict like {"ATH-BCN": [...], "BCN-ATH": [...]}
+            flights = None
+            if isinstance(data, dict):
+                flights = data.get(route_key)
+                if not flights:
+                    for key in data:
+                        if key.upper() == route_key.upper():
+                            flights = data[key]
+                            break
+            elif isinstance(data, list):
+                flights = data
+
+            if not flights or not isinstance(flights, list):
                 continue
 
-            parsed = self._parse_schedule_flight(flight, req, booking_url)
-            if parsed:
-                offers.extend(parsed)
+            offers: list[FlightOffer] = []
+            for flight in flights:
+                if not isinstance(flight, dict):
+                    continue
+                dep_str = flight.get("Departure", "")
+                if not dep_str.startswith(target_date):
+                    continue
+                parsed = self._parse_schedule_flight(flight, req, booking_url)
+                if parsed:
+                    offers.extend(parsed)
 
-        return offers
+            if offers:
+                return offers
+
+        return []
 
     def _fetch_schedule(self, sess, route_key: str) -> Optional[dict]:
         """Fetch a single schedule JSON file."""
@@ -244,8 +274,8 @@ class VoloteaConnectorClient:
         if not prices_raw:
             return []
 
-        carrier = flight.get("CarrierCode", "V7")
-        flight_no = f"{carrier}{flight.get('FlightNumber', '')}"
+        carrier = flight.get("CarrierCode") or "V7"
+        flight_no = f"{carrier}{flight.get('FlightNumber') or ''}"
         dep_dt = self._parse_schedule_dt(flight.get("Departure", ""))
         arr_dt = self._parse_schedule_dt(flight.get("Arrival", ""))
 
@@ -301,9 +331,9 @@ class VoloteaConnectorClient:
             price = price_entry.get("PriceWithFee") or price_entry.get("Price")
             if price is None or price <= 0:
                 continue
-            currency = price_entry.get("Currency", "EUR")
-            fare_type = price_entry.get("FareType", "")
-            fare_basis = price_entry.get("FareBasis", "")
+            currency = price_entry.get("Currency") or "EUR"
+            fare_type = price_entry.get("FareType") or ""
+            fare_basis = price_entry.get("FareBasis") or ""
 
             offer_key = f"{flight_no}_{fare_type}_{fare_basis}_{price}"
             offers.append(FlightOffer(
@@ -341,13 +371,19 @@ class VoloteaConnectorClient:
     async def _playwright_fallback(
         self, req: FlightSearchRequest, t0: float,
     ) -> FlightSearchResponse:
-        """Full Playwright form-fill + API interception as fallback."""
+        """Full Playwright form-fill + API interception as fallback.
+
+        MUST use the default browser context (contexts[0]) — Incapsula blocks
+        pages opened in Playwright-created contexts.
+        """
         browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale="en-GB",
-            timezone_id="Europe/Madrid",
-        )
+
+        # Use the default context — Incapsula passes only in this context.
+        contexts = browser.contexts
+        if not contexts:
+            logger.error("Volotea: no default context available")
+            return self._empty(req)
+        context = contexts[0]
 
         try:
             page = await context.new_page()
@@ -378,7 +414,12 @@ class VoloteaConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=25000,
             )
-            await asyncio.sleep(3.5)
+            # Wait for Incapsula challenge to pass and Angular to render
+            for _wait in range(10):
+                await asyncio.sleep(1.5)
+                if await page.locator("input").count() > 3:
+                    break
+            await asyncio.sleep(1)
 
             # Step 2: Dismiss cookies
             await self._dismiss_cookies(page)
@@ -438,10 +479,6 @@ class VoloteaConnectorClient:
                 await page.close()
             except Exception:
                 pass
-            try:
-                await context.close()
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
     # Form interaction
@@ -462,7 +499,7 @@ class VoloteaConnectorClient:
             await form_input.click(timeout=8000)
             await asyncio.sleep(2)
 
-            # Fill IATA into the overlay input
+            # Type IATA into the overlay input.
             overlay_input = page.locator('#origin')
             if await overlay_input.count() == 0:
                 logger.debug("Volotea: #origin overlay input not found")
@@ -497,7 +534,8 @@ class VoloteaConnectorClient:
                     await form_input.click(timeout=5000)
                     await asyncio.sleep(1)
 
-            await overlay_input.fill(iata)
+            await overlay_input.click(timeout=3000)
+            await overlay_input.press_sequentially(iata, delay=80)
             await asyncio.sleep(2.5)
 
             return await self._pick_city_option(page, iata)
@@ -562,65 +600,56 @@ class VoloteaConnectorClient:
     async def _select_date(self, page, req: FlightSearchRequest) -> bool:
         """Select the departure date from the calendar.
 
-        After city selection, the calendar overlay shows 8 months of .v7-cal
-        grids. Each day is a .v7-cal__day child element whose text starts
-        with the day number (e.g. "28 €206"). We need to click the correct
-        day in the correct month's grid.
+        The calendar shows 8 months as ``SF-CALENDAR-MONTH`` sections, each
+        containing a ``.v7-cal`` grid.  Month labels sit in ``<p>`` elements
+        with class ``v7-body-text`` inside each section (e.g. "June 2026.").
+        We locate the section for the target month via JS, then use a
+        Playwright click on the matching cell to properly trigger Angular.
         """
         try:
             target_day = req.date_from.day
+            target_month = req.date_from.strftime("%B %Y")  # e.g. "March 2026"
 
-            # Click the outbound field to ensure calendar is visible
-            outbound = page.locator('input[placeholder="Select day"]').first
-            if await outbound.count() > 0:
-                await outbound.click(timeout=5000)
-                await asyncio.sleep(2)
+            # Find the index of the correct calendar month section
+            section_idx = await page.evaluate("""({targetMonth}) => {
+                const sections = document.querySelectorAll('sf-calendar-month, .v7-calendar__section');
+                for (let i = 0; i < sections.length; i++) {
+                    const label = sections[i].querySelector('p.v7-body-text');
+                    if (!label) continue;
+                    const labelText = label.textContent.trim().replace('.', '');
+                    if (labelText === targetMonth) return i;
+                }
+                return -1;
+            }""", {"targetMonth": target_month})
 
-            # Find all .v7-cal__day elements across all calendar grids
-            day_cells = page.locator('.v7-cal > *')
-            count = await day_cells.count()
-            if count == 0:
-                # Fallback: broader selector
-                day_cells = page.locator('.v7-cal__day')
-                count = await day_cells.count()
-
-            # Click the target day using Playwright click (triggers Angular events)
-            for i in range(count):
-                cell = day_cells.nth(i)
-                if not await cell.is_visible():
-                    continue
-                text = await cell.text_content()
-                if not text:
-                    continue
-                text = text.strip()
-                # Match day number at start of text (e.g. "28", "28 €206")
-                match = re.match(r'^(\d+)', text)
-                if match and int(match.group(1)) == target_day:
-                    # Prefer cells with a price (€) — means flights are available
-                    if '€' in text or len(text) > 2:
+            if section_idx >= 0:
+                # Use Playwright locator scoped to the correct month section
+                section = page.locator(
+                    'sf-calendar-month, .v7-calendar__section'
+                ).nth(section_idx)
+                cells = section.locator('.v7-cal > *')
+                count = await cells.count()
+                for i in range(count):
+                    cell = cells.nth(i)
+                    if not await cell.is_visible():
+                        continue
+                    text = (await cell.text_content() or "").strip()
+                    match = re.match(r'^(\d+)', text)
+                    if match and int(match.group(1)) == target_day:
                         await cell.click(timeout=3000)
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(1.5)
                         return True
 
-            # Second pass: click any cell with the target day number
+            # Fallback: click any visible day with target number and a price
+            day_cells = page.locator('.v7-cal > *')
+            count = await day_cells.count()
             for i in range(count):
                 cell = day_cells.nth(i)
                 if not await cell.is_visible():
                     continue
                 text = (await cell.text_content() or "").strip()
                 match = re.match(r'^(\d+)', text)
-                if match and int(match.group(1)) == target_day:
-                    await cell.click(timeout=3000)
-                    await asyncio.sleep(1)
-                    return True
-
-            # Fallback: click first cell with a price
-            for i in range(count):
-                cell = day_cells.nth(i)
-                if not await cell.is_visible():
-                    continue
-                text = (await cell.text_content() or "").strip()
-                if '€' in text:
+                if match and int(match.group(1)) == target_day and '\u20ac' in text:
                     await cell.click(timeout=3000)
                     await asyncio.sleep(1)
                     return True
@@ -631,19 +660,39 @@ class VoloteaConnectorClient:
             return False
 
     async def _click_search(self, page) -> None:
-        """Click the 'Search flights' button."""
+        """Click the 'Search flights' link/button.
+
+        On Volotea, the search trigger is an ``<a>`` tag with class
+        ``v7-sf__btn``.  It starts disabled (``v7-is-disabled``) and
+        becomes enabled once origin, destination and date are set.
+        There may be two such elements (desktop + mobile) — pick the
+        first visible one that is not disabled.
+        """
         try:
-            btn = page.locator('text="Search flights"').first
-            if await btn.count() > 0:
-                await btn.click(timeout=5000)
+            links = page.locator('a.v7-sf__btn')
+            count = await links.count()
+            for idx in range(count):
+                link = links.nth(idx)
+                if not await link.is_visible():
+                    continue
+                # Wait up to 5s for it to lose the disabled class
+                for _ in range(10):
+                    cls = await link.get_attribute("class") or ""
+                    if "v7-is-disabled" not in cls:
+                        await link.click(timeout=5000)
+                        return
+                    await asyncio.sleep(0.5)
+                # Try force-clicking anyway
+                await link.click(timeout=5000, force=True)
                 return
         except Exception:
             pass
-        for label in ["Search", "SEARCH", "Buscar vuelos"]:
+        # Fallback: text match
+        for label in ["Search flights", "Search", "Buscar vuelos"]:
             try:
-                btn = page.get_by_role("button", name=re.compile(label, re.IGNORECASE))
+                btn = page.locator(f'text="{label}"').first
                 if await btn.count() > 0:
-                    await btn.first.click(timeout=5000)
+                    await btn.click(timeout=5000)
                     return
             except Exception:
                 continue

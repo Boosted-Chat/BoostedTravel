@@ -72,7 +72,7 @@
 | 18 | pegasus | PC | [#37](https://github.com/Boosted-Chat/BoostedTravel/issues/37) | `done` | copilot-main | 2026-03-13T22:15Z | MCP-style Chrome flags bypass Akamai; direct booking URL + /pegasus/availability interception; 40 offers SAW→AYT |
 | 19 | porter | — | [#24](https://github.com/Boosted-Chat/BoostedTravel/issues/24) | `done` | copilot-eurowings-fix | 2026-03-14T01:30Z | MCP Chrome flags bypass Cloudflare; direct URL + DOM scrape; 6 flights 12 offers YTZ→YOW |
 | 20 | scoot | TR | [#30](https://github.com/Boosted-Chat/BoostedTravel/issues/30) | `done` | copilot-batikair-fix | 2026-03-14T00:30Z | Headed CDP Chrome for Akamai bypass; 6 offers SIN→BKK 167.63 SGD |
-| 21 | volotea | V7 | [#18](https://github.com/Boosted-Chat/BoostedTravel/issues/18) | `claimed` | copilot-batikair-fix | 2026-03-14T01:00Z | |
+| 21 | volotea | V7 | [#18](https://github.com/Boosted-Chat/BoostedTravel/issues/18) | `done` | copilot-batikair-fix | 2026-03-14T01:00Z | Headed CDP Chrome (Incapsula default-ctx bypass); fixed schedule JSON direction bug — reverse file has current data; null field guards |
 | 22 | volaris | Y4 | [#21](https://github.com/Boosted-Chat/BoostedTravel/issues/21) | `done` | copilot-eurowings-fix | 2026-03-14T02:00Z | headed Chrome + es-mx locale + v3 availability parser |
 
 ### Needs Fixing — API/Hybrid Connectors (5)
