@@ -1,5 +1,5 @@
 """
-Azul Brazilian Airlines scraper — warm CDP Chrome + navigate + API intercept.
+Azul Brazilian Airlines scraper — hybrid curl_cffi API + CDP Chrome fallback.
 
 Azul (IATA: AD) is Brazil's third-largest airline with the widest domestic network.
 Website: www.voeazul.com.br — English version at /us/en/home.
@@ -7,16 +7,14 @@ Website: www.voeazul.com.br — English version at /us/en/home.
 Architecture:
 - React SPA frontend with Navitaire/New Skies backend
 - Akamai Bot Manager protects the availability API
-- Booking URL triggers SPA to fire availability API automatically
-- No form automation needed — direct URL navigation
+- Navitaire availability endpoint accepts POST JSON requests
 
-Strategy:
-1. Launch real Chrome via CDP (Akamai blocks bundled Chromium)
-2. Warm context: load homepage to establish Akamai _abck cookie
-3. Per search: navigate to booking URL → SPA fires availability API → intercept response
-4. Parse Navitaire availability format → FlightOffer objects
+Strategy (hybrid — fast API + browser fallback):
+1. FAST PATH (~1-3s): curl_cffi POST to Navitaire availability API directly
+2. FALLBACK (~5-10s): CDP Chrome navigate to booking URL → intercept API response
+3. Parse Navitaire availability format → FlightOffer objects
 
-Performance: ~5-8s first search (Chrome + Akamai), ~3-5s subsequent searches.
+Performance: ~1-3s via direct API, ~5-10s via browser fallback.
 """
 
 from __future__ import annotations
@@ -29,6 +27,8 @@ import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
+
+from curl_cffi import requests as cffi_requests
 
 from models.flights import (
     FlightOffer,
@@ -45,8 +45,17 @@ logger = logging.getLogger(__name__)
 
 _AZUL_HOME = "https://www.voeazul.com.br/us/en/home"
 _AVAIL_API = "reservationavailability/api/reservation/availability"
+_AVAIL_URLS = [
+    "https://www.voeazul.com.br/techsales-availability/api/availability",
+    "https://www.voeazul.com.br/reservationavailability/api/reservation/availability",
+]
+_IMPERSONATE = "chrome124"
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    " (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+)
 _MAX_ATTEMPTS = 3
-_API_WAIT = 20  # seconds to wait for availability API per attempt
+_API_WAIT = 30  # seconds to wait for availability API per attempt
 
 _CDP_PORT = 9467
 _USER_DATA_DIR = os.path.join(
@@ -120,17 +129,17 @@ async def _ensure_warm_ctx(force: bool = False):
             pass
 
         logger.info("Azul: warming context (homepage for Akamai cookies)...")
-        await page.goto(_AZUL_HOME, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(_AZUL_HOME, wait_until="domcontentloaded", timeout=90000)
         await asyncio.sleep(5)
 
         # Check for Akamai teapot
-        akamai_ok = await _wait_akamai(page, timeout=15)
+        akamai_ok = await _wait_akamai(page, timeout=20)
         if not akamai_ok:
             logger.warning("Azul: Akamai teapot on homepage, retrying...")
             await asyncio.sleep(8)
-            await page.reload(wait_until="domcontentloaded", timeout=30000)
+            await page.reload(wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(5)
-            akamai_ok = await _wait_akamai(page, timeout=15)
+            akamai_ok = await _wait_akamai(page, timeout=20)
             if not akamai_ok:
                 logger.error("Azul: Akamai blocked after retry")
                 _ctx_ready = False
@@ -159,21 +168,36 @@ async def _ensure_warm_ctx(force: bool = False):
 
 
 class AzulConnectorClient:
-    """Azul scraper — warm CDP Chrome + navigate + Navitaire API intercept.
+    """Azul hybrid scraper — curl_cffi direct API + CDP Chrome fallback.
 
-    Uses real Chrome (Akamai blocks bundled Chromium). Browser launched once,
-    reused across searches. ~3-5s per search after warm-up.
+    Fast path (~1-3s): curl_cffi POST to Navitaire availability API.
+    Fallback (~5-10s): CDP Chrome navigate + API intercept.
     """
 
-    def __init__(self, timeout: float = 60.0):
+    def __init__(self, timeout: float = 90.0):
         self.timeout = timeout
 
     async def close(self):
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """Search Azul flights via direct API first, browser fallback second."""
         t0 = time.monotonic()
 
+        # Fast path: try direct Navitaire API via curl_cffi (no browser)
+        for url in _AVAIL_URLS:
+            try:
+                data = await self._api_search(req, url)
+                if data:
+                    offers = self._parse_availability(data, req)
+                    if offers:
+                        elapsed = time.monotonic() - t0
+                        logger.info("Azul: direct API succeeded (%d offers in %.1fs)", len(offers), elapsed)
+                        return self._build_response(offers, req, elapsed)
+            except Exception as e:
+                logger.debug("Azul: direct API %s failed: %s", url, e)
+
+        # Slow path: browser-based search with retries + exponential backoff
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
                 result = await self._attempt_search(req, t0)
@@ -184,8 +208,94 @@ class AzulConnectorClient:
                 if "closed" in str(e).lower() or "disconnected" in str(e).lower():
                     global _ctx_ready
                     _ctx_ready = False
+            if attempt < _MAX_ATTEMPTS:
+                await asyncio.sleep(2 ** attempt)
 
         return self._empty(req)
+
+    # ── Direct API via curl_cffi ─────────────────────────────────────────
+
+    async def _api_search(self, req: FlightSearchRequest, url: str) -> Optional[dict]:
+        """POST to Navitaire availability API via curl_cffi."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._api_search_sync, req, url)
+
+    def _api_search_sync(self, req: FlightSearchRequest, url: str) -> Optional[dict]:
+        """Synchronous curl_cffi availability search."""
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+
+        dep = req.date_from.strftime("%Y-%m-%dT00:00:00")
+        body = {
+            "criteria": [{
+                "stations": {
+                    "originStationCodes": [req.origin],
+                    "destinationStationCodes": [req.destination],
+                    "searchOriginMacs": True,
+                    "searchDestinationMacs": True,
+                },
+                "dates": {
+                    "beginDate": dep,
+                    "endDate": dep,
+                },
+                "filters": {
+                    "compressionType": "DEPARTURE_DATE",
+                    "maxConnections": -1,
+                },
+            }],
+            "passengers": {
+                "types": [{
+                    "type": "ADT",
+                    "count": req.adults,
+                    "discountCode": "",
+                }],
+            },
+            "codes": {
+                "currencyCode": req.currency or "BRL",
+            },
+        }
+
+        try:
+            r = sess.post(
+                url,
+                json=body,
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+                    "Content-Type": "application/json",
+                    "Origin": "https://www.voeazul.com.br",
+                    "Referer": "https://www.voeazul.com.br/us/en/home/selecao-voo",
+                    "User-Agent": _UA,
+                },
+                timeout=20,
+            )
+        except Exception as e:
+            logger.debug("Azul: curl_cffi POST failed: %s", e)
+            return None
+
+        if r.status_code != 200:
+            logger.debug("Azul: API returned %d for %s", r.status_code, url)
+            return None
+
+        try:
+            data = r.json()
+        except Exception:
+            return None
+
+        if not isinstance(data, dict) or not data:
+            return None
+
+        # Validate there is actual trip/journey data
+        trips = data.get("trips") or data.get("data", {}).get("trips") or []
+        journeys = (
+            data.get("journeysAvailable") or data.get("journeys")
+            or data.get("flights") or []
+        )
+        if not trips and not journeys:
+            return None
+
+        return data
+
+    # ── Browser fallback ─────────────────────────────────────────────────
 
     async def _attempt_search(
         self, req: FlightSearchRequest, t0: float
@@ -226,7 +336,7 @@ class AzulConnectorClient:
         page.on("response", on_response)
 
         dep = req.date_from.strftime("%Y-%m-%d")
-        logger.info("Azul: searching %s→%s on %s (fresh page)", req.origin, req.destination, dep)
+        logger.info("Azul: searching %s→%s on %s (browser fallback)", req.origin, req.destination, dep)
 
         try:
             await page.goto(
@@ -236,7 +346,7 @@ class AzulConnectorClient:
             )
 
             # Check for Akamai teapot (usually passes immediately with warm cookies)
-            akamai_ok = await _wait_akamai(page, timeout=10)
+            akamai_ok = await _wait_akamai(page, timeout=15)
             if not akamai_ok:
                 logger.warning("Azul: Akamai teapot on search page")
                 return None
