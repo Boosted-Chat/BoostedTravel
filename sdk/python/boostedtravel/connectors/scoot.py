@@ -63,6 +63,8 @@ _TOKEN_MAX_AGE = 25 * 60  # refresh token after 25 min
 # Cached anonymous token state
 _api_token: str | None = None
 _api_token_expiry: float = 0.0
+_token_lock: Optional[asyncio.Lock] = None
+_cffi_session: Optional[Any] = None
 
 _VIEWPORTS = [
     {"width": 1366, "height": 768},
@@ -111,46 +113,65 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _get_token_lock() -> asyncio.Lock:
+    global _token_lock
+    if _token_lock is None:
+        _token_lock = asyncio.Lock()
+    return _token_lock
+
+
+def _get_session():
+    """Get or create a reusable curl_cffi session."""
+    global _cffi_session
+    if _cffi_session is None:
+        _cffi_session = cffi_requests.Session(impersonate=_IMPERSONATE)
+    return _cffi_session
+
+
 async def _ensure_token() -> str | None:
     """Get a valid anonymous JWT from Scoot, refreshing if needed."""
     global _api_token, _api_token_expiry
     if _api_token and time.monotonic() < _api_token_expiry:
         return _api_token
-    try:
-        ses = cffi_requests.Session(impersonate=_IMPERSONATE)
-        r = ses.get(
-            _ANON_URL,
-            headers={
-                "Accept": "application/json",
-                "x-scoot-appsource": "IBE-WEB",
-            },
-            timeout=10,
-        )
-        if r.status_code != 200:
-            logger.warning("Scoot anon-auth HTTP %s: %s", r.status_code, r.text[:200])
+    async with _get_token_lock():
+        # Double-check after acquiring lock
+        if _api_token and time.monotonic() < _api_token_expiry:
+            return _api_token
+        try:
+            ses = _get_session()
+            r = ses.get(
+                _ANON_URL,
+                headers={
+                    "Accept": "application/json",
+                    "x-scoot-appsource": "IBE-WEB",
+                },
+                timeout=10,
+            )
+            if r.status_code != 200:
+                logger.warning("Scoot anon-auth HTTP %s: %s", r.status_code, r.text[:200])
+                return None
+            data = r.json()
+            tok = (
+                data.get("token")
+                or data.get("accessToken")
+                or data.get("idToken")
+            )
+            if not tok:
+                # Some Navitaire systems return the token nested
+                for v in data.values():
+                    if isinstance(v, str) and len(v) > 40:
+                        tok = v
+                        break
+            if tok:
+                _api_token = tok
+                _api_token_expiry = time.monotonic() + _TOKEN_MAX_AGE
+                logger.info("Scoot: anonymous token acquired")
+                return tok
+            logger.warning("Scoot: no token in anon-auth response: %s", list(data.keys()))
             return None
-        data = r.json()
-        tok = (
-            data.get("token")
-            or data.get("accessToken")
-            or data.get("idToken")
-        )
-        if not tok:
-            # Some Navitaire systems return the token nested
-            for v in data.values():
-                if isinstance(v, str) and len(v) > 40:
-                    tok = v
-                    break
-        if tok:
-            _api_token = tok
-            _api_token_expiry = time.monotonic() + _TOKEN_MAX_AGE
-            logger.info("Scoot: anonymous token acquired")
-            return tok
-        logger.warning("Scoot: no token in anon-auth response: %s", list(data.keys()))
-        return None
-    except Exception as e:
-        logger.warning("Scoot: anon-auth error: %s", e)
-        return None
+        except Exception as e:
+            logger.warning("Scoot: anon-auth error: %s", e)
+            return None
 
 
 async def _get_browser():
@@ -285,7 +306,7 @@ class ScootConnectorClient:
                 },
             })
 
-            ses = cffi_requests.Session(impersonate=_IMPERSONATE)
+            ses = _get_session()
             data = None
             for search_url in _SEARCH_URLS:
                 try:
