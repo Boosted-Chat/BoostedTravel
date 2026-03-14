@@ -420,6 +420,15 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "US",
         "KE", "ZA",
     },
+    "cathay": {
+        "HK", "CN", "TW", "JP", "KR",
+        "SG", "TH", "MY", "ID", "PH", "VN", "KH", "MM", "IN", "LK", "MV", "NP", "BD",
+        "AU", "NZ",
+        "GB", "FR", "DE", "IT", "ES", "NL", "BE",
+        "US", "CA",
+        "AE", "QA", "SA",
+        "ZA", "KE", "SN",
+    },
 }
 
 
