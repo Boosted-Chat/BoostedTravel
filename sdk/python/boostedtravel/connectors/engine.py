@@ -26,7 +26,7 @@ import httpx
 
 from connectors.combo_engine import build_combos
 from connectors.currency import fetch_rates, _fallback_convert
-from connectors.airline_routes import get_country, get_relevant_connectors, AIRLINE_COUNTRIES
+from connectors.airline_routes import get_country, get_relevant_connectors, get_city_airports, AIRLINE_COUNTRIES
 from connectors.ryanair import RyanairConnectorClient
 from connectors.wizzair import WizzairConnectorClient
 from connectors.kiwi import KiwiConnectorClient
@@ -274,28 +274,51 @@ class MultiProvider:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
-        Search flights across ALL sources in parallel:
-        - 1 async HTTP call to Cloud Run backend (paid APIs: Duffel, Amadeus, Sabre, etc.)
-        - 46+ local connector tasks (LCC scrapers running on agent device)
-        - Ryanair, Wizzair, Kiwi connectors (special handling)
-        - Combo engine for cross-airline virtual interlining
+        Search flights across ALL sources in parallel.
 
-        Everything fires at once via asyncio.gather. Total wall-clock time =
-        max(backend_latency, slowest_local_connector) — typically 5-15s.
-
-        All browser instances launched by connectors are automatically
-        closed after results are collected.
+        Multi-airport city expansion: if origin or destination is in a
+        multi-airport city (e.g. STN → London), we also search sibling
+        airports (LHR, LGW, LTN, SEN) using the SAME connector instances
+        (Kiwi, Ryanair, Wizzair) — no extra browsers launched.  Full
+        browser-based connectors only fire for the originally-requested
+        airport pair.
         """
         try:
-            return await self._search_flights_inner(req)
+            origin_airports = get_city_airports(req.origin)
+            dest_airports = get_city_airports(req.destination)
+
+            # Build sibling airport pairs (excluding the original)
+            sibling_pairs: list[tuple[str, str]] = []
+            seen = {(req.origin.upper(), req.destination.upper())}
+            for o in origin_airports:
+                for d in dest_airports:
+                    if o == d:
+                        continue
+                    key = (o, d)
+                    if key not in seen:
+                        seen.add(key)
+                        sibling_pairs.append(key)
+
+            if sibling_pairs:
+                logger.info("City expansion: %s->%s + %d sibling pairs: %s",
+                            req.origin, req.destination, len(sibling_pairs),
+                            ", ".join(f"{o}->{d}" for o, d in sibling_pairs))
+
+            return await self._search_flights_inner(req, sibling_pairs=sibling_pairs)
         finally:
             await self._cleanup_connectors()
 
-    async def _search_flights_inner(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def _search_flights_inner(
+        self, req: FlightSearchRequest, *, sibling_pairs: list[tuple[str, str]] | None = None,
+    ) -> FlightSearchResponse:
         import time as _time
         _t_start = _time.monotonic()
+        sibling_pairs = sibling_pairs or []
         tasks = []
         providers_used = []
+
+        # Build the full list of pairs this search covers
+        all_pairs = [(req.origin, req.destination)] + list(sibling_pairs)
 
         # ── Cloud Run backend (paid API providers: Duffel, Amadeus, Sabre, etc.) ──
         if self.backend_available:
@@ -304,30 +327,50 @@ class MultiProvider:
         else:
             logger.warning("No BOOSTEDTRAVEL_API_KEY — skipping Cloud Run backend (paid APIs)")
 
-        # ── Local connectors: Ryanair, Wizzair, Kiwi (special handling) ──
+        # ── Fast connectors: Ryanair, Wizzair, Kiwi ──────────────────────
+        # Created ONCE and reused for ALL airport pairs (original + siblings).
+        # This avoids re-launching browsers / HTTP clients per sibling pair.
         origin_country = get_country(req.origin)
         dest_country = get_country(req.destination)
 
-        ryanair_connector = self._get_ryanair_connector()
-        wizzair_connector = self._get_wizzair_connector()
-        kiwi_connector = self._get_kiwi_connector()
+        ryanair_client = self._get_ryanair_connector()
+        wizzair_client = self._get_wizzair_connector()
+        kiwi_client = self._get_kiwi_connector()
+
+        # Track fast clients so we can close them once at the end
+        _fast_clients: list = []
 
         ryanair_countries = AIRLINE_COUNTRIES.get("ryanair")
-        if ryanair_connector and (not origin_country or not dest_country or not ryanair_countries
-                or origin_country in ryanair_countries or dest_country in ryanair_countries):
-            tasks.append(self._search_ryanair_direct(ryanair_connector, req))
-            providers_used.append("ryanair_direct")
+        ryanair_ok = ryanair_client and (
+            not origin_country or not dest_country or not ryanair_countries
+            or origin_country in ryanair_countries or dest_country in ryanair_countries
+        )
+        if ryanair_ok:
+            _fast_clients.append(ryanair_client)
+            for o, d in all_pairs:
+                sub = req.model_copy(update={"origin": o, "destination": d}) if (o, d) != (req.origin, req.destination) else req
+                tasks.append(self._search_fast_one(ryanair_client, sub, "ryanair_direct"))
+                providers_used.append("ryanair_direct")
 
         wizz_countries = AIRLINE_COUNTRIES.get("wizz")
-        if wizzair_connector and (not origin_country or not dest_country or not wizz_countries
-                or origin_country in wizz_countries or dest_country in wizz_countries):
-            tasks.append(self._search_wizzair_direct(wizzair_connector, req))
-            providers_used.append("wizzair_direct")
+        wizzair_ok = wizzair_client and (
+            not origin_country or not dest_country or not wizz_countries
+            or origin_country in wizz_countries or dest_country in wizz_countries
+        )
+        if wizzair_ok:
+            _fast_clients.append(wizzair_client)
+            for o, d in all_pairs:
+                sub = req.model_copy(update={"origin": o, "destination": d}) if (o, d) != (req.origin, req.destination) else req
+                tasks.append(self._search_fast_one(wizzair_client, sub, "wizzair_direct"))
+                providers_used.append("wizzair_direct")
 
-        # Kiwi is a global aggregator — always query it
-        if kiwi_connector:
-            tasks.append(self._search_kiwi_connector(kiwi_connector, req))
-            providers_used.append("kiwi_connector")
+        # Kiwi is a global aggregator — always query all pairs
+        if kiwi_client:
+            _fast_clients.append(kiwi_client)
+            for o, d in all_pairs:
+                sub = req.model_copy(update={"origin": o, "destination": d}) if (o, d) != (req.origin, req.destination) else req
+                tasks.append(self._search_fast_one(kiwi_client, sub, "kiwi_connector"))
+                providers_used.append("kiwi_connector")
 
         # ── Direct airline website connectors (46 LCCs) — route-filtered ──
         filtered_connectors = get_relevant_connectors(req.origin, req.destination, _DIRECT_AIRLINE_connectorS)
@@ -337,7 +380,9 @@ class MultiProvider:
                         req.origin, req.destination, skipped, len(_DIRECT_AIRLINE_connectorS))
         for source, connector_cls, timeout in filtered_connectors:
             connector = connector_cls(timeout=timeout)
-            tasks.append(self._search_connector_generic(connector, req, source, timeout))
+            tasks.append(self._search_connector_generic(
+                connector, req, source, timeout, sibling_pairs=sibling_pairs,
+            ))
             providers_used.append(source)
 
         # ── Combo engine: one-way legs for cross-airline virtual interlining ──
@@ -360,20 +405,18 @@ class MultiProvider:
             })
 
             # Fire one-way searches through direct connectors for combo engine.
+            # Reuse already-created fast clients — no extra instances needed.
             # SKIP Wizzair — its round-trip search already returns separate outbound/return
             # flights.  We extract those as one-way legs below to avoid extra API calls
             # that trigger rate limiting.
-            for label, getter in [
-                ("ryanair_direct", self._get_ryanair_connector),
-                ("kiwi_connector", self._get_kiwi_connector),
+            for label, client in [
+                ("ryanair_direct", ryanair_client if ryanair_ok else None),
+                ("kiwi_connector", kiwi_client),
             ]:
-                client_out = getter()
-                client_ret = getter()
-                if client_out:
-                    search_fn = self._combo_search_fn(label)
-                    combo_tasks.append(search_fn(client_out, outbound_req))
+                if client:
+                    combo_tasks.append(self._search_fast_one(client, outbound_req, label))
                     combo_labels.append(f"{label}_out")
-                    combo_tasks.append(search_fn(client_ret, return_req))
+                    combo_tasks.append(self._search_fast_one(client, return_req, label))
                     combo_labels.append(f"{label}_ret")
 
         if not tasks:
@@ -397,6 +440,13 @@ class MultiProvider:
         _n_err = sum(1 for r in results if isinstance(r, Exception))
         logger.info("All %d tasks done in %.1fs — %d succeeded, %d failed",
                      len(results), _gather_elapsed, _n_ok, _n_err)
+
+        # Close fast clients that were reused across pairs
+        for client in _fast_clients:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
         # Split results: normal providers vs combo legs
         normal_results = results[:len(tasks)]
@@ -604,47 +654,21 @@ class MultiProvider:
 
     # ── Local connector search methods ───────────────────────────────────
 
-    async def _search_ryanair_direct(
-        self, client: RyanairConnectorClient, req: FlightSearchRequest
+    async def _search_fast_one(
+        self, client, req: FlightSearchRequest, source: str,
     ) -> FlightSearchResponse:
-        """Search Ryanair's website API directly — definitive LCC pricing."""
-        try:
-            result = await client.search_flights(req)
-            for offer in result.offers:
-                offer.source = "ryanair_direct"
-                offer.source_tier = "free"
-            return result
-        finally:
-            await client.close()
-
-    async def _search_wizzair_direct(
-        self, client: WizzairConnectorClient, req: FlightSearchRequest
-    ) -> FlightSearchResponse:
-        """Search Wizzair's website API directly — definitive LCC pricing."""
-        try:
-            result = await client.search_flights(req)
-            for offer in result.offers:
-                offer.source = "wizzair_direct"
-                offer.source_tier = "free"
-            return result
-        finally:
-            await client.close()
-
-    async def _search_kiwi_connector(
-        self, client: KiwiConnectorClient, req: FlightSearchRequest
-    ) -> FlightSearchResponse:
-        """Search Kiwi.com's public Skypicker API — LCCs + virtual interlining."""
-        try:
-            result = await client.search_flights(req)
-            for offer in result.offers:
-                offer.source = "kiwi_connector"
-                offer.source_tier = "free"
-            return result
-        finally:
-            await client.close()
+        """Search a fast connector for ONE airport pair.  Does NOT close the
+        client — the caller reuses the same instance across multiple pairs
+        and closes it once at the end."""
+        result = await client.search_flights(req)
+        for offer in result.offers:
+            offer.source = source
+            offer.source_tier = "free"
+        return result
 
     async def _search_connector_generic(
         self, client, req: FlightSearchRequest, source: str, timeout: float = 30.0,
+        *, sibling_pairs: list[tuple[str, str]] | None = None,
     ) -> FlightSearchResponse:
         """Generic wrapper for direct airline connectors — tags source/tier, ensures cleanup.
 
@@ -652,6 +676,12 @@ class MultiProvider:
         Chrome processes run simultaneously (prevents resource exhaustion).
         An outer asyncio.wait_for enforces a hard deadline (timeout + 5s
         grace), so a hung connector never stalls the entire search.
+
+        When *sibling_pairs* is provided AND the primary search returns
+        results, the same browser instance is reused to sequentially search
+        each sibling pair — no extra Chrome launches.  If the primary
+        search returns 0 offers, siblings are skipped (the airline likely
+        doesn't serve this origin/destination).
         """
         import time as _time
         t0 = _time.monotonic()
@@ -667,8 +697,31 @@ class MultiProvider:
             for offer in result.offers:
                 offer.source = source
                 offer.source_tier = "free"
+            all_offers = list(result.offers)
+
+            # Only search siblings when the primary pair returned results —
+            # avoids burning 30s × N sequential browser navigations on
+            # connectors that don't serve this route at all.
+            if sibling_pairs and all_offers:
+                for sib_o, sib_d in sibling_pairs:
+                    sub_req = req.model_copy(update={"origin": sib_o, "destination": sib_d})
+                    try:
+                        sub_result = await asyncio.wait_for(
+                            client.search_flights(sub_req),
+                            timeout=timeout + 5.0,
+                        )
+                        for offer in sub_result.offers:
+                            offer.source = source
+                            offer.source_tier = "free"
+                        all_offers.extend(sub_result.offers)
+                        logger.info("%s sibling %s->%s: %d offers", source, sib_o, sib_d, len(sub_result.offers))
+                    except Exception as exc:
+                        logger.debug("%s sibling %s->%s failed: %s", source, sib_o, sib_d, exc)
+
             elapsed = _time.monotonic() - t0
-            logger.info("%s: %d offers in %.1fs", source, len(result.offers), elapsed)
+            logger.info("%s: %d offers in %.1fs", source, len(all_offers), elapsed)
+            result.offers = all_offers
+            result.total_results = len(all_offers)
             return result
         except asyncio.TimeoutError:
             elapsed = _time.monotonic() - t0
@@ -682,15 +735,6 @@ class MultiProvider:
                 await self._cleanup_single_connector(client)
                 from connectors.browser import release_browser_slot
                 release_browser_slot()
-
-    def _combo_search_fn(self, label: str):
-        """Return the appropriate search method for combo one-way legs."""
-        mapping = {
-            "ryanair_direct": self._search_ryanair_direct,
-            "wizzair_direct": self._search_wizzair_direct,
-            "kiwi_connector": self._search_kiwi_connector,
-        }
-        return mapping[label]
 
     def _deduplicate(self, offers: list[FlightOffer]) -> list[FlightOffer]:
         """

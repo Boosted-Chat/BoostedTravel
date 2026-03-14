@@ -176,6 +176,83 @@ CITY_COUNTRY: dict[str, str] = {
     "REK": "IS", "MOW": "RU", "STO": "SE",
 }
 
+# ── Multi-airport city groups ────────────────────────────────────────────
+# Maps a city code (or any airport in the group) to all airports in that city.
+# Used to expand searches: GDN→STN also searches GDN→LHR, GDN→LGW, etc.
+CITY_AIRPORTS: dict[str, list[str]] = {
+    # United Kingdom
+    "LON": ["LHR", "LGW", "STN", "LTN", "SEN"],
+    # France
+    "PAR": ["CDG", "ORY", "BVA"],
+    # Italy
+    "ROM": ["FCO", "CIA"],
+    "MIL": ["MXP", "LIN", "BGY"],
+    # United States
+    "NYC": ["JFK", "EWR", "LGA"],
+    "WAS": ["IAD", "DCA", "BWI"],
+    "CHI": ["ORD", "MDW"],
+    "LAX": ["LAX", "SNA", "BUR", "LGB", "ONT"],
+    "SFO": ["SFO", "OAK", "SJC"],
+    "MIA": ["MIA", "FLL", "PBI"],
+    "HOU": ["IAH", "HOU"],
+    "DFW": ["DFW", "DAL"],
+    # Japan
+    "TYO": ["NRT", "HND"],
+    "OSA": ["KIX", "ITM"],
+    # South Korea
+    "SEL": ["ICN", "GMP"],
+    # China
+    "BJS": ["PEK", "PKX"],
+    "SHA": ["PVG", "SHA"],
+    # Turkey
+    "IST": ["IST", "SAW"],
+    # Germany
+    "BER": ["BER", "SXF"],
+    # Sweden
+    "STO": ["ARN", "BMA", "NYO"],
+    # Russia
+    "MOW": ["SVO", "DME", "VKO"],
+    # Argentina
+    "BUE": ["EZE", "AEP"],
+    # Brazil
+    "SAO": ["GRU", "CGH", "VCP"],
+    "RIO": ["GIG", "SDU"],
+    # UAE
+    "DXB": ["DXB", "DWC"],
+    # Thailand
+    "BKK": ["BKK", "DMK"],
+    # Malaysia
+    "KUL": ["KUL", "SZB"],
+    # Indonesia
+    "JKT": ["CGK", "HLP"],
+    # Iceland
+    "REK": ["KEF", "RKV"],
+    # Ireland
+    "DUB": ["DUB"],
+}
+
+# Build reverse lookup: airport → city code
+_AIRPORT_TO_CITY: dict[str, str] = {}
+for _city, _airports in CITY_AIRPORTS.items():
+    for _apt in _airports:
+        _AIRPORT_TO_CITY[_apt] = _city
+
+
+def get_city_airports(iata: str) -> list[str]:
+    """Return all airports in the same city as *iata*.
+
+    If *iata* is a city code (LON, NYC), returns its airports.
+    If *iata* is an airport in a multi-airport city, returns all sibling airports.
+    Otherwise returns [iata] (single-airport city).
+    """
+    iata = iata.upper().strip()
+    if iata in CITY_AIRPORTS:
+        return CITY_AIRPORTS[iata]
+    city = _AIRPORT_TO_CITY.get(iata)
+    if city:
+        return CITY_AIRPORTS[city]
+    return [iata]
+
 
 def get_country(iata: str) -> str | None:
     """Resolve an IATA airport or city code to its ISO country code."""

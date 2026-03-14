@@ -188,7 +188,10 @@ def search_local_cmd(
     sort: str = typer.Option("price", "--sort", help="Sort: price or duration"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
 ):
-    """Search flights locally — FREE, no API key. Runs 58 airline connectors on your machine."""
+    """Search flights locally — FREE, no API key required. Runs 58 airline connectors on your machine.
+
+    Set BOOSTEDTRAVEL_API_KEY to also query Amadeus, Duffel, Sabre and Travelport for full-service airline fares.
+    """
     import asyncio
     import warnings
     from boostedtravel.local import search_local
@@ -230,7 +233,11 @@ def search_local_cmd(
         print(f"No flights found for {origin} → {destination} on {date}")
         return
 
-    print(f"\n  {total} offers  |  {origin} → {destination}  |  {date}  |  LOCAL search")
+    source_tiers = result.get("source_tiers", {})
+    has_backend = "paid" in source_tiers
+    mode_label = "LOCAL + BACKEND" if has_backend else "LOCAL only (set BOOSTEDTRAVEL_API_KEY for Amadeus/Duffel)"
+
+    print(f"\n  {total} offers  |  {origin} → {destination}  |  {date}  |  {mode_label}")
 
     if HAS_RICH:
         table = Table(show_header=True, header_style="bold")

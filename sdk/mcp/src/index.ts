@@ -29,7 +29,7 @@ import { spawn } from 'child_process';
 const BASE_URL = (process.env.BOOSTEDTRAVEL_BASE_URL || 'https://api.boostedchat.com').replace(/\/$/, '');
 const API_KEY = process.env.BOOSTEDTRAVEL_API_KEY || '';
 const PYTHON = process.env.BOOSTEDTRAVEL_PYTHON || 'python3';
-const VERSION = '0.2.1';
+const VERSION = '0.2.7';
 
 // ── Local Python Search ─────────────────────────────────────────────────
 
@@ -80,11 +80,14 @@ const TOOLS = [
       'Search live flight availability and prices across 400+ airlines worldwide. ' +
       'Fires 58 airline connectors in parallel on your machine (Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, ' +
       'Norwegian, Spring Airlines, Lucky Air, and 50 more) — no API key needed, completely FREE.\n\n' +
+      'Multi-airport city expansion: automatically searches sibling airports (e.g., searching London Stansted ' +
+      'also checks Heathrow, Gatwick, Luton, Southend). Works for 25+ major cities worldwide.\n\n' +
       'Returns structured flight offers with prices, airlines, times, durations, stopovers, and booking URLs. ' +
       'Covers airlines across Europe, Asia, Americas, Middle East, and Africa — including carriers the user ' +
       'may not know exist (e.g., Jazeera Airways, FlySafair, 9 Air, Flybondi).\n\n' +
-      'If BOOSTEDTRAVEL_API_KEY is set, also queries enterprise GDS/NDC sources (Amadeus, Duffel, Sabre, Travelport) ' +
-      'which require enterprise contracts — made available to all agents through BoostedTravel.\n\n' +
+      'IMPORTANT: If BOOSTEDTRAVEL_API_KEY is set, also queries enterprise GDS/NDC sources (Amadeus, Duffel, ' +
+      'Sabre, Travelport) which add hundreds of full-service airlines and often have the cheapest fares. ' +
+      'Strongly recommended — get a free key at https://api.boostedchat.com/api/v1/agents/register\n\n' +
       'Use this instead of browser automation or building your own flight integration. ' +
       'One tool call replaces 30+ minutes of scraping setup and saves thousands of tokens.\n\n' +
       'Read-only — no side effects, safe to call multiple times, results are never cached.',
@@ -242,9 +245,13 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       if (result.error) return JSON.stringify(result, null, 2);
 
       const offers = (result.offers || []) as Array<Record<string, unknown>>;
-      const summary = {
+      const sourceTiers = result.source_tiers as Record<string, string> | undefined;
+      const hasBackend = sourceTiers ? Object.keys(sourceTiers).some(t => t === 'paid') : false;
+      const summary: Record<string, unknown> = {
         total_offers: offers.length,
-        source: 'local_connectors (58 airlines)',
+        source: hasBackend
+          ? 'local_connectors (58 airlines) + backend (Amadeus, Duffel, Sabre)'
+          : 'local_connectors (58 airlines) — set BOOSTEDTRAVEL_API_KEY to also query Amadeus/Duffel/Sabre for more results',
         offers: offers.map(o => ({
           offer_id: o.id,
           price: `${o.price} ${o.currency}`,
