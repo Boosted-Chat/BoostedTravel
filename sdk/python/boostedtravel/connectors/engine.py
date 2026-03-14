@@ -86,9 +86,13 @@ from connectors.salamair import SalamAirConnectorClient
 from connectors.usbangla import USBanglaConnectorClient
 from connectors.biman import BimanConnectorClient
 from connectors.etihad import EtihadConnectorClient
+from connectors.turkish import TurkishConnectorClient
 from connectors.suncountry import SunCountryConnectorClient
 from connectors.alaska import AlaskaConnectorClient
 from connectors.hawaiian import HawaiianConnectorClient
+from connectors.american import AmericanConnectorClient
+from connectors.united import UnitedConnectorClient
+from connectors.delta import DeltaConnectorClient
 
 from models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, FlightSearchResponse
 
@@ -109,10 +113,14 @@ _BROWSER_SOURCES: set[str] = {
     "vietjet_direct", "volaris_direct", "volotea_direct", "vueling_direct",
     "usbangla_direct",
     "etihad_direct",
+    "turkish_direct",
     "zipair_direct",
     "suncountry_direct",
     "alaska_direct",
     "hawaiian_direct",
+    "american_direct",
+    "united_direct",
+    "delta_direct",
 }
 
 # Registry of direct airline connectors: (source_name, connector_class, timeout)
@@ -170,9 +178,13 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("usbangla_direct", USBanglaConnectorClient, 45.0),
     ("biman_direct", BimanConnectorClient, 25.0),
     ("etihad_direct", EtihadConnectorClient, 35.0),
+    ("turkish_direct", TurkishConnectorClient, 45.0),
     ("suncountry_direct", SunCountryConnectorClient, 45.0),
     ("alaska_direct", AlaskaConnectorClient, 45.0),
     ("hawaiian_direct", HawaiianConnectorClient, 45.0),
+    ("american_direct", AmericanConnectorClient, 45.0),
+    ("united_direct", UnitedConnectorClient, 55.0),
+    ("delta_direct", DeltaConnectorClient, 45.0),
 ]
 
 
