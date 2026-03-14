@@ -281,7 +281,6 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
     "vietjet": {"VN", "TH", "KR", "JP", "TW", "IN", "SG", "MY", "ID", "PH", "KH", "AU"},
     "cebupacific": {"PH", "SG", "MY", "TH", "VN", "KR", "JP", "TW", "CN", "HK", "AU", "AE"},
     "scoot": {"SG", "TH", "MY", "ID", "VN", "PH", "KR", "JP", "TW", "CN", "HK", "IN", "AU", "GR", "DE", "GB", "FI", "SA"},
-    "lionair": {"ID", "MY", "TH", "SG", "VN", "SA"},
     "nokair": {"TH", "CN", "JP", "KR", "VN", "MM", "IN", "SG"},
     "jetstar": {"AU", "NZ", "JP", "SG", "VN", "ID", "TH", "MY", "PH"},
     "peach": {"JP", "KR", "TW", "CN", "HK", "TH"},

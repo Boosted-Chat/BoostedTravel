@@ -35,8 +35,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -54,6 +56,7 @@ from boostedtravel.models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from boostedtravel.connectors.browser import find_chrome, stealth_popen_kwargs, _launched_procs
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +83,15 @@ _farm_lock: Optional[asyncio.Lock] = None
 _farmed_cookies: list[dict] = []
 _farm_timestamp: float = 0.0
 
-# ── Shared browser singleton (Playwright, for cookie farming + fallback) ──
-_browser = None
+# ── CDP Chrome singleton (headed, no --headless) ─────────────────────────
+_CDP_PORT = 9453
+_USER_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", ".transavia_chrome_profile"
+)
+
+_chrome_proc: subprocess.Popen | None = None
+_pw_instance = None
+_cdp_browser = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -100,17 +110,72 @@ def _get_farm_lock() -> asyncio.Lock:
 
 
 async def _get_browser():
-    """Shared headed Chromium for cookie farming + fallback (launched once, reused)."""
-    global _browser
+    """Launch or reuse headed Chrome via CDP.
+
+    Cloudflare on transavia.com blocks headless Chrome.  We launch Chrome
+    HEADED (no --headless) off-screen with the homepage URL so CF resolves
+    before Playwright attaches.
+    """
+    global _pw_instance, _cdp_browser, _chrome_proc
     lock = _get_lock()
     async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
+        if _cdp_browser:
+            try:
+                if _cdp_browser.is_connected():
+                    return _cdp_browser
+            except Exception:
+                pass
+            _cdp_browser = None
 
-        from boostedtravel.connectors.browser import launch_headed_browser
-        _browser = await launch_headed_browser()
-        logger.info("Transavia: browser launched for cookie farming")
-        return _browser
+        from playwright.async_api import async_playwright
+
+        # Try connecting to existing Chrome on the port
+        pw = None
+        try:
+            pw = await async_playwright().start()
+            _cdp_browser = await pw.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{_CDP_PORT}"
+            )
+            _pw_instance = pw
+            logger.info("Transavia: connected to existing Chrome on port %d", _CDP_PORT)
+            return _cdp_browser
+        except Exception:
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+
+        # Launch Chrome HEADED with transavia URL (CF resolves before CDP attaches)
+        chrome = find_chrome()
+        os.makedirs(_USER_DATA_DIR, exist_ok=True)
+        _chrome_proc = subprocess.Popen(
+            [
+                chrome,
+                f"--remote-debugging-port={_CDP_PORT}",
+                f"--user-data-dir={_USER_DATA_DIR}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-http2",
+                "--window-position=-2400,-2400",
+                "--window-size=1440,900",
+                "https://www.transavia.com/en-EU/home/",
+            ],
+            **stealth_popen_kwargs(),
+        )
+        _launched_procs.append(_chrome_proc)
+        # Cloudflare resolves when Chrome loads the page natively
+        await asyncio.sleep(12.0)
+
+        pw = await async_playwright().start()
+        _pw_instance = pw
+        _cdp_browser = await pw.chromium.connect_over_cdp(
+            f"http://127.0.0.1:{_CDP_PORT}"
+        )
+        logger.info("Transavia: Chrome launched headed on CDP port %d (pid %d)",
+                    _CDP_PORT, _chrome_proc.pid)
+        return _cdp_browser
 
 
 class TransaviaConnectorClient:
@@ -202,12 +267,8 @@ class TransaviaConnectorClient:
                 return _farmed_cookies
 
             browser = await _get_browser()
-            context = await browser.new_context(
-                viewport=random.choice(_VIEWPORTS),
-                locale=random.choice(_LOCALES),
-                timezone_id=random.choice(_TIMEZONES),
-                service_workers="block",
-            )
+            # Use default context to keep Cloudflare cookies warm
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
 
             try:
                 try:
@@ -223,7 +284,13 @@ class TransaviaConnectorClient:
                     wait_until="domcontentloaded",
                     timeout=30000,
                 )
-                await asyncio.sleep(3.0)
+                # Wait for Cloudflare to resolve
+                for _ in range(15):
+                    title = await page.title()
+                    if "just a moment" not in title.lower():
+                        break
+                    await asyncio.sleep(2)
+                await asyncio.sleep(1.0)
 
                 # Dismiss cookie banner
                 await self._dismiss_cookies(page)
@@ -253,7 +320,11 @@ class TransaviaConnectorClient:
                 logger.error("Transavia: cookie farm error: %s", e)
                 return []
             finally:
-                await context.close()
+                # Close the extra page but keep default context alive
+                try:
+                    await page.close()
+                except BaseException:
+                    pass
 
     # ------------------------------------------------------------------
     # Direct API via curl_cffi
@@ -347,20 +418,11 @@ class TransaviaConnectorClient:
     ) -> FlightSearchResponse:
         """Full Playwright browser flow as fallback."""
         browser = await _get_browser()
-        context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
-        )
+        # Use default context to keep Cloudflare cookies warm
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
 
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
+            page = await context.new_page()
 
             # Set up response interception for flight-availability API
             captured_data: dict = {}
@@ -394,7 +456,12 @@ class TransaviaConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=int(self.timeout * 1000),
             )
-            await asyncio.sleep(2.0)
+            # Wait for Cloudflare challenge to resolve
+            for _cf in range(15):
+                title = await page.title()
+                if "just a moment" not in title.lower():
+                    break
+                await asyncio.sleep(2)
             await self._dismiss_cookies(page)
             await asyncio.sleep(1.0)
 
@@ -459,7 +526,10 @@ class TransaviaConnectorClient:
             logger.error("Transavia Playwright fallback error: %s", e)
             return self._empty(req)
         finally:
-            await context.close()
+            try:
+                await page.close()
+            except BaseException:
+                pass
 
     # ------------------------------------------------------------------
     # Cookie dismissal

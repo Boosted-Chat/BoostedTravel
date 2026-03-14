@@ -20,7 +20,6 @@ import logging
 import os
 import random
 import re
-import subprocess
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -48,10 +47,9 @@ _TIMEZONES = [
     "America/Los_Angeles", "America/Phoenix",
 ]
 
-# ── Shared browser singleton via CDP ────────────────────────────────────
-_CDP_PORT = 9463
-_chrome_proc = None
+# ── Shared browser singleton ────────────────────────────────────────────
 _browser = None
+_pw_instance = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -62,17 +60,53 @@ def _get_lock() -> asyncio.Lock:
     return _browser_lock
 
 
+def _get_proxy() -> Optional[dict]:
+    """Read proxy from SPIRIT_PROXY env var.
+
+    Spirit's PerimeterX may geo-block or risk-score non-US IPs.
+    Set SPIRIT_PROXY="http://user:pass@us-proxy:10001" if needed.
+    """
+    raw = os.environ.get("SPIRIT_PROXY", "").strip()
+    if not raw:
+        return None
+    from urllib.parse import urlparse
+    p = urlparse(raw)
+    result: dict[str, str] = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+    if p.username:
+        result["username"] = p.username
+    if p.password:
+        result["password"] = p.password
+    return result
+
+
 async def _get_browser():
-    """Connect to a real Chrome instance via CDP (launched once, reused)."""
-    global _chrome_proc, _browser
+    """Launch headed Chrome via Playwright (PX detects both --headless=new and CDP)."""
+    global _pw_instance, _browser
     lock = _get_lock()
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
-        from connectors.browser import get_or_launch_cdp
-        _user_data = os.path.join(os.environ.get("TEMP", "/tmp"), "chrome-cdp-spirit")
-        _browser, _chrome_proc = await get_or_launch_cdp(_CDP_PORT, _user_data)
-        logger.info("Spirit: Chrome ready via CDP (port %d)", _CDP_PORT)
+        from playwright.async_api import async_playwright
+        _pw_instance = await async_playwright().start()
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--window-position=-2400,-2400",
+            "--window-size=1366,768",
+        ]
+        launch_kw: dict = {
+            "headless": False,
+            "channel": "chrome",
+            "args": launch_args,
+        }
+        proxy = _get_proxy()
+        if proxy:
+            launch_kw["proxy"] = proxy
+        try:
+            _browser = await _pw_instance.chromium.launch(**launch_kw)
+        except Exception:
+            launch_kw.pop("channel", None)
+            _browser = await _pw_instance.chromium.launch(**launch_kw)
+        logger.info("Spirit: headed Chrome launched (proxy=%s)", bool(proxy))
         return _browser
 
 
@@ -89,7 +123,6 @@ class SpiritConnectorClient:
         t0 = time.monotonic()
 
         for attempt in range(3):
-            # Fresh context per attempt (real Chrome via CDP defeats PX better)
             browser = await _get_browser()
             context = await browser.new_context(
                 viewport=random.choice(_VIEWPORTS),
@@ -101,7 +134,7 @@ class SpiritConnectorClient:
                 if result and result.total_results > 0:
                     return result
                 if attempt < 2:
-                    logger.info("Spirit: attempt %d returned no results, retrying with fresh context", attempt + 1)
+                    logger.info("Spirit: attempt %d returned no results, retrying", attempt + 1)
             except Exception as e:
                 logger.warning("Spirit: attempt %d error: %s", attempt + 1, e)
             finally:
@@ -283,31 +316,45 @@ class SpiritConnectorClient:
             await page.keyboard.press("Control+a")
             await page.keyboard.press("Backspace")
             await asyncio.sleep(0.3)
-            await page.keyboard.type(city_name, delay=80)
-            await asyncio.sleep(2.5)
-            # Click station suggestion using Playwright (not JS — Angular model needs real click)
-            suggestion = page.locator(
-                "div.station-picker-typeahead__station-list[role='button']"
-            ).filter(has_text=re.compile(rf"\b{re.escape(iata)}\b", re.IGNORECASE))
-            if await suggestion.count() > 0:
-                await suggestion.first.click(timeout=5000)
-                logger.info("Spirit: selected %s (%s) for %s", iata, city_name, label)
-                return True
-            # Fallback: try typing IATA directly
-            await page.evaluate(f"""() => {{
-                const el = document.getElementById('{field_id}');
-                if (el) {{ el.focus(); el.value = ''; }}
-            }}""")
-            await asyncio.sleep(0.3)
-            await page.keyboard.type(iata, delay=80)
-            await asyncio.sleep(2.5)
-            suggestion = page.locator(
-                "div.station-picker-typeahead__station-list[role='button']"
-            ).filter(has_text=re.compile(rf"\b{re.escape(iata)}\b", re.IGNORECASE))
-            if await suggestion.count() > 0:
-                await suggestion.first.click(timeout=5000)
-                logger.info("Spirit: selected %s for %s (IATA fallback)", iata, label)
-                return True
+
+            for search_term in [city_name, iata]:
+                await page.keyboard.type(search_term, delay=80)
+                await asyncio.sleep(2.5)
+                # Try Playwright click first, then JS click if not visible
+                suggestion = page.locator(
+                    "div.station-picker-typeahead__station-list[role='button']"
+                ).filter(has_text=re.compile(rf"\b{re.escape(iata)}\b", re.IGNORECASE))
+                if await suggestion.count() > 0:
+                    try:
+                        await suggestion.first.click(timeout=3000)
+                        logger.info("Spirit: selected %s (%s) for %s", iata, search_term, label)
+                        return True
+                    except Exception:
+                        # Element not visible — use JS click
+                        clicked = await page.evaluate(f"""() => {{
+                            const items = document.querySelectorAll(
+                                'div.station-picker-typeahead__station-list[role="button"]'
+                            );
+                            for (const item of items) {{
+                                if (item.textContent.match(/\\b{re.escape(iata)}\\b/i)) {{
+                                    item.scrollIntoView();
+                                    item.click();
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}""")
+                        if clicked:
+                            logger.info("Spirit: selected %s for %s (JS click)", iata, label)
+                            await asyncio.sleep(0.5)
+                            return True
+                # Clear field for next attempt
+                await page.evaluate(f"""() => {{
+                    const el = document.getElementById('{field_id}');
+                    if (el) {{ el.focus(); el.value = ''; }}
+                }}""")
+                await asyncio.sleep(0.3)
+
             logger.warning("Spirit: no suggestion found for %s/%s", iata, city_name)
             return False
         except Exception as e:

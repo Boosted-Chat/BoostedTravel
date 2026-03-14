@@ -49,7 +49,6 @@ from boostedtravel.connectors.airarabia import AirArabiaConnectorClient
 from boostedtravel.connectors.vietjet import VietJetConnectorClient
 from boostedtravel.connectors.cebupacific import CebuPacificConnectorClient
 from boostedtravel.connectors.scoot import ScootConnectorClient
-from boostedtravel.connectors.lionair import LionAirConnectorClient
 from boostedtravel.connectors.jetsmart import JetSmartConnectorClient
 from boostedtravel.connectors.jetstar import JetstarConnectorClient
 from boostedtravel.connectors.jet2 import Jet2ConnectorClient
@@ -105,7 +104,6 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("vietjet_direct", VietJetConnectorClient, 25.0),
     ("cebupacific_direct", CebuPacificConnectorClient, 25.0),
     ("scoot_direct", ScootConnectorClient, 25.0),
-    ("lionair_direct", LionAirConnectorClient, 25.0),
     ("jetsmart_direct", JetSmartConnectorClient, 25.0),
     ("jetstar_direct", JetstarConnectorClient, 25.0),
     ("jet2_direct", Jet2ConnectorClient, 25.0),

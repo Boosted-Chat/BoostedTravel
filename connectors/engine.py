@@ -49,7 +49,6 @@ from connectors.airarabia import AirArabiaConnectorClient
 from connectors.vietjet import VietJetConnectorClient
 from connectors.cebupacific import CebuPacificConnectorClient
 from connectors.scoot import ScootConnectorClient
-from connectors.lionair import LionAirConnectorClient
 from connectors.jetsmart import JetSmartConnectorClient
 from connectors.jetstar import JetstarConnectorClient
 from connectors.jet2 import Jet2ConnectorClient
@@ -92,7 +91,7 @@ _BROWSER_SOURCES: set[str] = {
     "cebupacific_direct", "condor_direct", "easyjet_direct", "eurowings_direct",
     "flybondi_direct", "flydubai_direct", "flynas_direct", "frontier_direct",
     "gol_direct", "indigo_direct", "jet2_direct", "jetsmart_direct",
-    "jetstar_direct", "lionair_direct", "luckyair_direct", "9air_direct",
+    "jetstar_direct", "luckyair_direct", "9air_direct",
     "norwegian_direct", "peach_direct", "pegasus_direct", "play_direct",
     "porter_direct", "scoot_direct", "smartwings_direct", "southwest_direct",
     "spirit_direct", "sunexpress_direct", "transavia_direct", "twayair_direct",
@@ -120,7 +119,6 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("vietjet_direct", VietJetConnectorClient, 25.0),
     ("cebupacific_direct", CebuPacificConnectorClient, 25.0),
     ("scoot_direct", ScootConnectorClient, 25.0),
-    ("lionair_direct", LionAirConnectorClient, 25.0),
     ("jetsmart_direct", JetSmartConnectorClient, 25.0),
     ("jetstar_direct", JetstarConnectorClient, 25.0),
     ("jet2_direct", Jet2ConnectorClient, 25.0),
