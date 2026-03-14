@@ -267,6 +267,7 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
     "jetblue": {"US", "PR", "DO", "JM", "BS", "MX", "CR", "CO", "EC", "PE", "GB", "FR", "NL"},
     "avelo": {"US"},
     "breeze": {"US"},
+    "alaska": {"US", "MX", "CA", "CR", "BZ", "GT"},
     "volaris": {"US", "MX", "GT", "SV", "HN", "CR", "NI"},
     "vivaaerobus": {"US", "MX", "CO", "CU", "DO", "PE"},
     "jetsmart": {"CL", "AR", "PE", "CO", "BR"},
@@ -341,6 +342,13 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
     "biman": {
         "BD", "AE", "SA", "QA", "KW", "OM", "IN", "NP", "TH", "MY",
         "SG", "HK", "CN", "IT", "GB", "CA", "PK",
+    },
+    "etihad": {
+        "AE", "SA", "QA", "KW", "BH", "OM", "EG", "JO", "LB", "IQ",
+        "PK", "IN", "LK", "BD", "NP", "TH", "MY", "SG", "ID", "PH",
+        "CN", "JP", "KR", "AU", "GB", "IE", "FR", "DE", "IT", "ES",
+        "CH", "NL", "GR", "TR", "US", "CA", "KE", "TZ", "ZA", "NG",
+        "ET", "BR", "MV", "SC", "KZ", "RU",
     },
 }
 
