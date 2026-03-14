@@ -144,8 +144,8 @@
 | 60 | royaljordanian | RJ | — | `broken` | | | Royal Jordanian. AMM hub → Levant/EU/US connectivity. rj.com. |
 | 61 | turkish | TK | — | `done` | | | Turkish Airlines. IST hub, largest network by destination count (340+). turkishairlines.com. |
 | 62 | singapore | SQ | — | `broken` | | | Singapore Airlines. SIN hub, premium Asia-Pacific carrier. singaporeair.com. |
-| 63 | cathay | CX | — | `broken` | | | Cathay Pacific. HKG hub → Asia/EU/NA/AU. cathaypacific.com. |
-| 64 | thai | TG | — | `broken` | | | Thai Airways. BKK hub → Asia/EU/AU. thaiairways.com. |
+| 63 | cathay | CX | cathay_direct | `done` | curl_cffi | open-search calendar API | Cathay Pacific. HKG hub → Asia/EU/NA/AU. cathaypacific.com. curl_cffi-only via open-search API (no auth). 80 destinations from HKG, also SIN/SYD/TPE/BKK origins. Calendar deal pricing. |
+| 64 | thai | TG | thai_direct | `done` | httpx | EveryMundo airTRFX | Thai Airways. BKK hub → Asia/EU/AU. thaiairways.com. httpx-only via EveryMundo fare pages (__NEXT_DATA__ StandardFareModule). 65 TG-operated airports, ~60 mapped slugs. |
 | 65 | ana | NH | — | `broken` | | | ANA (All Nippon Airways). NRT/HND hubs → Asia/EU/NA. ana.co.jp. |
 | 66 | korean | KE | — | `broken` | | | Korean Air. ICN hub → Asia/EU/NA/AU. koreanair.com. |
 | 67 | malaysia | MH | malaysia_direct | `done` | httpx | lowFares+flightSearch | Malaysia Airlines. KUL hub → Asia/EU/AU. malaysiaairlines.com. httpx-only via lowFares GET (daily prices) + flightSearch JSON POST (booking URL). |

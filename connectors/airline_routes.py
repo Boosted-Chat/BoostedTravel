@@ -328,6 +328,12 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
     "jejuair": {"KR", "JP", "TW", "PH", "VN", "TH", "SG", "MY", "GU"},
     "twayair": {"KR", "JP", "TW", "VN", "TH", "PH", "SG", "GU"},
     "batikair": {"ID", "MY", "SG", "TH", "AU"},
+    "thai": {
+        "TH", "JP", "KR", "CN", "HK", "TW", "SG", "MY", "ID", "VN",
+        "KH", "LA", "MM", "PH", "IN", "LK", "BD", "NP", "PK", "AU",
+        "GB", "DE", "FR", "IT", "CH", "AT", "DK", "SE", "NO", "BE",
+        "TR",
+    },
 
     # ── Middle East / Africa / India ──
     "flydubai": {
@@ -419,6 +425,15 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "GB", "NL", "FR", "DE", "TR",
         "US",
         "KE", "ZA",
+    },
+    "cathay": {
+        "HK", "CN", "TW", "JP", "KR",
+        "SG", "TH", "MY", "ID", "PH", "VN", "KH", "MM", "IN", "LK", "MV", "NP", "BD",
+        "AU", "NZ",
+        "GB", "FR", "DE", "IT", "ES", "NL", "BE",
+        "US", "CA",
+        "AE", "QA", "SA",
+        "ZA", "KE", "SN",
     },
 }
 
