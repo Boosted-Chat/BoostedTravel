@@ -268,6 +268,7 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
     "avelo": {"US"},
     "breeze": {"US"},
     "alaska": {"US", "MX", "CA", "CR", "BZ", "GT"},
+    "hawaiian": {"US", "JP", "KR", "AU", "NZ", "AS", "WS"},
     "volaris": {"US", "MX", "GT", "SV", "HN", "CR", "NI"},
     "vivaaerobus": {"US", "MX", "CO", "CU", "DO", "PE"},
     "jetsmart": {"CL", "AR", "PE", "CO", "BR"},

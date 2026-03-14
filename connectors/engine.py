@@ -88,6 +88,7 @@ from connectors.biman import BimanConnectorClient
 from connectors.etihad import EtihadConnectorClient
 from connectors.suncountry import SunCountryConnectorClient
 from connectors.alaska import AlaskaConnectorClient
+from connectors.hawaiian import HawaiianConnectorClient
 
 from models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, FlightSearchResponse
 
@@ -111,6 +112,7 @@ _BROWSER_SOURCES: set[str] = {
     "zipair_direct",
     "suncountry_direct",
     "alaska_direct",
+    "hawaiian_direct",
 }
 
 # Registry of direct airline connectors: (source_name, connector_class, timeout)
@@ -170,6 +172,7 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("etihad_direct", EtihadConnectorClient, 35.0),
     ("suncountry_direct", SunCountryConnectorClient, 45.0),
     ("alaska_direct", AlaskaConnectorClient, 45.0),
+    ("hawaiian_direct", HawaiianConnectorClient, 45.0),
 ]
 
 

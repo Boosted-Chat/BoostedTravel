@@ -116,7 +116,7 @@
 | 42 | avelo | XP | ULCC | `done` | Playwright deep-link scraper. 42 US domestic routes. Deep link URL bypasses form fill. Blazor WASM app. |
 | 43 | suncountry | SY | ULCC | `ok` | Lowfare API via Playwright (availability/search endpoint is unreachable). 81+ destinations from MSP hub. suncountry.com. |
 | 44 | alaska | AS | Major | `ok` | In-browser fetch to /search/api/flightresults API via Playwright. SvelteKit SPA, no WAF/CAPTCHA. 300+ routes (US, HI, MX, CA, CR). alaskaair.com. |
-| 45 | hawaiian | HA | Major | `broken` | **US IP required.** Hawaii inter-island + mainland-Hawaii + Asia/Pacific. hawaiianairlines.com. |
+| 45 | hawaiian | HA | Major | `ok` | Same Alaska Airlines Group infrastructure. In-browser fetch to /search/api/flightresults via Playwright. Inter-island, mainland-Hawaii, Asia/Pacific. hawaiianairlines.com. |
 | 46 | american | AA | Major | `broken` | **US IP required.** Largest airline worldwide, every US city pair. aa.com — complex SPA. |
 | 47 | united | UA | Major | `broken` | **US IP required.** 2nd largest US carrier, massive hub network. united.com — complex SPA. |
 | 48 | delta | DL | Major | `broken` | **US IP required.** 3rd largest US carrier, ATL world's busiest hub. delta.com — complex SPA. |
