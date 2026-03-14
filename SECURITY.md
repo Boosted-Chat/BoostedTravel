@@ -20,9 +20,9 @@ We aim to acknowledge reports within 48 hours and provide a fix or mitigation wi
 
 | Package | Version | Supported |
 |---------|---------|-----------|
-| boostedtravel (Python) | 0.1.x | ✅ |
-| boostedtravel (npm) | 0.1.x | ✅ |
-| boostedtravel-mcp (npm) | 0.1.x | ✅ |
+| boostedtravel (Python) | 0.2.x | ✅ |
+| boostedtravel (npm) | 0.2.x | ✅ |
+| boostedtravel-mcp (npm) | 0.2.x | ✅ |
 
 ## Scope
 
