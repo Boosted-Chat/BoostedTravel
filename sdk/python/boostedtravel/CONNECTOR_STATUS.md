@@ -143,7 +143,7 @@
 | 59 | kuwaitairways | KU | — | `broken` | | | Kuwait Airways. KWI hub → 50+ destinations. kuwaitairways.com. |
 | 60 | royaljordanian | RJ | — | `broken` | | | Royal Jordanian. AMM hub → Levant/EU/US connectivity. rj.com. |
 | 61 | turkish | TK | — | `done` | | | Turkish Airlines. IST hub, largest network by destination count (340+). turkishairlines.com. |
-| 62 | singapore | SQ | — | `broken` | | | Singapore Airlines. SIN hub, premium Asia-Pacific carrier. singaporeair.com. |
+| 62 | singapore | SQ | — | `done` | CDP Chrome | SIN→LHR | Singapore Airlines. SIN hub, premium Asia-Pacific carrier. singaporeair.com. |
 | 63 | cathay | CX | — | `broken` | | | Cathay Pacific. HKG hub → Asia/EU/NA/AU. cathaypacific.com. |
 | 64 | thai | TG | — | `broken` | | | Thai Airways. BKK hub → Asia/EU/AU. thaiairways.com. |
 | 65 | ana | NH | — | `broken` | | | ANA (All Nippon Airways). NRT/HND hubs → Asia/EU/NA. ana.co.jp. |

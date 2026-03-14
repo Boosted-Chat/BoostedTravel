@@ -429,6 +429,16 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "AE", "QA", "SA",
         "ZA", "KE", "SN",
     },
+    "singapore": {
+        "SG", "MY", "TH", "ID", "VN", "PH", "KH", "MM", "BN", "LA",
+        "IN", "LK", "BD", "NP", "MV",
+        "CN", "HK", "TW", "JP", "KR",
+        "AU", "NZ",
+        "AE", "SA", "BH", "IL",
+        "GB", "FR", "DE", "IT", "ES", "NL", "CH", "DK", "SE", "TR",
+        "US",
+        "ZA", "KE",
+    },
 }
 
 
