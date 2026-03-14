@@ -3,7 +3,6 @@ dist/
 __pycache__/
 *.pyc
 *.egg-info/
-*_chrome_data/
 build/
 .env
 .env.local
@@ -12,3 +11,63 @@ Thumbs.db
 .vscode/
 .idea/
 site/
+
+# Chrome profile directories (probe/test artifacts)
+*_chrome_data/
+*_chrome_probe*/
+*_chrome_profile/
+*_chrome_headed/
+*_chrome_clean/
+*_chrome_dom/
+*_chrome_fresh/
+*_chrome_js/
+*_chrome_cdp*/
+.chrome-*/
+.azul_*/
+.indigo_*/
+.gol_*/
+.jetstar_*/
+.norwegian_*/
+.peach_*/
+.smartwings_*/
+.transavia_*/
+.volotea_*/
+*_persistent_ctx/
+*_cdp_test/
+*_subprocess_chrome/
+*_default_page_chrome/
+
+# Probe/test/debug scripts (prefixed with _)
+_*_probe*.py
+_*_test*.py
+_*_debug*.py
+_probe_*.py
+_test_*.py
+
+# Probe output artifacts
+_*_output.txt
+_*_result.png
+_*_state.png
+_*_form.png
+_*_home.png
+_*_before.png
+_*_debug*.png
+_*_approach*.png
+_*_date*.png
+_*_success*.json
+_*_data*.json
+_*_captured.json
+_*_api.json
+_*_response.json
+_*_format.json
+_*_dump.json
+_*_full.txt
+_*_sample.json
+*.log
+
+# Backup files
+*.bak
+
+# Agent communication (runtime files)
+.github/agent-registry.json
+.github/agent-pings.json
