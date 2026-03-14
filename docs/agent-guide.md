@@ -2,6 +2,25 @@
 
 Guidelines for building autonomous AI agents that search, evaluate, and book flights.
 
+## Two Search Modes
+
+Agents can use **local search** (free, no API key) for quick lookups, or **full search** (API key) for comprehensive results:
+
+```python
+# Local search — no API key, 73 airline connectors
+from boostedtravel.local import search_local
+result = await search_local("LHR", "JFK", "2026-06-01")
+
+# Full search — API key required, 400+ airlines via GDS/NDC
+from boostedtravel import BoostedTravel
+bt = BoostedTravel(api_key="trav_...")
+result = bt.search("LHR", "JFK", "2026-06-01")
+```
+
+**When to use local search:** Quick price checks, free-tier agents, routes served by the 73 local connectors, no-registration workflows.
+
+**When to use full search:** Comprehensive coverage across 400+ airlines, booking flow (unlock → book), GDS/NDC fares not available on airline websites.
+
 ## Architecture
 
 ```

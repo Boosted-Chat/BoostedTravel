@@ -21,7 +21,8 @@ The `boostedtravel` CLI is available via both Python and JavaScript. Same comman
 | Command | Description |
 |---------|-------------|
 | `boostedtravel register` | Create account and get API key |
-| `boostedtravel search <origin> <dest> <date>` | Search flights (free) |
+| `boostedtravel search <origin> <dest> <date>` | Search flights (free, requires API key) |
+| `boostedtravel search-local <origin> <dest> <date>` | Search flights locally (free, **no API key**) |
 | `boostedtravel locations <query>` | Resolve city/airport to IATA codes |
 | `boostedtravel unlock <offer_id>` | Unlock offer details ($1) |
 | `boostedtravel book <offer_id>` | Book the flight (free after unlock) |
@@ -56,6 +57,18 @@ All commands accept `--json` for structured output and `--api-key` to override t
 If omitted, the search returns all cabin classes.
 
 ## Examples
+
+### Local Search (No API Key)
+
+```bash
+# Search 73 local airline connectors — completely free, no registration
+boostedtravel search-local LHR JFK 2026-04-15
+
+# With cabin class and JSON output
+boostedtravel search-local LON BCN 2026-04-01 --cabin M --json
+```
+
+Local search queries 73 airline websites directly. No API key needed — install and search immediately.
 
 ### Basic Search
 

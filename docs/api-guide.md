@@ -1,5 +1,44 @@
 # API Guide
 
+## Two Ways to Search Flights
+
+BoostedTravel offers two search modes:
+
+| Mode | Command / Method | API Key | Coverage | Cost |
+|------|-----------------|---------|----------|------|
+| **Local search** | `search-local` / `search_local()` | **Not needed** | 73 airline connectors | Free |
+| **Full search** | `search` / `bt.search()` | Required | 400+ airlines (GDS/NDC) | Free (unlock $1) |
+
+### Local Search (No API Key)
+
+Search 73 airline websites directly — completely free, no registration required:
+
+```python
+from boostedtravel.local import search_local
+
+# Async — queries airline sites directly
+result = await search_local("LHR", "BCN", "2026-04-15")
+for offer in result.offers:
+    print(f"{offer.airlines[0]}: {offer.currency} {offer.price}")
+```
+
+```bash
+# CLI — works immediately after pip install
+boostedtravel search-local LHR BCN 2026-04-15
+```
+
+### Full Search (API Key)
+
+Search 400+ airlines via GDS and NDC connections:
+
+```python
+from boostedtravel import BoostedTravel
+bt = BoostedTravel(api_key="trav_...")
+flights = bt.search("LHR", "BCN", "2026-04-15")
+```
+
+---
+
 ## Error Handling
 
 The SDK raises specific exceptions for each failure mode:
