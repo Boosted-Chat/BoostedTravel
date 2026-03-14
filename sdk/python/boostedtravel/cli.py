@@ -193,14 +193,38 @@ def search_local_cmd(
     Set BOOSTEDTRAVEL_API_KEY to also query Amadeus, Duffel, Sabre and Travelport for full-service airline fares.
     """
     import asyncio
+    import logging
+    import os
+    import sys
     import warnings
     from boostedtravel.local import search_local
+
+    # Only show errors in CLI mode — suppress connector warning noise
+    logging.basicConfig(level=logging.ERROR, stream=sys.stderr, format="%(message)s")
 
     # Suppress asyncio transport warnings from Playwright subprocess cleanup
     warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed transport.*")
 
-    try:
-        result = asyncio.run(search_local(
+    # Suppress asyncio __del__ "Exception ignored" noise on Python 3.13+
+    _orig_unraisable = sys.unraisablehook
+    def _quiet_unraisable(hook_args):
+        try:
+            if hook_args.exc_type is ValueError and "pipe" in str(hook_args.exc_value).lower():
+                return
+            if "transport" in str(getattr(hook_args, "object", "")):
+                return
+        except Exception:
+            return  # Suppress errors in the hook itself during shutdown
+        _orig_unraisable(hook_args)
+    sys.unraisablehook = _quiet_unraisable
+
+    # Suppress Node.js DEP0169 deprecation warnings from Playwright subprocesses
+    os.environ.setdefault("NODE_OPTIONS", "--no-deprecation")
+
+    async def _run():
+        # Suppress "Future exception was never retrieved" from Playwright cleanup
+        asyncio.get_event_loop().set_exception_handler(lambda loop, ctx: None)
+        return await search_local(
             origin=origin,
             destination=destination,
             date_from=date,
@@ -210,7 +234,10 @@ def search_local_cmd(
             cabin_class=cabin,
             currency=currency,
             limit=limit,
-        ))
+        )
+
+    try:
+        result = asyncio.run(_run())
     except Exception as e:
         _err(f"Local search failed: {e}")
 
@@ -251,6 +278,13 @@ def search_local_cmd(
         for i, o in enumerate(offers, 1):
             ob = o.get("outbound", {})
             route = ob.get("route_str", "")
+            if not route:
+                segs = ob.get("segments", [])
+                if segs:
+                    codes = [segs[0].get("origin", "")]
+                    for s in segs:
+                        codes.append(s.get("destination", ""))
+                    route = "→".join(c for c in codes if c)
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
             dur_s = ob.get("total_duration_seconds")
             if dur_s:
@@ -270,6 +304,13 @@ def search_local_cmd(
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
             ob = o.get("outbound", {})
             route = ob.get("route_str", "")
+            if not route:
+                segs = ob.get("segments", [])
+                if segs:
+                    codes = [segs[0].get("origin", "")]
+                    for s in segs:
+                        codes.append(s.get("destination", ""))
+                    route = "→".join(c for c in codes if c)
             print(f"  {i:3d}. {cur} {price:.2f}  {airlines}  {route}")
 
     print()

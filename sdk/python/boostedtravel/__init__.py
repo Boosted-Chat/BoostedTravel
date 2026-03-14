@@ -36,7 +36,7 @@ from boostedtravel.models import (
     AgentProfile,
 )
 
-__version__ = "0.2.11"
+__version__ = "0.2.15"
 __all__ = [
     "BoostedTravel",
     "BoostedTravelError",

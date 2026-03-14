@@ -64,6 +64,26 @@ async def search_local(
 
 def _main() -> None:
     """Entry point for subprocess invocation: reads JSON from stdin, writes JSON to stdout."""
+    import os
+    import warnings
+
+    # Suppress asyncio transport cleanup noise (Python 3.13+)
+    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed transport.*")
+    _orig_unraisable = sys.unraisablehook
+    def _quiet_unraisable(hook_args):
+        try:
+            if hook_args.exc_type is ValueError and "pipe" in str(hook_args.exc_value).lower():
+                return
+            if "transport" in str(getattr(hook_args, "object", "")):
+                return
+        except Exception:
+            return
+        _orig_unraisable(hook_args)
+    sys.unraisablehook = _quiet_unraisable
+
+    # Suppress Node.js DEP0169 warnings from Playwright subprocesses
+    os.environ.setdefault("NODE_OPTIONS", "--no-deprecation")
+
     raw = sys.stdin.read().strip()
     if not raw:
         json.dump({"error": "No input provided. Send JSON on stdin."}, sys.stdout)
@@ -82,8 +102,9 @@ def _main() -> None:
         stream=sys.stderr,
     )
 
-    try:
-        result = asyncio.run(search_local(
+    async def _run():
+        asyncio.get_event_loop().set_exception_handler(lambda loop, ctx: None)
+        return await search_local(
             origin=params["origin"],
             destination=params["destination"],
             date_from=params["date_from"],
@@ -94,7 +115,10 @@ def _main() -> None:
             cabin_class=params.get("cabin_class"),
             currency=params.get("currency", "EUR"),
             limit=params.get("limit", 50),
-        ))
+        )
+
+    try:
+        result = asyncio.run(_run())
         json.dump(result, sys.stdout)
     except Exception as e:
         json.dump({"error": str(e)}, sys.stdout)

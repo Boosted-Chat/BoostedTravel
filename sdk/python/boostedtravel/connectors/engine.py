@@ -460,7 +460,7 @@ class MultiProvider:
         for i, result in enumerate(normal_results):
             provider = providers_used[i]
             if isinstance(result, Exception):
-                logger.error("Provider %s failed: %s", provider, result)
+                logger.warning("Provider %s failed: %s", provider, result)
                 continue
             if isinstance(result, FlightSearchResponse):
                 all_offers.extend(result.offers)
