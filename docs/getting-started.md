@@ -1,8 +1,35 @@
 # Getting Started
 
-## Authentication
+## One-Click Install (No API Key Needed)
 
-### 1. Register (one-time, no auth needed)
+```bash
+pip install boostedtravel
+```
+
+That's it. Search flights immediately:
+
+```bash
+boostedtravel search-local LHR BCN 2026-04-15
+```
+
+This runs 73 airline connectors locally on your machine — Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, and 67 more. Completely free, unlimited, zero configuration.
+
+```python
+from boostedtravel.local import search_local
+
+# Free, runs all relevant connectors on your machine
+result = await search_local("GDN", "BCN", "2026-06-15")
+for offer in result.offers[:5]:
+    print(f"{offer.airlines[0]}: {offer.currency} {offer.price}")
+```
+
+---
+
+## Unlock Full Power with an API Key (Recommended)
+
+Adding an API key connects you to BoostedTravel's enterprise backend — GDS/NDC providers (Amadeus, Duffel, Sabre, Travelport, Kiwi) with 400+ premium carriers like Lufthansa, British Airways, Emirates, and Singapore Airlines. Both local connectors and cloud sources run simultaneously, giving you the best price from across the entire internet.
+
+### 1. Register (one command, free, instant)
 
 ```bash
 # CLI

@@ -6,7 +6,7 @@ hide:
 # BoostedTravel
 
 **Flight search & booking for AI agents and developers.**
-400+ airlines, 58 direct LCC connectors, virtual interlining — straight from the terminal.
+400+ airlines, 73 direct airline connectors, virtual interlining — straight from the terminal.
 
 <div class="install-cmd"><span class="prompt">$</span> pip install boostedtravel</div>
 
@@ -14,6 +14,7 @@ hide:
 <a href="getting-started/" class="btn-primary">Get started</a>
 <a href="api-guide/" class="btn-ghost">API guide</a>
 <a href="https://api.boostedchat.com/docs" class="btn-ghost" target="_blank">Swagger ↗</a>
+<a href="https://smithery.ai/server/boostedtravel-mcp" class="btn-ghost" target="_blank">Smithery ↗</a>
 </div>
 
 ---
@@ -23,7 +24,7 @@ hide:
 <a class="card" href="getting-started/">
 <span class="card-icon">🚀</span>
 <strong>Quickstart</strong>
-<p>Register, auth, payment setup — first flight in 5 minutes.</p>
+<p>Install and search in one command — no API key needed. Or register for full 400+ airline access.</p>
 </a>
 
 <a class="card" href="api-guide/">
@@ -59,6 +60,16 @@ hide:
 </div>
 
 ---
+
+## Two ways to use
+
+| | **Local Only** (no API key) | **With API Key** (recommended) |
+|---|---|---|
+| Install | `pip install boostedtravel` | `pip install boostedtravel` |
+| Setup | Nothing | `boostedtravel register --email you@example.com` |
+| Airlines | 73 via local connectors | 73 local + 400+ via GDS/NDC |
+| Price | Free | Free search, $1 unlock |
+| Coverage | LCCs + major carriers with public APIs | Full global coverage including premium carriers |
 
 ## How it works
 

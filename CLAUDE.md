@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-BoostedTravel is an agent-native flight search & booking platform. This public repository contains the SDKs, 58 local LCC airline connectors, and documentation. The backend API runs on Cloud Run and is in a separate private repository.
+BoostedTravel is an agent-native flight search & booking platform. This public repository contains the SDKs, 73 local LCC airline connectors, and documentation. The backend API runs on Cloud Run and is in a separate private repository.
 
 **API Base URL:** `https://api.boostedchat.com`
 
@@ -23,7 +23,7 @@ BoostedTravel/
 │   │   │   ├── models/
 │   │   │   │   ├── __init__.py
 │   │   │   │   └── flights.py       # Pydantic models (FlightOffer, FlightSegment, etc.)
-│   │   │   └── connectors/          # 58 LCC airline scrapers + infrastructure
+│   │   │   └── connectors/          # 73 LCC airline scrapers + infrastructure
 │   │   │       ├── __init__.py
 │   │   │       ├── _connector_template.py  # Reference template (3 patterns)
 │   │   │       ├── browser.py        # Shared Chrome launcher, stealth CDP, cleanup
@@ -77,10 +77,10 @@ BoostedTravel/
 
 ### Two Search Modes
 1. **Cloud search** — Queries GDS/NDC providers (Duffel, Amadeus, Sabre, Travelport, Kiwi) via backend API. Requires API key.
-2. **Local search** — Fires 58 LCC connectors on the user's machine via Playwright + httpx. No API key needed. Both modes run simultaneously and results are merged.
+2. **Local search** — Fires 73 LCC connectors on the user's machine via Playwright + httpx. No API key needed. Both modes run simultaneously and results are merged.
 
-### 58 Local LCC Connectors
-The `connectors/` directory contains scrapers for 58 low-cost airlines. Three connector patterns:
+### 73 local LCC Connectors
+The `connectors/` directory contains scrapers for 73 low-cost airlines. Three connector patterns:
 - **Direct API** — Reverse-engineered REST/GraphQL endpoints (fastest, ~0.3-2s)
 - **CDP Chrome** — Real Chrome browser via Playwright CDP for bot-protected sites (~10-25s)
 - **API Interception** — Playwright navigation + response capture (~5-15s)

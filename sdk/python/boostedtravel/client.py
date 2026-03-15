@@ -223,7 +223,7 @@ class BoostedTravel:
                 "Note: search_local() works without an API key."
             )
 
-    # ── Local search (58 airline connectors, no API key needed) ────────────────
+    # ── Local search (73 airline connectors, no API key needed) ────────────────
 
     def search_local(
         self,
@@ -240,7 +240,7 @@ class BoostedTravel:
         limit: int = 50,
     ) -> FlightSearchResult:
         """
-        Search flights using 58 local airline connectors — FREE, no API key needed.
+        Search flights using 73 local airline connectors — FREE, no API key needed.
 
         Runs Ryanair, EasyJet, Spring Airlines, Lucky Air, and 54 more
         airline connectors directly on your machine. No backend call.

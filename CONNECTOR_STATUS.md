@@ -27,7 +27,7 @@
 
 ---
 
-## Connectors (58 total)
+## Connectors (73 total)
 
 ### Already Working (20) — DO NOT TOUCH
 

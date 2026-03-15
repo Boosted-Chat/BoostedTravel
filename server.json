@@ -2,12 +2,12 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.boostedchat/travel",
   "title": "BoostedTravel",
-  "description": "Flight search & booking for AI agents. 400+ airlines, $20-50 cheaper than OTAs.",
+  "description": "Flight search & booking for AI agents. 400+ airlines, 73 local connectors run free without API key. $20-50 cheaper than OTAs.",
   "repository": {
     "url": "https://github.com/Boosted-Chat/BoostedTravel",
     "source": "github"
   },
-  "version": "0.2.7",
+  "version": "0.2.16",
   "remotes": [
     {
       "type": "streamable-http",
@@ -15,7 +15,7 @@
       "headers": [
         {
           "name": "X-API-Key",
-          "description": "BoostedTravel API key (get one free: npx boostedtravel-mcp or pip install boostedtravel && boostedtravel register)",
+          "description": "BoostedTravel API key (get one free: boostedtravel register --email you@example.com)",
           "isRequired": true,
           "isSecret": true
         }
@@ -26,14 +26,14 @@
     {
       "registryType": "npm",
       "identifier": "boostedtravel-mcp",
-      "version": "0.2.6",
+      "version": "0.2.8",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "description": "Your BoostedTravel API key",
-          "isRequired": true,
+          "description": "Your BoostedTravel API key (optional — 73 local airline connectors work without it, API key adds 400+ GDS/NDC airlines)",
+          "isRequired": false,
           "format": "string",
           "isSecret": true,
           "name": "BOOSTEDTRAVEL_API_KEY"
@@ -43,14 +43,14 @@
     {
       "registryType": "pypi",
       "identifier": "boostedtravel",
-      "version": "0.2.7",
+      "version": "0.2.16",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "description": "Your BoostedTravel API key",
-          "isRequired": true,
+          "description": "Your BoostedTravel API key (optional — 73 local airline connectors work without it, API key adds 400+ GDS/NDC airlines)",
+          "isRequired": false,
           "format": "string",
           "isSecret": true,
           "name": "BOOSTEDTRAVEL_API_KEY"

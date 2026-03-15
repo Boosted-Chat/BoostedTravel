@@ -1,0 +1,542 @@
+openapi: 3.1.0
+info:
+  title: BoostedTravel API
+  version: 0.2.16
+  description: |
+    Agent-native flight search & booking API. 400+ airlines, 73 direct airline connectors,
+    virtual interlining — built for AI agents and developers.
+
+    ## How It Works
+    1. **Search** (free) — real-time offers from 400+ airlines
+    2. **Unlock** ($1) — confirm live price, reserve for 30 minutes
+    3. **Book** (free) — create real airline PNR
+
+    ## Authentication
+    Pass your API key via the `X-API-Key` header. Get one free:
+    ```
+    pip install boostedtravel
+    boostedtravel register --name my-agent --email you@example.com
+    ```
+  contact:
+    name: BoostedTravel Support
+    email: contact@boostedchat.com
+    url: https://boostedchat.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.boostedchat.com
+    description: Production
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "BoostedTravel API key (prefix: trav_)"
+
+  schemas:
+    FlightSearchRequest:
+      type: object
+      required: [origin, destination, date_from]
+      properties:
+        origin:
+          type: string
+          minLength: 3
+          maxLength: 3
+          description: "IATA airport or city code (e.g. LHR, LON, JFK)"
+          example: "LHR"
+        destination:
+          type: string
+          minLength: 3
+          maxLength: 3
+          description: "IATA airport or city code"
+          example: "JFK"
+        date_from:
+          type: string
+          format: date
+          description: "Departure date (YYYY-MM-DD)"
+          example: "2026-04-15"
+        date_to:
+          type: string
+          format: date
+          description: "Return date for round-trip (YYYY-MM-DD). Omit for one-way."
+        adults:
+          type: integer
+          minimum: 1
+          maximum: 9
+          default: 1
+          description: "Number of adult passengers"
+        children:
+          type: integer
+          minimum: 0
+          maximum: 8
+          default: 0
+          description: "Number of children (2-11 years)"
+        cabin:
+          type: string
+          enum: [M, W, C, F]
+          description: "Cabin class: M=economy, W=premium economy, C=business, F=first"
+        max_stops:
+          type: integer
+          minimum: 0
+          maximum: 4
+          default: 2
+          description: "Maximum stopovers per direction"
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          default: "EUR"
+          description: "3-letter currency code"
+          example: "EUR"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: "Maximum number of results"
+        sort:
+          type: string
+          enum: [price, duration]
+          default: "price"
+
+    FlightSearchResponse:
+      type: object
+      properties:
+        search_id:
+          type: string
+          description: "Unique search identifier"
+        passenger_ids:
+          type: array
+          items:
+            type: string
+          description: "Passenger IDs to use when booking (e.g. pas_0, pas_1)"
+        total_results:
+          type: integer
+          description: "Total number of matching offers"
+        offers:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlightOffer'
+
+    FlightOffer:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "Offer ID (use for unlock/book)"
+          example: "off_abc123"
+        price:
+          type: number
+          format: float
+          description: "Total price for all passengers"
+          example: 189.50
+        currency:
+          type: string
+          example: "EUR"
+        airlines:
+          type: array
+          items:
+            type: string
+          description: "Airlines operating the flights"
+          example: ["Ryanair"]
+        owner_airline:
+          type: string
+          description: "Primary operating airline"
+        route:
+          type: string
+          description: "Route summary (e.g. STN → BCN)"
+        duration_seconds:
+          type: integer
+          description: "Total journey duration in seconds"
+        stopovers:
+          type: integer
+          description: "Number of stops"
+        outbound:
+          $ref: '#/components/schemas/FlightRoute'
+        inbound:
+          $ref: '#/components/schemas/FlightRoute'
+          description: "Present only for round-trip searches"
+        conditions:
+          type: object
+          properties:
+            refund_before_departure:
+              type: string
+              enum: [allowed, allowed_with_fee, not_allowed]
+            change_before_departure:
+              type: string
+              enum: [allowed, allowed_with_fee, not_allowed]
+        is_locked:
+          type: boolean
+          description: "Whether this offer has been unlocked"
+        source:
+          type: string
+          description: "Data source (e.g. ryanair, amadeus, duffel)"
+
+    FlightRoute:
+      type: object
+      properties:
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlightSegment'
+        total_duration_seconds:
+          type: integer
+        stopovers:
+          type: integer
+        route_str:
+          type: string
+          description: "Human-readable route (e.g. LHR → BCN)"
+
+    FlightSegment:
+      type: object
+      properties:
+        airline:
+          type: string
+        flight_no:
+          type: string
+        origin:
+          type: string
+        destination:
+          type: string
+        departure:
+          type: string
+          format: date-time
+        arrival:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+        cabin:
+          type: string
+
+    UnlockRequest:
+      type: object
+      required: [offer_id]
+      properties:
+        offer_id:
+          type: string
+          description: "Offer ID from search results"
+
+    UnlockResponse:
+      type: object
+      properties:
+        offer_id:
+          type: string
+        confirmed_price:
+          type: number
+          format: float
+        confirmed_currency:
+          type: string
+        offer_expires_at:
+          type: string
+          format: date-time
+          description: "Offer reserved until this time (30 min window)"
+        booking_url:
+          type: string
+          format: uri
+          description: "Direct booking link (if available)"
+
+    BookRequest:
+      type: object
+      required: [offer_id, passengers, contact_email]
+      properties:
+        offer_id:
+          type: string
+        passengers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Passenger'
+        contact_email:
+          type: string
+          format: email
+        idempotency_key:
+          type: string
+          description: "Prevent double-booking on retry"
+
+    Passenger:
+      type: object
+      required: [id, given_name, family_name, born_on, gender, title]
+      properties:
+        id:
+          type: string
+          description: "Passenger ID from search response (e.g. pas_0)"
+        given_name:
+          type: string
+        family_name:
+          type: string
+        born_on:
+          type: string
+          format: date
+          description: "Date of birth (YYYY-MM-DD)"
+        gender:
+          type: string
+          enum: [m, f]
+        title:
+          type: string
+          enum: [mr, mrs, ms, miss, dr]
+
+    BookingResponse:
+      type: object
+      properties:
+        booking_id:
+          type: string
+        booking_reference:
+          type: string
+          description: "Airline PNR / confirmation code"
+        status:
+          type: string
+          enum: [confirmed, pending, failed]
+        total_price:
+          type: number
+          format: float
+        currency:
+          type: string
+
+    RegisterRequest:
+      type: object
+      required: [agent_name, email]
+      properties:
+        agent_name:
+          type: string
+        email:
+          type: string
+          format: email
+
+    RegisterResponse:
+      type: object
+      properties:
+        agent_id:
+          type: string
+        api_key:
+          type: string
+          description: "Your API key (prefix: trav_). Store securely."
+        message:
+          type: string
+
+    AgentProfile:
+      type: object
+      properties:
+        agent_id:
+          type: string
+        agent_name:
+          type: string
+        email:
+          type: string
+        payment_status:
+          type: string
+          enum: [active, inactive, pending]
+        search_count:
+          type: integer
+        booking_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    SetupPaymentRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          description: "Stripe token (e.g. tok_visa for testing)"
+        payment_method_id:
+          type: string
+          description: "Stripe PaymentMethod ID"
+
+    LocationResult:
+      type: object
+      properties:
+        iata_code:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [airport, city]
+        city:
+          type: string
+        country:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        status_code:
+          type: integer
+
+paths:
+  /api/v1/agents/register:
+    post:
+      operationId: registerAgent
+      summary: Register a new agent
+      description: "Create an account and get an API key. No authentication required."
+      security: []
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Agent registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '409':
+          description: Agent name or email already registered
+
+  /api/v1/agents/me:
+    get:
+      operationId: getAgentProfile
+      summary: Get agent profile
+      description: "View your account info, payment status, and usage stats."
+      tags: [Authentication]
+      responses:
+        '200':
+          description: Agent profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentProfile'
+        '401':
+          description: Invalid or missing API key
+
+  /api/v1/agents/setup-payment:
+    post:
+      operationId: setupPayment
+      summary: Set up payment method
+      description: "Attach a Stripe payment method. Required before unlock/book."
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupPaymentRequest'
+      responses:
+        '200':
+          description: Payment method attached
+        '401':
+          description: Invalid or missing API key
+
+  /api/v1/flights/search:
+    post:
+      operationId: searchFlights
+      summary: Search flights
+      description: |
+        Search 400+ airlines for flights. Free and unlimited.
+        Results include price, airlines, duration, stopovers, and booking conditions.
+        City codes (LON, NYC, PAR) automatically expand to all airports in that city.
+      tags: [Flights]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlightSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlightSearchResponse'
+        '401':
+          description: Invalid or missing API key
+        '422':
+          description: Invalid request (bad IATA code, date in past, etc.)
+
+  /api/v1/flights/resolve-location:
+    get:
+      operationId: resolveLocation
+      summary: Resolve city/airport name to IATA codes
+      description: "Convert city names or airport names to IATA codes. Use before search to resolve ambiguous locations."
+      tags: [Flights]
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: "City or airport name (e.g. 'London', 'JFK')"
+          example: "London"
+      responses:
+        '200':
+          description: Matching locations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LocationResult'
+
+  /api/v1/bookings/unlock:
+    post:
+      operationId: unlockOffer
+      summary: Unlock a flight offer ($1)
+      description: |
+        Confirm the live price with the airline and reserve for 30 minutes.
+        Costs $1.00 flat via Stripe. Payment method must be set up first.
+        The confirmed price may differ from the search price (airline prices change in real-time).
+      tags: [Bookings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnlockRequest'
+      responses:
+        '200':
+          description: Offer unlocked and reserved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnlockResponse'
+        '401':
+          description: Invalid or missing API key
+        '402':
+          description: No payment method set up
+        '410':
+          description: Offer expired (search again)
+
+  /api/v1/bookings/book:
+    post:
+      operationId: bookFlight
+      summary: Book a flight
+      description: |
+        Create a real airline booking (PNR). Free after unlock.
+        Passenger names must match government ID. E-ticket sent to contact email.
+      tags: [Bookings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+      responses:
+        '200':
+          description: Booking confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+        '401':
+          description: Invalid or missing API key
+        '410':
+          description: Offer expired (30-min window passed)
+        '422':
+          description: Invalid passenger data

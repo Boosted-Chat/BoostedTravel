@@ -4,12 +4,13 @@ BoostedTravel is available as a Python SDK, JavaScript SDK, MCP server, and remo
 
 ## Overview
 
-| Package | Install | What it is |
-|---------|---------|------------|
-| **Python SDK + CLI** | `pip install boostedtravel` | SDK + CLI + 58 local LCC connectors |
-| **JS/TS SDK + CLI** | `npm install -g boostedtravel` | SDK + `boostedtravel` CLI command |
-| **MCP Server** | `npx boostedtravel-mcp` | Model Context Protocol for AI agents |
-| **Remote MCP** | `https://api.boostedchat.com/mcp` | Streamable HTTP — no install needed |
+| Package | Install | What it is | API Key Required? |
+|---------|---------|------------|-------------------|
+| **Python SDK + CLI** | `pip install boostedtravel` | SDK + CLI + 73 local airline connectors | No (local search). Yes (cloud search, unlock, book) |
+| **JS/TS SDK + CLI** | `npm install -g boostedtravel` | SDK + `boostedtravel` CLI command | Yes |
+| **MCP Server** | `npx boostedtravel-mcp` | Model Context Protocol for AI agents | No (local search). Yes (cloud search, unlock, book) |
+| **Remote MCP** | `https://api.boostedchat.com/mcp` | Streamable HTTP — no install needed | Yes |
+| **Smithery** | [smithery.ai/server/boostedtravel-mcp](https://smithery.ai/server/boostedtravel-mcp) | One-click MCP install | No (local search). Yes (cloud search) |
 
 ## Python SDK
 
@@ -22,7 +23,7 @@ pip install boostedtravel
 Provides:
 
 - `BoostedTravel` client class with `search()`, `unlock()`, `book()`, `me()`, `resolve_location()`, `setup_payment()`
-- **58 local LCC connectors** — scrape airline websites directly on your machine (Ryanair, Wizz Air, EasyJet, Norwegian, AirAsia, IndiGo, and 52 more)
+- **73 local airline connectors** — run directly on your machine (Ryanair, Wizz Air, EasyJet, Norwegian, AirAsia, IndiGo, and 67 more)
 - `search_local()` — free local-only search, no API key needed
 - CLI command `boostedtravel` with all operations
 - Virtual interlining engine — cross-airline round-trips from one-way fares

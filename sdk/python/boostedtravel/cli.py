@@ -188,7 +188,7 @@ def search_local_cmd(
     sort: str = typer.Option("price", "--sort", help="Sort: price or duration"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
 ):
-    """Search flights locally — FREE, no API key required. Runs 58 airline connectors on your machine.
+    """Search flights locally — FREE, no API key required. Runs 73 airline connectors on your machine.
 
     Set BOOSTEDTRAVEL_API_KEY to also query Amadeus, Duffel, Sabre and Travelport for full-service airline fares.
     """

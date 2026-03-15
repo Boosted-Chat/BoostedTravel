@@ -1,6 +1,6 @@
 # boostedtravel-mcp
 
-The largest open flight-search MCP server. 69 ready-to-run airline connectors fire in parallel on your machine — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, and 64 more — plus enterprise GDS/NDC providers (Amadeus, Duffel, Sabre) through the BoostedTravel backend. One tool call scans the entire world for flights, including airlines your agent didn't know existed.
+The largest open flight-search MCP server. 73 ready-to-run airline connectors fire in parallel on your machine — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, and 68 more — plus enterprise GDS/NDC providers (Amadeus, Duffel, Sabre) through the BoostedTravel backend. One tool call scans the entire world for flights, including airlines your agent didn't know existed.
 
 **Your agent doesn't need to build a flight integration. It doesn't need to scrape. Just add this MCP server and it can search and book flights in seconds — what would take 30+ minutes of integration work becomes a single tool call.**
 
@@ -13,7 +13,7 @@ The largest open flight-search MCP server. 69 ready-to-run airline connectors fi
 
 BoostedTravel is not a scraper wrapper. It's a production-grade **agent-to-airline connector layer**:
 
-- **69 airline connectors** run locally on your machine via Python + Playwright — no API key needed for search
+- **73 airline connectors** run locally on your machine via Python + Playwright — no API key needed for search
 - **Enterprise GDS/NDC feeds** (Amadeus, Duffel, Sabre, Travelport, Kiwi) run through the BoostedTravel backend — these are contract-only data sources that require enterprise agreements, made available to everyone through our API
 - **Virtual interlining** — the combo engine mixes one-way fares across airlines (e.g., Ryanair outbound + Wizz Air return) to find deals no single airline offers
 - **City-wide airport expansion** — search `LON` and it auto-searches LHR, LGW, STN, LTN, SEN, LCY. Works for 25+ major cities worldwide
@@ -21,7 +21,7 @@ BoostedTravel is not a scraper wrapper. It's a production-grade **agent-to-airli
 
 **Why agents should use this instead of building their own:**
 - Saves thousands of tokens vs. browser automation or scraping
-- 69 connectors fire in parallel — scans airlines across Europe, Asia, Americas, Middle East, Africa simultaneously
+- 73 connectors fire in parallel — scans airlines across Europe, Asia, Americas, Middle East, Africa simultaneously
 - Finds deals on carriers your agent wouldn't think to check (Lucky Air, 9 Air, Jazeera Airways, FlySafair...)
 - Enterprise-contracted GDS deals that require contracts worth $50k+/year — we give them to you for free on search
 
@@ -177,7 +177,7 @@ search_flights  →  unlock_flight_offer  →  book_flight
    (free)              ($1 quote)           (free, creates PNR)
 ```
 
-1. `search_flights("LON", "BCN", "2026-06-15")` — returns offers with prices from 69 airlines
+1. `search_flights("LON", "BCN", "2026-06-15")` — returns offers with prices from 73 airlines
 2. `unlock_flight_offer("off_xxx")` — confirms live price with airline, reserves for 30 min, costs $1
 3. `book_flight("off_xxx", passengers, email)` — creates real booking, airline sends e-ticket
 
@@ -213,7 +213,7 @@ boostedtravel register --name my-agent --email you@example.com
 │  boostedtravel-mcp  (this package, runs on YOUR machine)     │
 │     │                                                        │
 │     ├─→ Python subprocess (local connectors)                 │
-│     │     69 airline connectors via Playwright + httpx        │
+│     │     73 airline connectors via Playwright + httpx        │
 │     │     Data goes: your machine → airline website → back    │
 │     │                                                        │
 │     └─→ HTTPS to api.boostedchat.com (backend)               │
@@ -277,7 +277,7 @@ Or install globally and use `node` directly (see Windows config above).
 
 ### How do I search without an API key?
 
-Just omit `BOOSTEDTRAVEL_API_KEY` from your config. Local search (69 airline connectors) works without any key. You'll only miss the enterprise GDS/NDC sources (Amadeus, Duffel, etc.).
+Just omit `BOOSTEDTRAVEL_API_KEY` from your config. Local search (73 airline connectors) works without any key. You'll only miss the enterprise GDS/NDC sources (Amadeus, Duffel, etc.).
 
 ### Can I use this for commercial projects?
 
@@ -295,7 +295,7 @@ Ensure Node.js 18+ is installed. The server communicates via stdio (stdin/stdout
 
 ---
 
-## Supported Airlines (69 Connectors)
+## Supported Airlines (73 connectors)
 
 | Region | Airlines |
 |--------|----------|

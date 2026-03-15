@@ -2,7 +2,7 @@
 /**
  * BoostedTravel MCP Server — Model Context Protocol integration.
  *
- * Runs 58 airline connectors LOCALLY via Python subprocess (no API key needed for search).
+ * Runs 73 airline connectors LOCALLY via Python subprocess (no API key needed for search).
  * Uses backend API only for unlock/book/payment operations.
  *
  * Requires: pip install boostedtravel && playwright install chromium
@@ -78,8 +78,8 @@ const TOOLS = [
     name: 'search_flights',
     description:
       'Search live flight availability and prices across 400+ airlines worldwide. ' +
-      'Fires 58 airline connectors in parallel on your machine (Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, ' +
-      'Norwegian, Spring Airlines, Lucky Air, and 50 more) — no API key needed, completely FREE.\n\n' +
+      'Fires 73 airline connectors in parallel on your machine (Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, ' +
+      'Norwegian, Spring Airlines, Lucky Air, and 65 more) — no API key needed, completely FREE.\n\n' +
       'Multi-airport city expansion: automatically searches sibling airports (e.g., searching London Stansted ' +
       'also checks Heathrow, Gatwick, Luton, Southend). Works for 25+ major cities worldwide.\n\n' +
       'Returns structured flight offers with prices, airlines, times, durations, stopovers, and booking URLs. ' +
@@ -250,8 +250,8 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       const summary: Record<string, unknown> = {
         total_offers: offers.length,
         source: hasBackend
-          ? 'local_connectors (58 airlines) + backend (Amadeus, Duffel, Sabre)'
-          : 'local_connectors (58 airlines) — set BOOSTEDTRAVEL_API_KEY to also query Amadeus/Duffel/Sabre for more results',
+          ? 'local_connectors (73 airlines) + backend (Amadeus, Duffel, Sabre)'
+          : 'local_connectors (73 airlines) — set BOOSTEDTRAVEL_API_KEY to also query Amadeus/Duffel/Sabre for more results',
         offers: offers.map(o => ({
           offer_id: o.id,
           price: `${o.price} ${o.currency}`,
@@ -379,4 +379,4 @@ rl.on('line', async (line) => {
   }
 });
 
-process.stderr.write(`BoostedTravel MCP v${VERSION} | local connectors: 58 airlines | api: ${API_KEY ? 'key set' : 'search-only (no key)'}\n`);
+process.stderr.write(`BoostedTravel MCP v${VERSION} | local connectors: 73 airlines | api: ${API_KEY ? 'key set' : 'search-only (no key)'}\n`);

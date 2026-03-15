@@ -1,7 +1,7 @@
 """
 Unified flight search engine — fires ALL sources in parallel:
 
-1. Local agent-device connectors (58 LCC connectors) — zero auth, free
+1. Local agent-device connectors (73 LCC connectors) — zero auth, free
 2. Cloud Run backend API (Duffel, Amadeus, Sabre, Travelport, etc.) — paid providers
 
 Both fire simultaneously via asyncio.gather. The backend call is a single

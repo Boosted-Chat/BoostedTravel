@@ -4,8 +4,7 @@
       "command": "npx",
       "args": ["-y", "boostedtravel-mcp"],
       "env": {
-        "BOOSTEDTRAVEL_API_KEY": "YOUR_API_KEY_HERE",
-        "BOOSTEDTRAVEL_BASE_URL": "https://api.boostedchat.com"
+        "BOOSTEDTRAVEL_API_KEY": "YOUR_API_KEY_HERE (optional — omit for local-only search with 73 airline connectors)"
       }
     }
   }

@@ -2,12 +2,12 @@
 
 <!-- mcp-name: com.boostedchat/travel -->
 
-Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 69 direct airline connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents.
+Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 73 direct airline connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents.
 
 ## Install
 
 ```bash
-pip install boostedtravel           # SDK + 69 airline connectors
+pip install boostedtravel           # SDK + 73 airline connectors
 pip install boostedtravel[cli]      # SDK + CLI (adds typer, rich)
 ```
 
@@ -274,7 +274,7 @@ if best:
 
 ## Local LCC Search (No API Key)
 
-The SDK includes 69 connectors for airlines that run directly on your machine. No API key, no backend, completely free:
+The SDK includes 73 connectors for airlines that run directly on your machine. No API key, no backend, completely free:
 
 ```python
 from boostedtravel.local import search_local
@@ -286,7 +286,7 @@ print(f"{result['total_results']} offers from local connectors")
 
 The full search (`bt.search()`) runs both local connectors and cloud providers simultaneously and merges results.
 
-### Supported Airlines (69)
+### Supported Airlines (73)
 
 Ryanair, Wizz Air, EasyJet, Norwegian, Vueling, Eurowings, Transavia, Pegasus, Turkish Airlines, Southwest, AirAsia, IndiGo, SpiceJet, Akasa Air, Air India Express, VietJet, Cebu Pacific, Scoot, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, flydubai, Air Arabia, flynas, Salam Air, Emirates, Etihad, Condor, SunExpress, Volotea, Smartwings, Jet2, Frontier, Volaris, VivaAerobus, Allegiant, JetBlue, Flair, GOL, Azul, JetSmart, Flybondi, Porter, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR, Air Peace, FlySafair, Avelo, Breeze, Sun Country, Alaska Airlines, Hawaiian Airlines, American Airlines, United Airlines, Delta Air Lines, Singapore Airlines, Cathay Pacific, Malaysian Airlines, Thai Airways, Korean Air, ANA, US-Bangla, Biman Bangladesh, Kiwi.com
 

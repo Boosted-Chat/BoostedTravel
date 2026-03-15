@@ -1,0 +1,20 @@
+# Smithery configuration for BoostedTravel MCP Server
+# https://smithery.ai/docs/publishing
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      BOOSTEDTRAVEL_API_KEY:
+        type: string
+        description: "BoostedTravel API key (optional — local search works without it). Get one free: boostedtravel register --email you@example.com"
+    required: []
+  commandFunction: |-
+    (config) => ({
+      command: "npx",
+      args: ["-y", "boostedtravel-mcp"],
+      env: {
+        BOOSTEDTRAVEL_API_KEY: config.BOOSTEDTRAVEL_API_KEY || ""
+      }
+    })

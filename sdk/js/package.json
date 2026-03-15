@@ -1,7 +1,7 @@
 {
   "name": "boostedtravel",
   "version": "0.2.5",
-  "description": "Agent-native flight search & booking. 58 airline connectors run locally + enterprise GDS/NDC APIs. Built for autonomous AI agents.",
+  "description": "Agent-native flight search & booking. 73 airline connectors run locally + enterprise GDS/NDC APIs. Built for autonomous AI agents.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -36,7 +36,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/boostedtravel/boostedtravel-js"
+    "url": "https://github.com/Boosted-Chat/BoostedTravel.git"
   },
   "homepage": "https://boostedchat.com",
   "devDependencies": {

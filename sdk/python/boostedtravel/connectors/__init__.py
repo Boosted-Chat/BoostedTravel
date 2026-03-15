@@ -1,5 +1,5 @@
 """
-Airline connectors package — 58 production-grade airline integrations.
+Airline connectors package — 73 production-grade airline integrations.
 
 Path shim: connector source files use bare imports like ``from connectors.X``
 and ``from models.X`` (shared with the standalone top-level directory).

@@ -1,5 +1,5 @@
 """
-Local flight search — runs 58 airline connectors on the user's machine.
+Local flight search — runs 73 airline connectors on the user's machine.
 
 Can be used programmatically:
 
@@ -38,7 +38,7 @@ async def search_local(
     limit: int = 50,
 ) -> dict:
     """
-    Run all 58 local airline connectors and return results as a dict.
+    Run all 73 local airline connectors and return results as a dict.
 
     This is the core local search — no API key needed, no backend.
     Connectors run on the user's machine via Playwright + httpx.

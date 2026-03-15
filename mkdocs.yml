@@ -49,6 +49,7 @@ nav:
     - Packages & SDKs: packages.md
   - Reference:
     - CLI Reference: cli-reference.md
+    - OpenAPI Spec: openapi.md
 
 extra:
   generator: false
