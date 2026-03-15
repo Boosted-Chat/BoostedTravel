@@ -6,8 +6,9 @@ and Playwright helpers. All CDP Chrome connectors should use these
 instead of rolling their own launch logic.
 
 Environment variables:
-    CHROME_PATH         — Override Chrome executable path.
-    BOOSTED_BROWSER_VISIBLE — Set to "1" to show browser windows (debugging).
+    CHROME_PATH                — Override Chrome executable path.
+    BOOSTED_BROWSER_VISIBLE    — Set to "1" to show browser windows (debugging).
+    BOOSTEDTRAVEL_MAX_BROWSERS — Max concurrent browser processes (default: auto-detect).
 """
 
 from __future__ import annotations
@@ -24,15 +25,71 @@ logger = logging.getLogger(__name__)
 
 # ── Concurrency gate — limits how many browsers can run at once ──────────────
 # Without this, 20+ Chrome processes spawn simultaneously and crash the machine.
-_MAX_CONCURRENT_BROWSERS = 8
+# Value is set by configure_max_browsers() or auto-detected on first use.
+_max_concurrent_browsers: int | None = None
 _browser_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _resolve_max_browsers() -> int:
+    """Determine max concurrent browsers: env var > explicit config > auto-detect."""
+    global _max_concurrent_browsers
+
+    # 1. Env var override (highest priority)
+    env_val = os.environ.get("BOOSTEDTRAVEL_MAX_BROWSERS")
+    if env_val:
+        try:
+            n = int(env_val)
+            if 1 <= n <= 32:
+                return n
+        except ValueError:
+            pass
+
+    # 2. Explicitly configured via configure_max_browsers()
+    if _max_concurrent_browsers is not None:
+        return _max_concurrent_browsers
+
+    # 3. Auto-detect from system resources
+    try:
+        from boostedtravel.system_info import get_system_profile
+        profile = get_system_profile()
+        recommended = profile["recommended_max_browsers"]
+        logger.info(
+            "Auto-detected system: %.1f GB RAM available, %s tier → max %d browsers",
+            profile.get("ram_available_gb") or profile.get("ram_total_gb") or 0,
+            profile["tier"],
+            recommended,
+        )
+        return recommended
+    except Exception:
+        return 8  # safe fallback
+
+
+def configure_max_browsers(n: int) -> None:
+    """Set the maximum number of concurrent browser processes.
+
+    Call this BEFORE starting a search to override auto-detection.
+    Values are clamped to 1–32.
+
+    Args:
+        n: Max concurrent browsers (1=sequential, 16=aggressive).
+    """
+    global _max_concurrent_browsers, _browser_semaphore
+    _max_concurrent_browsers = max(1, min(32, n))
+    # Reset semaphore so next acquire picks up the new value
+    _browser_semaphore = None
+    logger.info("Browser concurrency set to %d", _max_concurrent_browsers)
+
+
+def get_max_browsers() -> int:
+    """Return the current max concurrent browsers setting."""
+    return _resolve_max_browsers()
 
 
 async def _get_browser_semaphore() -> asyncio.Semaphore:
     """Get or create the global browser concurrency semaphore (lazy init)."""
     global _browser_semaphore
     if _browser_semaphore is None:
-        _browser_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_BROWSERS)
+        _browser_semaphore = asyncio.Semaphore(_resolve_max_browsers())
     return _browser_semaphore
 
 
@@ -423,7 +480,7 @@ async def cleanup_all_browsers():
                 pass
     _launched_procs.clear()
 
-    # Reset the semaphore so it's fresh for next search
+    # Reset the semaphore so it's fresh for next search (picks up any config changes)
     global _browser_semaphore
     _browser_semaphore = None
 

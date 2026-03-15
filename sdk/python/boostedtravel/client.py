@@ -238,6 +238,7 @@ class BoostedTravel:
         cabin_class: str | None = None,
         currency: str = "EUR",
         limit: int = 50,
+        max_browsers: int | None = None,
     ) -> FlightSearchResult:
         """
         Search flights using 73 local airline connectors — FREE, no API key needed.
@@ -256,6 +257,7 @@ class BoostedTravel:
             cabin_class: "M" (economy), "W" (premium), "C" (business), "F" (first)
             currency: 3-letter currency code
             limit: Max results (1-200)
+            max_browsers: Max concurrent browser processes (1-32, default: auto-detect).
 
         Returns:
             FlightSearchResult with offers from local scrapers.
@@ -274,6 +276,7 @@ class BoostedTravel:
             cabin_class=cabin_class,
             currency=currency,
             limit=limit,
+            max_browsers=max_browsers,
         ))
         return FlightSearchResult.from_dict(result_dict)
 

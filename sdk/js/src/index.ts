@@ -122,6 +122,8 @@ export interface SearchOptions {
   currency?: string;
   limit?: number;
   sort?: 'price' | 'duration';
+  /** Max concurrent browser instances (1-32). Omit for auto-detect based on system RAM. */
+  maxBrowsers?: number;
 }
 
 export interface BoostedTravelConfig {
@@ -314,6 +316,7 @@ export async function searchLocal(
     limit: options.limit ?? 50,
     return_date: options.returnDate,
     cabin_class: options.cabinClass,
+    ...(options.maxBrowsers != null && { max_browsers: options.maxBrowsers }),
   });
 
   return new Promise((resolve, reject) => {
@@ -556,5 +559,48 @@ export class BoostedTravel {
   }
 }
 
+/**
+ * Get system resource profile and recommended concurrency settings.
+ * Calls the Python backend's system-info detection.
+ */
+export async function systemInfo(): Promise<Record<string, unknown>> {
+  const { spawn } = await import('child_process');
+
+  return new Promise((resolve, reject) => {
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const child = spawn(pythonCmd, ['-m', 'boostedtravel.local'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+    child.on('close', (code) => {
+      try {
+        const data = JSON.parse(stdout);
+        if (data.error) reject(new BoostedTravelError(data.error));
+        else resolve(data as Record<string, unknown>);
+      } catch {
+        reject(new BoostedTravelError(
+          `Python system-info failed (code ${code}): ${stdout || stderr}`
+        ));
+      }
+    });
+
+    child.on('error', (err) => {
+      reject(new BoostedTravelError(
+        `Cannot start Python: ${err.message}\n` +
+        'Install: pip install boostedtravel'
+      ));
+    });
+
+    child.stdin.write(JSON.stringify({ __system_info: true }));
+    child.stdin.end();
+  });
+}
+
 export default BoostedTravel;
-export { searchLocal as localSearch };
+export { searchLocal as localSearch, systemInfo as getSystemInfo };

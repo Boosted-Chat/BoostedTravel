@@ -186,11 +186,15 @@ def search_local_cmd(
     currency: str = typer.Option("EUR", "--currency", help="Currency code"),
     limit: int = typer.Option(20, "--limit", "-l", help="Max results"),
     sort: str = typer.Option("price", "--sort", help="Sort: price or duration"),
+    max_browsers: Optional[int] = typer.Option(None, "--max-browsers", "-b", help="Max concurrent browsers (1-32, default: auto-detect from RAM)"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
 ):
     """Search flights locally — FREE, no API key required. Runs 73 airline connectors on your machine.
 
     Set BOOSTEDTRAVEL_API_KEY to also query Amadeus, Duffel, Sabre and Travelport for full-service airline fares.
+
+    Use --max-browsers to tune performance: lower values (2-4) for low-RAM machines, higher (12-16) for powerful ones.
+    Default: auto-detected from your system RAM. Run 'boostedtravel system-info' to see your profile.
     """
     import asyncio
     import logging
@@ -234,6 +238,7 @@ def search_local_cmd(
             cabin_class=cabin,
             currency=currency,
             limit=limit,
+            max_browsers=max_browsers,
         )
 
     try:
@@ -541,6 +546,38 @@ def me(
     print(f"  Unlocks:  {u.get('total_unlocks', 0)}")
     print(f"  Bookings: {u.get('total_bookings', 0)}")
     print(f"  Total spent: ${u.get('total_spent_cents', 0) / 100:.2f}\n")
+
+
+@app.command("system-info")
+def system_info_cmd(
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
+):
+    """Show system resources and recommended concurrency settings.
+
+    Agents can use this to pick optimal --max-browsers values.
+    """
+    from boostedtravel.system_info import get_system_profile
+    from boostedtravel.connectors.browser import get_max_browsers
+
+    profile = get_system_profile()
+    current_max = get_max_browsers()
+
+    if output_json:
+        profile["current_max_browsers"] = current_max
+        _json_out(profile)
+        return
+
+    ram_total = profile["ram_total_gb"]
+    ram_avail = profile["ram_available_gb"]
+    print(f"\n  Platform:     {profile['platform']}")
+    print(f"  CPU cores:    {profile['cpu_cores']}")
+    print(f"  RAM total:    {ram_total:.1f} GB" if ram_total else "  RAM total:    unknown")
+    print(f"  RAM available: {ram_avail:.1f} GB" if ram_avail else "  RAM available: unknown")
+    print(f"  Tier:         {profile['tier']}")
+    print(f"  Recommended max browsers: {profile['recommended_max_browsers']}")
+    print(f"  Current max browsers:     {current_max}")
+    print(f"\n  Override with: boostedtravel search-local ... --max-browsers {current_max}")
+    print(f"  Or set env:   BOOSTEDTRAVEL_MAX_BROWSERS={current_max}\n")
 
 
 def main():

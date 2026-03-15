@@ -104,6 +104,7 @@ const TOOLS = [
         cabin_class: { type: 'string', description: 'M=economy, W=premium, C=business, F=first', enum: ['M', 'W', 'C', 'F'] },
         currency: { type: 'string', description: 'Currency code (EUR, USD, GBP)', default: 'EUR' },
         max_results: { type: 'integer', description: 'Max offers to return', default: 10 },
+        max_browsers: { type: 'integer', description: 'Max concurrent browser processes (1-32). Lower = less RAM, higher = faster. Default: auto-detect from system RAM. Use system_info tool to check.' },
       },
     },
   },
@@ -199,6 +200,17 @@ const TOOLS = [
       'Read-only. Safe to call multiple times.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'system_info',
+    description:
+      'Get system resource info (RAM, CPU cores) and recommended concurrency settings.\n\n' +
+      'Use this to determine optimal max_browsers value for search_flights. ' +
+      'Returns RAM total/available, CPU cores, recommended max browsers, and performance tier.\n\n' +
+      'Tiers: minimal (<2GB, max 2), low (2-4GB, max 3), moderate (4-8GB, max 5), ' +
+      'standard (8-16GB, max 8), high (16-32GB, max 12), maximum (32+GB, max 16).\n\n' +
+      'Read-only, no side effects, instant response.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 // ── API Client ──────────────────────────────────────────────────────────
@@ -239,6 +251,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       };
       if (args.return_from) params.return_from = args.return_from;
       if (args.cabin_class) params.cabin_class = args.cabin_class;
+      if (args.max_browsers) params.max_browsers = args.max_browsers;
 
       // Run local Python connectors
       const result = await searchLocal(params) as Record<string, unknown>;
@@ -307,6 +320,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
 
     case 'get_agent_profile': {
       const result = await apiRequest('GET', '/api/v1/agents/me');
+      return JSON.stringify(result, null, 2);
+    }
+
+    case 'system_info': {
+      const result = await searchLocal({ __system_info: true }) as Record<string, unknown>;
       return JSON.stringify(result, null, 2);
     }
 

@@ -36,14 +36,26 @@ async def search_local(
     cabin_class: str | None = None,
     currency: str = "EUR",
     limit: int = 50,
+    max_browsers: int | None = None,
 ) -> dict:
     """
     Run all 73 local airline connectors and return results as a dict.
 
     This is the core local search — no API key needed, no backend.
     Connectors run on the user's machine via Playwright + httpx.
+
+    Args:
+        max_browsers: Max concurrent browser processes (1–32).
+            None = auto-detect based on system RAM.
+            Lower values use less memory but search slower.
+            Higher values search faster but need more RAM.
     """
     from boostedtravel.connectors.engine import multi_provider
+
+    # Apply concurrency setting before search starts
+    if max_browsers is not None:
+        from boostedtravel.connectors.browser import configure_max_browsers
+        configure_max_browsers(max_browsers)
 
     req = FlightSearchRequest(
         origin=origin.upper(),
@@ -95,6 +107,15 @@ def _main() -> None:
         json.dump({"error": f"Invalid JSON: {e}"}, sys.stdout)
         sys.exit(1)
 
+    # System info query (used by MCP server's system_info tool)
+    if params.get("__system_info"):
+        from boostedtravel.system_info import get_system_profile
+        from boostedtravel.connectors.browser import get_max_browsers
+        profile = get_system_profile()
+        profile["current_max_browsers"] = get_max_browsers()
+        json.dump(profile, sys.stdout)
+        return
+
     # Suppress noisy logs — only errors to stderr
     logging.basicConfig(
         level=logging.WARNING,
@@ -115,6 +136,7 @@ def _main() -> None:
             cabin_class=params.get("cabin_class"),
             currency=params.get("currency", "EUR"),
             limit=params.get("limit", 50),
+            max_browsers=params.get("max_browsers"),
         )
 
     try:

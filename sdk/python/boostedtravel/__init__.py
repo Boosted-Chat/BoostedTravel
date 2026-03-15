@@ -54,4 +54,17 @@ __all__ = [
     "BookingResult",
     "Passenger",
     "AgentProfile",
+    "get_system_profile",
+    "configure_max_browsers",
 ]
+
+# Lazy imports for system/concurrency utilities
+def get_system_profile():
+    """Detect system resources (RAM, CPU) and return optimal concurrency settings."""
+    from boostedtravel.system_info import get_system_profile as _get
+    return _get()
+
+def configure_max_browsers(n: int):
+    """Set max concurrent browser processes (1-32). Call before search_local()."""
+    from boostedtravel.connectors.browser import configure_max_browsers as _cfg
+    _cfg(n)
