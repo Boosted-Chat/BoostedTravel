@@ -1,21 +1,19 @@
 """
-LOT Polish Airlines (LO) CDP Chrome connector — search URL + API interception.
+LOT Polish Airlines (LO) CDP Chrome connector — direct API via same-origin fetch.
 
 LOT Polish Airlines is Poland's flag carrier (Star Alliance), hub at Warsaw
-Chopin (WAW).  LOT uses Amadeus Altéa NDC + own frontend; the booking SPA
-calls internal availability APIs.
+Chopin (WAW).  The booking SPA calls ``POST /api/v1/ibe/search/air-bounds``
+for flight availability.
 
-Strategy (CDP Chrome + response interception):
-1.  Launch REAL Chrome via CDP.
-2.  Navigate to LOT search results URL with pre-filled params.
-3.  Intercept availability API responses.
-4.  Parse flight offers.
+Strategy (CDP Chrome + same-origin fetch):
+1.  Launch real Chrome via CDP (--remote-debugging-port).
+2.  Navigate to the homepage once to establish AWS WAF / Akamai cookies.
+3.  Call ``POST /api/v1/ibe/search/air-bounds`` from the page context via
+    ``page.evaluate(fetch(…))`` with required custom headers.
+4.  Parse the JSON response into FlightOffers.
 
-Search URL:
-  https://www.lot.com/us/en/offer/flights
-    ?departureAirport={origin}&arrivalAirport={dest}
-    &departureDate={DD.MM.YYYY}&adults={n}&children={n}
-    &infants={n}&cabinClass=ECONOMY&tripType=ONE_WAY
+Required custom headers (set by Angular HTTP interceptor):
+  language, market, channel, action, step, x-xsrf-token
 """
 
 from __future__ import annotations
@@ -48,11 +46,14 @@ _USER_DATA_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".lo_chrome_data"
 )
 
+_AIR_BOUNDS_URL = "https://www.lot.com/api/v1/ibe/search/air-bounds"
+
 _browser = None
 _context = None
 _pw_instance = None
 _chrome_proc = None
 _browser_lock: Optional[asyncio.Lock] = None
+_homepage_warmed = False
 
 
 def _get_lock() -> asyncio.Lock:
@@ -122,7 +123,10 @@ async def _get_context():
             _browser = await pw.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{_DEBUG_PORT}"
             )
-            logger.info("LO: Chrome launched on CDP port %d (pid %d)", _DEBUG_PORT, _chrome_proc.pid)
+            logger.info(
+                "LO: Chrome launched on CDP port %d (pid %d)",
+                _DEBUG_PORT, _chrome_proc.pid,
+            )
 
         contexts = _browser.contexts
         _context = contexts[0] if contexts else await _browser.new_context()
@@ -130,25 +134,36 @@ async def _get_context():
 
 
 async def _reset_profile():
-    global _browser, _context, _pw_instance, _chrome_proc
-    for obj, method in [(_browser, "close"), (_pw_instance, "stop")]:
-        if obj:
-            try:
-                await getattr(obj, method)()
-            except Exception:
-                pass
+    global _browser, _context, _pw_instance, _chrome_proc, _homepage_warmed
+    try:
+        if _browser:
+            await _browser.close()
+    except Exception:
+        pass
+    try:
+        if _pw_instance:
+            await _pw_instance.stop()
+    except Exception:
+        pass
     if _chrome_proc:
         try:
             _chrome_proc.terminate()
         except Exception:
             pass
-    _browser = _context = _pw_instance = _chrome_proc = None
+    _browser = None
+    _context = None
+    _pw_instance = None
+    _chrome_proc = None
+    _homepage_warmed = False
     if os.path.isdir(_USER_DATA_DIR):
         try:
             shutil.rmtree(_USER_DATA_DIR)
+            logger.info("LO: deleted stale Chrome profile")
         except Exception:
             pass
 
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _to_datetime(val) -> datetime:
     if isinstance(val, datetime):
@@ -158,126 +173,170 @@ def _to_datetime(val) -> datetime:
     return datetime.strptime(str(val), "%Y-%m-%d")
 
 
-def _parse_dt(s: str) -> datetime:
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"):
-        try:
-            return datetime.strptime(s[:len(fmt) + 3], fmt)
-        except (ValueError, IndexError):
-            continue
-    return datetime.strptime(s[:10], "%Y-%m-%d")
-
-
-_SKIP = frozenset((
-    "analytics", "google", "facebook", "doubleclick", "fonts.",
-    "gtm.", "pixel", "amplitude", ".css", ".png", ".jpg", ".svg",
-    ".gif", ".woff", ".ico", "newrelic", "nr-data", "adobedtm",
-    "onetrust", "cookiebot", "sentry",
-))
-
-_AVAIL_KEYS = (
-    "availability", "flights", "offers", "search", "air-bound",
-    "itinerar", "fare", "journey", "shopping",
+# Segment ID format: SEG-LO26-WAWJFK-2026-04-14-1650
+_SEG_RE = re.compile(
+    r"^SEG-([A-Z0-9]+)-([A-Z]{3})([A-Z]{3})-(\d{4}-\d{2}-\d{2})-(\d{4})$"
 )
 
 
-class LotConnectorClient:
-    """LOT Polish Airlines CDP Chrome connector."""
+def _parse_segment_id(seg_id: str) -> dict | None:
+    m = _SEG_RE.match(seg_id)
+    if not m:
+        return None
+    flight_no, origin, dest, date_str, hhmm = m.groups()
+    dep_dt = datetime.strptime(f"{date_str} {hhmm[:2]}:{hhmm[2:]}", "%Y-%m-%d %H:%M")
+    return {
+        "flight_no": flight_no,
+        "origin": origin,
+        "destination": dest,
+        "departure": dep_dt,
+    }
 
-    def __init__(self, timeout: float = 45.0):
+
+class LotConnectorClient:
+    """LOT Polish Airlines CDP Chrome connector — direct API via same-origin fetch."""
+
+    def __init__(self, timeout: float = 55.0):
         self.timeout = timeout
 
     async def close(self):
         pass
 
+    # ------------------------------------------------------------------
+    # Main search entry-point
+    # ------------------------------------------------------------------
+
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        global _homepage_warmed
         t0 = time.monotonic()
+
         context = await _get_context()
         page = await context.new_page()
 
-        avail_data: dict = {}
-        blocked = False
-
-        async def _on_response(response):
-            nonlocal blocked
-            url_lower = response.url.lower()
-            if any(s in url_lower for s in _SKIP):
-                return
-            status = response.status
-            if status in (403, 429):
-                if any(k in url_lower for k in _AVAIL_KEYS):
-                    blocked = True
-                return
-            if status != 200:
-                return
-            is_avail = any(k in url_lower for k in _AVAIL_KEYS)
-            if not is_avail:
-                return
-            try:
-                ct = response.headers.get("content-type", "")
-                if "json" not in ct:
-                    return
-                body = await response.text()
-                if len(body) < 100:
-                    return
-                data = json.loads(body)
-                if isinstance(data, dict) and self._looks_like_flights(data):
-                    if not avail_data:
-                        avail_data.update(data)
-                        logger.info("LO: captured flights from %s", response.url[:100])
-            except Exception:
-                pass
-
-        page.on("response", _on_response)
-
         try:
-            url = self._build_search_url(req)
-            logger.info("LO: loading %s->%s", req.origin, req.destination)
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3.0)
+            # Warm cookies by visiting homepage
+            if not _homepage_warmed:
+                logger.info("LO: warming cookies via homepage")
+                await page.goto(
+                    "https://www.lot.com/us/en",
+                    wait_until="domcontentloaded",
+                    timeout=25000,
+                )
+                await asyncio.sleep(5)
+                _homepage_warmed = True
+            else:
+                await page.goto(
+                    "https://www.lot.com/us/en",
+                    wait_until="domcontentloaded",
+                    timeout=20000,
+                )
+                await asyncio.sleep(2)
 
-            for sel in (
-                "#onetrust-accept-btn-handler",
-                "button:has-text('Accept All')",
-                "button:has-text('Accept')",
-                "button:has-text('Akceptuję')",
-                "button:has-text('Zaakceptuj')",
-            ):
-                try:
-                    btn = page.locator(sel).first
-                    if await btn.count() > 0 and await btn.is_visible(timeout=1000):
-                        await btn.click(timeout=2000)
-                        break
-                except Exception:
-                    continue
+            # Build request payload
+            dt = _to_datetime(req.date_from)
+            date_str = dt.strftime("%Y-%m-%d")
+            adults = req.adults or 1
+            children = req.children or 0
+            infants = req.infants or 0
 
-            remaining = max(self.timeout - (time.monotonic() - t0), 15)
-            deadline = time.monotonic() + remaining
-            while not avail_data and not blocked and time.monotonic() < deadline:
-                await asyncio.sleep(0.5)
+            travelers = ["ADT"] * adults + ["CHD"] * children + ["INF"] * infants
 
-            if blocked:
+            payload = {
+                "travelers": travelers,
+                "compartment": "ECONOMY",
+                "itinerary": [
+                    {
+                        "originLocationCode": req.origin,
+                        "destinationLocationCode": req.destination,
+                        "departureDate": date_str,
+                        "isRequestedBound": True,
+                    }
+                ],
+                "searchPreferences": {},
+                "promotion": None,
+            }
+
+            # Call the air-bounds API from page context
+            api_result = await page.evaluate(
+                """async ([url, payload]) => {
+                    // Extract XSRF token from cookies
+                    let xsrf = '';
+                    for (const c of document.cookie.split(';')) {
+                        const t = c.trim();
+                        if (t.startsWith('__HOST-XSRF-TOKEN=') ||
+                            t.startsWith('__Host-XSRF-TOKEN=')) {
+                            xsrf = t.split('=').slice(1).join('=');
+                        }
+                    }
+                    try {
+                        const resp = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'language': 'en',
+                                'market': 'us',
+                                'channel': '1',
+                                'action': 'DO_SEARCH',
+                                'step': 'SEARCH',
+                                'x-xsrf-token': xsrf,
+                            },
+                            credentials: 'include',
+                            body: JSON.stringify(payload),
+                        });
+                        const text = await resp.text();
+                        return {status: resp.status, body: text};
+                    } catch(e) {
+                        return {error: e.message};
+                    }
+                }""",
+                [_AIR_BOUNDS_URL, payload],
+            )
+
+            status = api_result.get("status", 0)
+            body_text = api_result.get("body", "")
+
+            if api_result.get("error"):
+                logger.error("LO: fetch error: %s", api_result["error"])
+                return self._empty(req)
+
+            if status == 403 or status == 429:
+                logger.warning("LO: blocked (%d), resetting profile", status)
                 await _reset_profile()
                 return self._empty(req)
-            if not avail_data:
+
+            if status != 200:
+                logger.warning("LO: API returned %d: %s", status, body_text[:200])
+                _homepage_warmed = False
                 return self._empty(req)
 
-            offers = self._parse_flights(avail_data, req)
+            data = json.loads(body_text)
+            offers = self._parse_offers(data, req)
             offers.sort(key=lambda o: o.price)
 
             elapsed = time.monotonic() - t0
-            logger.info("LO %s->%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
+            logger.info(
+                "LO %s->%s returned %d offers in %.1fs",
+                req.origin, req.destination, len(offers), elapsed,
+            )
 
-            h = hashlib.md5(f"lo{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
-            currency = self._get_currency(avail_data, req)
+            search_hash = hashlib.md5(
+                f"lo{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+
+            currency = "USD"
+            if offers:
+                currency = offers[0].currency
 
             return FlightSearchResponse(
-                search_id=f"fs_{h}",
+                search_id=f"fs_{search_hash}",
                 origin=req.origin,
                 destination=req.destination,
                 currency=currency,
                 offers=offers,
                 total_results=len(offers),
             )
+
         except Exception as e:
             logger.error("LO CDP error: %s", e)
             return self._empty(req)
@@ -287,73 +346,97 @@ class LotConnectorClient:
             except Exception:
                 pass
 
-    def _build_search_url(self, req: FlightSearchRequest) -> str:
-        dt = _to_datetime(req.date_from)
-        adults = req.adults or 1
-        children = req.children or 0
-        infants = req.infants or 0
-        return (
-            f"https://www.lot.com/us/en/offer/flights"
-            f"?departureAirport={req.origin}&arrivalAirport={req.destination}"
-            f"&departureDate={dt.strftime('%d.%m.%Y')}"
-            f"&adults={adults}&children={children}&infants={infants}"
-            f"&cabinClass=ECONOMY&tripType=ONE_WAY"
-        )
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _looks_like_flights(data: dict) -> bool:
-        s = json.dumps(data)[:5000].lower()
-        flight_sigs = (
-            "flightoffer", "segment", "departuretime", "departuredatetime",
-            "itinerar", "flightleg", "bounddetail", "recommendation",
-        )
-        price_sigs = ('"price"', '"amount"', '"total"', '"fare"')
-        return any(sig in s for sig in flight_sigs) and any(sig in s for sig in price_sigs)
-
-    def _parse_flights(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+    def _parse_offers(
+        self, data: dict, req: FlightSearchRequest
+    ) -> list[FlightOffer]:
+        """Parse /api/v1/ibe/search/air-bounds response."""
         offers: list[FlightOffer] = []
-
-        inner = data
-        for key in ("data", "response", "result"):
-            if key in inner and isinstance(inner[key], (dict, list)):
-                val = inner[key]
-                inner = val if isinstance(val, dict) else {"items": val}
-
-        currency = self._get_currency(data, req)
-
-        flight_list = None
-        for key in (
-            "flights", "flightOffers", "offers", "results", "recommendations",
-            "itineraries", "items", "originDestinationOptionList",
-        ):
-            candidate = inner.get(key)
-            if isinstance(candidate, list) and len(candidate) > 0:
-                flight_list = candidate
-                break
-
-        if not flight_list:
-            for v in inner.values():
-                if isinstance(v, list) and len(v) >= 2 and isinstance(v[0], dict):
-                    if self._get_price(v[0]):
-                        flight_list = v
-                        break
-
-        if not flight_list:
+        air_bound_flights = (data.get("data") or {}).get("airBoundFlights", [])
+        if not isinstance(air_bound_flights, list):
             return offers
 
-        for flight in flight_list[:50]:
-            if not isinstance(flight, dict):
+        for abf in air_bound_flights:
+            flight = abf.get("flight", {})
+            ab_offers = abf.get("airBoundOffers", [])
+            if not flight or not ab_offers:
                 continue
-            price = self._get_price(flight)
-            if not price or price <= 0:
-                continue
-            segments = self._extract_segments(flight, req)
+
+            origin = flight.get("originLocationCode", req.origin)
+            dest = flight.get("destinationLocationCode", req.destination)
+            total_dur = flight.get("duration", 0)
+            raw_segments = flight.get("segments", [])
+
+            # Parse segments from segment IDs
+            segments: list[FlightSegment] = []
+            for raw_seg in raw_segments:
+                seg_id = raw_seg.get("segmentId", "")
+                parsed = _parse_segment_id(seg_id)
+                if not parsed:
+                    continue
+                segments.append(
+                    FlightSegment(
+                        airline="LO",
+                        airline_name="LOT Polish Airlines",
+                        flight_no=parsed["flight_no"],
+                        origin=parsed["origin"],
+                        destination=parsed["destination"],
+                        departure=parsed["departure"],
+                        arrival=parsed["departure"],  # placeholder
+                        duration_seconds=0,
+                        cabin_class="economy",
+                    )
+                )
+
             if not segments:
                 continue
 
-            total_dur = int(
-                (segments[-1].arrival - segments[0].departure).total_seconds()
-            ) if segments[-1].arrival > segments[0].departure else 0
+            # Compute arrival for last segment using total duration
+            if total_dur > 0 and len(segments) == 1:
+                segments[0] = FlightSegment(
+                    airline=segments[0].airline,
+                    airline_name=segments[0].airline_name,
+                    flight_no=segments[0].flight_no,
+                    origin=segments[0].origin,
+                    destination=segments[0].destination,
+                    departure=segments[0].departure,
+                    arrival=segments[0].departure + timedelta(seconds=total_dur),
+                    duration_seconds=total_dur,
+                    cabin_class="economy",
+                )
+            elif total_dur > 0 and len(segments) > 1:
+                # Multi-segment: compute per-segment durations from gap between departures
+                for i in range(len(segments) - 1):
+                    gap = int((segments[i + 1].departure - segments[i].departure).total_seconds())
+                    seg_dur = max(gap, 0)
+                    segments[i] = FlightSegment(
+                        airline=segments[i].airline,
+                        airline_name=segments[i].airline_name,
+                        flight_no=segments[i].flight_no,
+                        origin=segments[i].origin,
+                        destination=segments[i].destination,
+                        departure=segments[i].departure,
+                        arrival=segments[i].departure + timedelta(seconds=seg_dur),
+                        duration_seconds=seg_dur,
+                        cabin_class="economy",
+                    )
+                # Last segment: remaining duration
+                elapsed = int((segments[-1].departure - segments[0].departure).total_seconds())
+                last_dur = max(total_dur - elapsed, 0)
+                segments[-1] = FlightSegment(
+                    airline=segments[-1].airline,
+                    airline_name=segments[-1].airline_name,
+                    flight_no=segments[-1].flight_no,
+                    origin=segments[-1].origin,
+                    destination=segments[-1].destination,
+                    departure=segments[-1].departure,
+                    arrival=segments[-1].departure + timedelta(seconds=last_dur),
+                    duration_seconds=last_dur,
+                    cabin_class="economy",
+                )
 
             route = FlightRoute(
                 segments=segments,
@@ -361,107 +444,89 @@ class LotConnectorClient:
                 stopovers=max(len(segments) - 1, 0),
             )
 
-            offer_key = f"lo_{req.origin}_{req.destination}_{segments[0].departure.isoformat()}_{price}"
+            # Take cheapest economy offer (marked isCheapestOffer or lowest total)
+            best_price = None
+            best_currency = "USD"
+            best_cabin = "economy"
+            for offer in ab_offers:
+                avail = offer.get("availabilityDetails", [{}])
+                compartment = avail[0].get("compartment", "ECONOMY") if avail else "ECONOMY"
+                if compartment not in ("ECONOMY", "PREMIUM_ECONOMY"):
+                    continue
+                total_prices = (offer.get("prices") or {}).get("totalPrices", [])
+                if not total_prices:
+                    continue
+                total_cents = total_prices[0].get("total", 0)
+                cur = total_prices[0].get("currencyCode", "USD")
+                price = total_cents / 100.0
+                if price > 0 and (best_price is None or price < best_price):
+                    best_price = price
+                    best_currency = cur
+                    best_cabin = "premium_economy" if compartment == "PREMIUM_ECONOMY" else "economy"
+
+            # Fallback: take cheapest across all cabins
+            if best_price is None:
+                for offer in ab_offers:
+                    total_prices = (offer.get("prices") or {}).get("totalPrices", [])
+                    if not total_prices:
+                        continue
+                    total_cents = total_prices[0].get("total", 0)
+                    cur = total_prices[0].get("currencyCode", "USD")
+                    price = total_cents / 100.0
+                    if price > 0 and (best_price is None or price < best_price):
+                        best_price = price
+                        best_currency = cur
+
+            if not best_price or best_price <= 0:
+                continue
+
+            # Update cabin class on segments
+            for i, seg in enumerate(segments):
+                segments[i] = FlightSegment(
+                    airline=seg.airline,
+                    airline_name=seg.airline_name,
+                    flight_no=seg.flight_no,
+                    origin=seg.origin,
+                    destination=seg.destination,
+                    departure=seg.departure,
+                    arrival=seg.arrival,
+                    duration_seconds=seg.duration_seconds,
+                    cabin_class=best_cabin,
+                )
+
+            offer_key = (
+                f"lo_{req.origin}_{req.destination}"
+                f"_{segments[0].departure.isoformat()}_{best_price}"
+            )
             offer_id = hashlib.md5(offer_key.encode()).hexdigest()[:12]
             all_airlines = list({s.airline for s in segments})
 
-            offers.append(FlightOffer(
-                id=f"lo_{offer_id}",
-                price=round(price, 2),
-                currency=currency,
-                outbound=route,
-                airlines=[("LOT Polish Airlines" if a == "LO" else a) for a in all_airlines],
-                owner_airline="LO",
-                booking_url=self._user_url(req),
-                is_locked=False,
-                source="lot_direct",
-                source_tier="free",
-            ))
+            offers.append(
+                FlightOffer(
+                    id=f"lo_{offer_id}",
+                    price=round(best_price, 2),
+                    currency=best_currency,
+                    outbound=route,
+                    airlines=[
+                        ("LOT Polish Airlines" if a == "LO" else a)
+                        for a in all_airlines
+                    ],
+                    owner_airline="LO",
+                    booking_url=self._user_booking_url(req),
+                    is_locked=False,
+                    source="lot_direct",
+                    source_tier="free",
+                )
+            )
 
         return offers
 
-    def _extract_segments(self, flight: dict, req: FlightSearchRequest) -> list[FlightSegment]:
-        segments: list[FlightSegment] = []
-        seg_list = None
-        for key in ("segments", "segmentList", "legs", "flightSegments"):
-            candidate = flight.get(key)
-            if isinstance(candidate, list) and candidate:
-                seg_list = candidate
-                break
-        if not seg_list:
-            dep = flight.get("departureDateTime") or flight.get("departure") or ""
-            if dep:
-                seg_list = [flight]
-        if not seg_list:
-            return segments
-
-        for seg in seg_list:
-            if not isinstance(seg, dict):
-                continue
-            dep_str = seg.get("departureDateTime") or seg.get("departureTime") or seg.get("departure") or ""
-            arr_str = seg.get("arrivalDateTime") or seg.get("arrivalTime") or seg.get("arrival") or ""
-            origin = seg.get("departureAirportCode") or seg.get("origin") or seg.get("from") or req.origin
-            dest = seg.get("arrivalAirportCode") or seg.get("destination") or seg.get("to") or req.destination
-            carrier = seg.get("airlineCode") or seg.get("carrierCode") or seg.get("operatingCarrier") or "LO"
-            fno = seg.get("flightNumber") or seg.get("flightNo") or ""
-
-            dep_dt = _parse_dt(dep_str) if dep_str else _to_datetime(req.date_from)
-            arr_dt = _parse_dt(arr_str) if arr_str else dep_dt + timedelta(hours=3)
-            dur = int((arr_dt - dep_dt).total_seconds()) if arr_dt > dep_dt else 0
-
-            segments.append(FlightSegment(
-                airline=carrier,
-                airline_name="LOT Polish Airlines" if carrier == "LO" else carrier,
-                flight_no=f"{carrier}{fno}" if fno and not fno.startswith(carrier) else (fno or f"{carrier}?"),
-                origin=origin,
-                destination=dest,
-                departure=dep_dt,
-                arrival=arr_dt,
-                duration_seconds=dur,
-                cabin_class="economy",
-            ))
-        return segments
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _get_price(obj: dict) -> Optional[float]:
-        for key in ("price", "totalPrice", "amount", "fareAmount", "total", "lowestPrice"):
-            val = obj.get(key)
-            if isinstance(val, (int, float)) and val > 0:
-                return float(val)
-            if isinstance(val, dict):
-                for ik in ("amount", "total", "value"):
-                    iv = val.get(ik)
-                    if isinstance(iv, (int, float)) and iv > 0:
-                        return float(iv)
-        fares = obj.get("fareFamilies") or obj.get("cabins") or []
-        if isinstance(fares, list):
-            for fare in fares:
-                if isinstance(fare, dict):
-                    p = fare.get("price") or fare.get("amount")
-                    if isinstance(p, (int, float)) and p > 0:
-                        return float(p)
-                    if isinstance(p, dict):
-                        a = p.get("amount") or p.get("total")
-                        if isinstance(a, (int, float)) and a > 0:
-                            return float(a)
-        return None
-
-    @staticmethod
-    def _get_currency(data: dict, req: FlightSearchRequest) -> str:
-        for key in ("currencyCode", "currency"):
-            val = data.get(key)
-            if isinstance(val, str) and len(val) == 3:
-                return val
-        for v in data.values():
-            if isinstance(v, dict):
-                for key in ("currencyCode", "currency"):
-                    val = v.get(key)
-                    if isinstance(val, str) and len(val) == 3:
-                        return val
-        return "PLN"
-
-    @staticmethod
-    def _user_url(req: FlightSearchRequest) -> str:
+    def _user_booking_url(req: FlightSearchRequest) -> str:
         dt = _to_datetime(req.date_from)
         return (
             f"https://www.lot.com/us/en/offer/flights"
@@ -471,12 +536,14 @@ class LotConnectorClient:
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"lo{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(
+            f"lo{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
         return FlightSearchResponse(
-            search_id=f"fs_{h}",
+            search_id=f"fs_{search_hash}",
             origin=req.origin,
             destination=req.destination,
-            currency=req.currency or "PLN",
+            currency=req.currency or "USD",
             offers=[],
             total_results=0,
         )

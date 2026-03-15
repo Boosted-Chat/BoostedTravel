@@ -1,20 +1,16 @@
 """
-WestJet (WS) CDP Chrome connector — search URL + availability API interception.
+WestJet (WS) CDP Chrome connector — /shop/ SPA + API response interception.
 
-WestJet's booking engine is an Angular SPA at flightbooking.westjet.com.
-We navigate to the booking URL with pre-filled search params and intercept
-the availability API response.
+WestJet's booking flow is a Vue SPA at westjet.com/shop/.  We navigate there
+with query-string params (same URL the homepage widget builds) and intercept
+the POST to ``ecomm/booktrip/flight-search-api/v1`` that the SPA fires,
+protected by Akamai Bot Manager.
 
-Strategy (CDP Chrome + response interception):
-1.  Launch REAL Chrome via CDP (WestJet uses Akamai bot protection).
-2.  Navigate to the WestJet flight search page with query params.
-3.  Intercept availability API responses (POST /api/flights or GraphQL).
-4.  Parse flight data into FlightOffers.
-
-Booking URL pattern (example):
-  https://www.westjet.com/en-ca/flights/search
-    ?orig={origin}&dest={destination}&depart={YYYY-MM-DD}
-    &adt={adults}&chd={children}&inf={infants}&type=one-way
+Strategy:
+1.  Launch real Chrome via CDP (Akamai bot protection).
+2.  Navigate to ``/shop/?origin=…&destination=…&departure=…`` .
+3.  Intercept the ``flight-search-api/v1`` JSON response.
+4.  Parse ``flights[].flightOptions[]`` into FlightOffers.
 """
 
 from __future__ import annotations
@@ -24,12 +20,12 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import time
 from datetime import datetime, date as date_type, timedelta
 from typing import Optional
+from urllib.parse import urlencode
 
 from models.flights import (
     FlightOffer,
@@ -62,7 +58,7 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_context():
-    """Get or create a persistent browser context."""
+    """Get or create a persistent browser context via CDP."""
     global _browser, _context, _pw_instance, _chrome_proc
     lock = _get_lock()
     async with lock:
@@ -133,7 +129,7 @@ async def _get_context():
 
 
 async def _reset_profile():
-    """Wipe Chrome profile on persistent bot detection."""
+    """Wipe Chrome profile on persistent bot-detection blocks."""
     global _browser, _context, _pw_instance, _chrome_proc
     try:
         if _browser:
@@ -150,10 +146,7 @@ async def _reset_profile():
             _chrome_proc.terminate()
         except Exception:
             pass
-    _browser = None
-    _context = None
-    _pw_instance = None
-    _chrome_proc = None
+    _browser = _context = _pw_instance = _chrome_proc = None
     if os.path.isdir(_USER_DATA_DIR):
         try:
             shutil.rmtree(_USER_DATA_DIR)
@@ -164,6 +157,9 @@ async def _reset_profile():
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+_FLIGHT_API = "flight-search-api/v1"
+
+
 def _to_datetime(val) -> datetime:
     if isinstance(val, datetime):
         return val
@@ -173,13 +169,11 @@ def _to_datetime(val) -> datetime:
 
 
 def _parse_dt(s: str) -> datetime:
-    """Parse datetime from WestJet API responses."""
+    """Parse ISO-ish datetime strings from the WestJet API."""
     for fmt in (
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S.%f",
         "%Y-%m-%dT%H:%M",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
     ):
         try:
             return datetime.strptime(s[:len(fmt) + 3], fmt)
@@ -188,23 +182,20 @@ def _parse_dt(s: str) -> datetime:
     return datetime.strptime(s[:10], "%Y-%m-%d")
 
 
-_SKIP = frozenset((
-    "analytics", "google", "facebook", "doubleclick", "fonts.",
-    "gtm.", "pixel", "amplitude", ".css", ".png", ".jpg", ".svg",
-    ".gif", ".woff", ".ico", "demdex", "omtrdc",
-    "newrelic", "nr-data", "medallia", "adobedtm",
-    "tealium", "mparticle", "segment", "fullstory", "hotjar",
-    "onetrust", "cookiebot", "snapchat",
-))
-
-_AVAIL_KEYS = (
-    "availability", "flights", "offers", "search", "air-bound",
-    "itinerar", "fare", "journey", "lowfare",
-)
+def _cabin_label(codes: list) -> str:
+    """Map WestJet cabin codes to readable labels."""
+    if not codes:
+        return "economy"
+    c = codes[0]
+    if c == "W":
+        return "premium_economy"
+    if c in ("C", "J"):
+        return "business"
+    return "economy"
 
 
 class WestjetConnectorClient:
-    """WestJet CDP Chrome connector — search + API interception."""
+    """WestJet CDP Chrome connector — /shop/ SPA + API interception."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -212,96 +203,72 @@ class WestjetConnectorClient:
     async def close(self):
         pass
 
+    # ------------------------------------------------------------------
+    # Public entry-point
+    # ------------------------------------------------------------------
+
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-
         context = await _get_context()
         page = await context.new_page()
 
-        avail_data: dict = {}
+        api_data: dict = {}
         blocked = False
 
         async def _on_response(response):
             nonlocal blocked
-            url_lower = response.url.lower()
-
-            if any(s in url_lower for s in _SKIP):
+            url = response.url
+            if _FLIGHT_API not in url:
                 return
-
             status = response.status
-
             if status in (403, 429):
-                if any(k in url_lower for k in _AVAIL_KEYS):
-                    blocked = True
-                    logger.warning("WS: %d on %s", status, response.url[:120])
+                blocked = True
+                logger.warning("WS: %d on %s", status, url[:120])
                 return
-
             if status != 200:
                 return
-
-            is_avail = any(k in url_lower for k in _AVAIL_KEYS)
-            if not is_avail:
-                return
-
             try:
                 ct = response.headers.get("content-type", "")
                 if "json" not in ct:
                     return
                 body = await response.text()
-                if len(body) < 100:
-                    return
                 data = json.loads(body)
-                if not isinstance(data, dict):
-                    return
-
-                if self._looks_like_flights(data):
-                    if not avail_data:
-                        avail_data.update(data)
-                        logger.info(
-                            "WS: captured flights (%d bytes) from %s",
-                            len(body), response.url[:100],
-                        )
+                if isinstance(data, dict) and data.get("flights"):
+                    api_data.update(data)
+                    logger.info(
+                        "WS: captured %d bytes from %s",
+                        len(body), url[:100],
+                    )
             except Exception:
                 pass
 
         page.on("response", _on_response)
 
         try:
-            # ── Strategy 1: Direct search URL ──
-            url = self._build_search_url(req)
-            logger.info("WS: loading %s->%s", req.origin, req.destination)
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3.0)
+            shop_url = self._build_shop_url(req)
+            logger.info("WS: loading %s->%s via /shop/", req.origin, req.destination)
+            await page.goto(shop_url, wait_until="domcontentloaded", timeout=30000)
 
-            # Dismiss cookie / promo banners
-            await self._dismiss_overlays(page)
-
-            # Wait for availability API response
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + remaining
-            while not avail_data and not blocked and time.monotonic() < deadline:
+            while not api_data and not blocked and time.monotonic() < deadline:
                 await asyncio.sleep(0.5)
-
-            # ── Strategy 2: Fallback to homepage form fill ──
-            if not avail_data and not blocked:
-                logger.info("WS: URL approach failed, trying form fill")
-                avail_data, blocked = await self._form_search(page, req, t0)
 
             if blocked:
                 logger.warning("WS: Akamai blocked, resetting profile")
                 await _reset_profile()
                 return self._empty(req)
 
-            if not avail_data:
-                logger.warning("WS: no flight data captured")
+            if not api_data:
+                logger.warning("WS: no flight API data captured")
                 return self._empty(req)
 
-            offers = self._parse_flights(avail_data, req)
+            offers = self._parse_flights(api_data, req)
             offers.sort(key=lambda o: o.price)
 
             elapsed = time.monotonic() - t0
             logger.info(
-                "WS %s->%s returned %d offers in %.1fs",
+                "WS %s->%s: %d offers in %.1fs",
                 req.origin, req.destination, len(offers), elapsed,
             )
 
@@ -309,7 +276,8 @@ class WestjetConnectorClient:
                 f"ws{req.origin}{req.destination}{req.date_from}".encode()
             ).hexdigest()[:12]
 
-            currency = self._get_currency(avail_data, req)
+            flights = api_data.get("flights", [{}])
+            currency = flights[0].get("currency", "CAD") if flights else "CAD"
 
             return FlightSearchResponse(
                 search_id=f"fs_{search_hash}",
@@ -330,347 +298,137 @@ class WestjetConnectorClient:
                 pass
 
     # ------------------------------------------------------------------
-    # URL / form
-    # ------------------------------------------------------------------
-
-    def _build_search_url(self, req: FlightSearchRequest) -> str:
-        dt = _to_datetime(req.date_from)
-        adults = req.adults or 1
-        children = req.children or 0
-        infants = req.infants or 0
-        return (
-            f"https://www.westjet.com/en-ca/flights/search"
-            f"?orig={req.origin}&dest={req.destination}"
-            f"&depart={dt.strftime('%Y-%m-%d')}"
-            f"&adt={adults}&chd={children}&inf={infants}"
-            f"&type=one-way"
-        )
-
-    async def _dismiss_overlays(self, page) -> None:
-        for sel in (
-            "#onetrust-accept-btn-handler",
-            "button:has-text('Accept')",
-            "button:has-text('Got it')",
-            "button:has-text('Close')",
-            "[data-testid='close-button']",
-        ):
-            try:
-                btn = page.locator(sel).first
-                if await btn.count() > 0 and await btn.is_visible(timeout=1000):
-                    await btn.click(timeout=2000)
-                    await asyncio.sleep(0.3)
-            except Exception:
-                continue
-
-    async def _form_search(
-        self, page, req: FlightSearchRequest, t0: float
-    ) -> tuple[dict, bool]:
-        """Fallback: load homepage, fill form, submit."""
-        avail_data: dict = {}
-        blocked = False
-
-        try:
-            await page.goto(
-                "https://www.westjet.com/en-ca/flights",
-                wait_until="domcontentloaded",
-                timeout=20000,
-            )
-            await asyncio.sleep(4.0)
-            await self._dismiss_overlays(page)
-
-            # Select one-way
-            try:
-                ow = page.locator("label:has-text('One-way'), button:has-text('One-way')").first
-                if await ow.count() > 0:
-                    await ow.click(timeout=3000)
-                    await asyncio.sleep(0.5)
-            except Exception:
-                pass
-
-            # Fill origin
-            ok = await self._fill_airport(page, "From", req.origin)
-            if not ok:
-                return avail_data, blocked
-            await asyncio.sleep(0.8)
-
-            # Fill destination
-            ok = await self._fill_airport(page, "To", req.destination)
-            if not ok:
-                return avail_data, blocked
-            await asyncio.sleep(0.8)
-
-            # Fill date
-            dt = _to_datetime(req.date_from)
-            date_input = page.locator(
-                "input[name*='depart'], input[aria-label*='Depart'], "
-                "input[placeholder*='Depart']"
-            ).first
-            if await date_input.count() > 0:
-                try:
-                    await date_input.click(timeout=3000)
-                    await asyncio.sleep(0.5)
-                    await date_input.fill(dt.strftime("%Y-%m-%d"))
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    pass
-
-            # Click search
-            try:
-                btn = page.locator(
-                    "button:has-text('Search flights'), "
-                    "button:has-text('Search'), "
-                    "button[type='submit']"
-                ).first
-                if await btn.count() > 0:
-                    await btn.click(timeout=5000)
-                    logger.info("WS: clicked search")
-            except Exception:
-                pass
-
-            remaining = max(self.timeout - (time.monotonic() - t0), 10)
-            deadline = time.monotonic() + remaining
-            while not avail_data and not blocked and time.monotonic() < deadline:
-                await asyncio.sleep(0.5)
-
-        except Exception as e:
-            logger.warning("WS: form search error: %s", e)
-
-        return avail_data, blocked
-
-    async def _fill_airport(self, page, label: str, iata: str) -> bool:
-        """Fill an airport typeahead."""
-        try:
-            field = page.get_by_role("textbox", name=re.compile(label, re.I)).first
-            if await field.count() == 0:
-                field = page.locator(
-                    f"input[aria-label*='{label}'], input[placeholder*='{label}']"
-                ).first
-            if await field.count() == 0:
-                return False
-
-            await field.click(timeout=3000)
-            await asyncio.sleep(0.3)
-            await field.fill("")
-            await field.type(iata, delay=80)
-            await asyncio.sleep(2.0)
-
-            opt = page.locator("[role='option']").first
-            if await opt.count() > 0:
-                await opt.click(timeout=3000)
-                return True
-
-            await field.press("ArrowDown")
-            await asyncio.sleep(0.2)
-            await field.press("Enter")
-            return True
-        except Exception as e:
-            logger.warning("WS: airport fill '%s' error: %s", label, e)
-            return False
-
-    # ------------------------------------------------------------------
-    # Detection + parsing
+    # URL construction
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _looks_like_flights(data: dict) -> bool:
-        s = json.dumps(data)[:5000].lower()
-        flight_sigs = (
-            "flightoffer", "flightresult", "bounddetail", "segment",
-            "departuretime", "departuredatetime", "airbound",
-            "journeypair", "itinerar", "flightleg",
-        )
-        price_sigs = ('"price"', '"amount"', '"total"', '"fare"')
-        return any(sig in s for sig in flight_sigs) and any(sig in s for sig in price_sigs)
+    def _build_shop_url(req: FlightSearchRequest) -> str:
+        """Build the /shop/ URL that the booking widget would navigate to."""
+        dt = _to_datetime(req.date_from)
+        dep = dt.strftime("%Y-%m-%d")
+        params = {
+            "origin": req.origin,
+            "destination": req.destination,
+            "departure": dep,
+            "outboundDate": dep,
+            "lang": "en-CA",
+            "adults": str(req.adults or 1),
+            "children": str(req.children or 0),
+            "infants": str(req.infants or 0),
+            "companionvoucher": "false",
+            "currency": "CAD",
+            "appSource": "widgetone-way",
+        }
+        return f"https://www.westjet.com/shop/?{urlencode(params)}"
+
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
 
     def _parse_flights(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
-        """Parse flight data from various WestJet API formats."""
         offers: list[FlightOffer] = []
 
-        inner = data
-        for key in ("data", "response", "result"):
-            if key in inner and isinstance(inner[key], (dict, list)):
-                inner = inner[key] if isinstance(inner[key], dict) else {"items": inner[key]}
+        for flight_block in data.get("flights", []):
+            currency = flight_block.get("currency", "CAD")
 
-        currency = self._get_currency(data, req)
+            for opt in flight_block.get("flightOptions", []):
+                details = opt.get("flightDetails", {})
+                raw_segs = details.get("flightSegments", [])
+                if not raw_segs:
+                    continue
 
-        # Look for flight arrays
-        flight_list = None
-        for key in (
-            "flightOffers", "flights", "offers", "results",
-            "flightResults", "boundGroups", "items",
-            "journeyPairs", "originDestinationOptionList",
-        ):
-            candidate = inner.get(key)
-            if isinstance(candidate, list) and len(candidate) > 0:
-                flight_list = candidate
-                break
+                # Cheapest fare = first priceDetails (sorted by fareSortOrder)
+                adult_fare = opt.get("adultFare", {})
+                price_list = adult_fare.get("priceDetails", [])
+                if not price_list:
+                    continue
+                cheapest = min(price_list, key=lambda p: p.get("fareSortOrder", 999))
+                try:
+                    price = float(cheapest["totalFareAmount"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if price <= 0:
+                    continue
 
-        if not flight_list:
-            # Try to find any list of dicts with price data
-            for v in inner.values():
-                if isinstance(v, list) and len(v) >= 2:
-                    if isinstance(v[0], dict) and self._get_price(v[0]):
-                        flight_list = v
-                        break
+                cabin = _cabin_label(cheapest.get("cabinCodes", []))
 
-        if not flight_list:
-            return offers
+                # Build segments
+                segments: list[FlightSegment] = []
+                for seg in raw_segs:
+                    dep_raw = seg.get("departureDateRaw", "")
+                    arr_raw = seg.get("arrivalDateRaw", "")
+                    dep_dt = _parse_dt(dep_raw) if dep_raw else _to_datetime(req.date_from)
+                    arr_dt = _parse_dt(arr_raw) if arr_raw else dep_dt + timedelta(hours=2)
+                    dur = int((arr_dt - dep_dt).total_seconds()) if arr_dt > dep_dt else 0
 
-        for flight in flight_list[:50]:
-            if not isinstance(flight, dict):
-                continue
+                    carrier = seg.get("operatingAirline", "WS")
+                    fno = seg.get("flightNumber", "")
+                    flight_code = f"{carrier}{fno}" if fno else f"{carrier}?"
 
-            price = self._get_price(flight)
-            if not price or price <= 0:
-                continue
+                    segments.append(FlightSegment(
+                        airline=carrier,
+                        airline_name=seg.get("operatingAirlineName", "WestJet").title(),
+                        flight_no=flight_code,
+                        origin=seg.get("originCode", req.origin),
+                        destination=seg.get("destinationCode", req.destination),
+                        departure=dep_dt,
+                        arrival=arr_dt,
+                        duration_seconds=dur,
+                        cabin_class=cabin,
+                    ))
 
-            segments = self._extract_segments(flight, req)
-            if not segments:
-                continue
+                if not segments:
+                    continue
 
-            total_dur = int(
-                (segments[-1].arrival - segments[0].departure).total_seconds()
-            ) if len(segments) > 0 and segments[-1].arrival > segments[0].departure else 0
+                total_dur_obj = details.get("totalTravelDuration", {})
+                total_dur = (
+                    total_dur_obj.get("hrs", 0) * 3600
+                    + total_dur_obj.get("mins", 0) * 60
+                )
+                if not total_dur:
+                    total_dur = int(
+                        (segments[-1].arrival - segments[0].departure).total_seconds()
+                    )
 
-            route = FlightRoute(
-                segments=segments,
-                total_duration_seconds=total_dur,
-                stopovers=max(len(segments) - 1, 0),
-            )
+                route = FlightRoute(
+                    segments=segments,
+                    total_duration_seconds=max(total_dur, 0),
+                    stopovers=max(len(segments) - 1, 0),
+                )
 
-            offer_key = f"ws_{req.origin}_{req.destination}_{segments[0].departure.isoformat()}_{price}"
-            offer_id = hashlib.md5(offer_key.encode()).hexdigest()[:12]
-            all_airlines = list({s.airline for s in segments})
+                offer_key = f"ws_{segments[0].flight_no}_{segments[0].departure.isoformat()}_{price}"
+                offer_id = hashlib.md5(offer_key.encode()).hexdigest()[:12]
+                all_airlines = list({s.airline for s in segments})
 
-            offers.append(FlightOffer(
-                id=f"ws_{offer_id}",
-                price=round(price, 2),
-                currency=currency,
-                outbound=route,
-                airlines=[("WestJet" if a == "WS" else a) for a in all_airlines],
-                owner_airline="WS",
-                booking_url=self._user_url(req),
-                is_locked=False,
-                source="westjet_direct",
-                source_tier="free",
-            ))
+                offers.append(FlightOffer(
+                    id=f"ws_{offer_id}",
+                    price=round(price, 2),
+                    currency=currency,
+                    outbound=route,
+                    airlines=[("WestJet" if a == "WS" else a) for a in all_airlines],
+                    owner_airline="WS",
+                    booking_url=self._user_url(req),
+                    is_locked=False,
+                    source="westjet_direct",
+                    source_tier="free",
+                ))
 
         return offers
 
-    def _extract_segments(self, flight: dict, req: FlightSearchRequest) -> list[FlightSegment]:
-        """Extract segments from a flight object."""
-        segments: list[FlightSegment] = []
-
-        seg_list = None
-        for key in ("segments", "segmentList", "legs", "flightSegments", "boundDetails"):
-            candidate = flight.get(key)
-            if isinstance(candidate, list) and len(candidate) > 0:
-                seg_list = candidate
-                break
-            if isinstance(candidate, dict):
-                inner_segs = candidate.get("segments", candidate.get("legs", []))
-                if isinstance(inner_segs, list) and len(inner_segs) > 0:
-                    seg_list = inner_segs
-                    break
-
-        if not seg_list:
-            # Maybe the flight object itself is a single segment
-            dep = flight.get("departureDateTime") or flight.get("departureTime") or ""
-            if dep:
-                seg_list = [flight]
-
-        if not seg_list:
-            return segments
-
-        for seg in seg_list:
-            if not isinstance(seg, dict):
-                continue
-
-            dep_str = (
-                seg.get("departureDateTime") or seg.get("departureTime")
-                or seg.get("departure") or seg.get("localDepartureDateTime") or ""
-            )
-            arr_str = (
-                seg.get("arrivalDateTime") or seg.get("arrivalTime")
-                or seg.get("arrival") or seg.get("localArrivalDateTime") or ""
-            )
-            origin = (
-                seg.get("departureAirportCode") or seg.get("origin")
-                or seg.get("from") or seg.get("departureStation") or req.origin
-            )
-            dest = (
-                seg.get("arrivalAirportCode") or seg.get("destination")
-                or seg.get("to") or seg.get("arrivalStation") or req.destination
-            )
-            carrier = (
-                seg.get("airlineCode") or seg.get("carrierCode")
-                or seg.get("operatingCarrier") or seg.get("airline") or "WS"
-            )
-            fno = seg.get("flightNumber") or seg.get("flightNo") or ""
-
-            dep_dt = _parse_dt(dep_str) if dep_str else _to_datetime(req.date_from)
-            arr_dt = _parse_dt(arr_str) if arr_str else dep_dt + timedelta(hours=3)
-            dur = int((arr_dt - dep_dt).total_seconds()) if arr_dt > dep_dt else 0
-
-            segments.append(FlightSegment(
-                airline=carrier,
-                airline_name="WestJet" if carrier == "WS" else carrier,
-                flight_no=f"{carrier}{fno}" if fno and not fno.startswith(carrier) else (fno or f"{carrier}?"),
-                origin=origin,
-                destination=dest,
-                departure=dep_dt,
-                arrival=arr_dt,
-                duration_seconds=dur,
-                cabin_class="economy",
-            ))
-
-        return segments
-
-    @staticmethod
-    def _get_price(obj: dict) -> Optional[float]:
-        for key in (
-            "price", "totalPrice", "startingPrice", "amount",
-            "fareAmount", "total", "adultFare", "baseFare", "displayPrice",
-        ):
-            val = obj.get(key)
-            if isinstance(val, (int, float)) and val > 0:
-                return float(val)
-            if isinstance(val, dict):
-                for ik in ("amount", "total", "value", "grossPrice", "displayAmount"):
-                    iv = val.get(ik)
-                    if isinstance(iv, (int, float)) and iv > 0:
-                        return float(iv)
-            if isinstance(val, str):
-                try:
-                    fv = float(re.sub(r"[^\d.]", "", val))
-                    if fv > 0:
-                        return fv
-                except (ValueError, TypeError):
-                    pass
-        return None
-
-    @staticmethod
-    def _get_currency(data: dict, req: FlightSearchRequest) -> str:
-        for key in ("currencyCode", "currency", "originalCurrency"):
-            val = data.get(key)
-            if isinstance(val, str) and len(val) == 3:
-                return val
-        for v in data.values():
-            if isinstance(v, dict):
-                for key in ("currencyCode", "currency"):
-                    val = v.get(key)
-                    if isinstance(val, str) and len(val) == 3:
-                        return val
-        return "CAD"
+    # ------------------------------------------------------------------
+    # Misc helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _user_url(req: FlightSearchRequest) -> str:
         dt = _to_datetime(req.date_from)
+        dep = dt.strftime("%Y-%m-%d")
         return (
-            f"https://www.westjet.com/en-ca/flights/search"
-            f"?orig={req.origin}&dest={req.destination}"
-            f"&depart={dt.strftime('%Y-%m-%d')}"
-            f"&adt={req.adults or 1}&type=one-way"
+            f"https://www.westjet.com/shop/"
+            f"?origin={req.origin}&destination={req.destination}"
+            f"&departure={dep}&outboundDate={dep}"
+            f"&lang=en-CA&adults={req.adults or 1}"
+            f"&appSource=widgetone-way"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
