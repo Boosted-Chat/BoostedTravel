@@ -1,6 +1,6 @@
 # Packages
 
-BoostedTravel is available as a Python SDK, JavaScript SDK, MCP server, and remote MCP endpoint.
+BoostedTravel is available as a Python SDK, JavaScript SDK, MCP server, and remote MCP endpoint. Works with OpenClaw, Perplexity Computer, Claude Desktop, Cursor, Windsurf, and any MCP-compatible agent.
 
 ## Overview
 

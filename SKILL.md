@@ -12,6 +12,7 @@ description: Agent-native flight search, hotel search, and booking API. 400+ air
 - **Name:** BoostedTravel
 - **Type:** API + SDK + MCP Server + CLI
 - **Purpose:** Agent-native flight search, hotel search, and booking
+- **Compatible agents:** OpenClaw, Perplexity Computer, Claude Desktop, Cursor, Windsurf, and any MCP-compatible client
 - **API Base URL:** `https://api.boostedchat.com`
 - **MCP Endpoint:** `https://api.boostedchat.com/mcp` (Streamable HTTP)
 - **Packages:** PyPI `boostedtravel` · npm `boostedtravel` · npm `boostedtravel-mcp`

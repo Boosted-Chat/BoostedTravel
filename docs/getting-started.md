@@ -1,5 +1,7 @@
 # Getting Started
 
+> 🎥 **[Watch the demo](https://github.com/Boosted-Chat/BoostedTravel#demo-boostedtravel-vs-default-agent-search)** — see BoostedTravel in action vs default agent search (OpenClaw, Perplexity Computer).
+
 ## One-Click Install (No API Key Needed)
 
 ```bash

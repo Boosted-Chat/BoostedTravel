@@ -4,7 +4,7 @@
 
 ## What is BoostedTravel?
 
-BoostedTravel is the largest agent-native flight search and booking toolkit. It gives your agent **ready-to-run connectors to 73 airlines and 400+ GDS/NDC sources** — not scrapers you have to maintain, but production-grade integrations that work out of the box.
+BoostedTravel is the largest agent-native flight search and booking toolkit. It gives your agent **ready-to-run connectors to 73 airlines and 400+ GDS/NDC sources** — not scrapers you have to maintain, but production-grade integrations that work out of the box. Built for OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible agent.
 
 **Why this exists:** Building a flight search integration from scratch takes 30+ minutes, burns thousands of tokens on browser automation, and still only covers one airline at a time. BoostedTravel replaces all of that with a single function call that fires 73 airline connectors in parallel, scanning the entire world for the best deals — including airlines your agent has never heard of.
 
@@ -20,6 +20,7 @@ BoostedTravel is the largest agent-native flight search and booking toolkit. It 
 - **73 airlines in parallel** — one search covers Europe, Asia, Americas, Middle East, and Africa simultaneously. Discovers deals on carriers like Jazeera Airways, FlySafair, Lucky Air, 9 Air, and Flybondi that most agents wouldn't know to check.
 - **Virtual interlining** — the combo engine builds cross-airline round-trips (e.g., Ryanair outbound + Wizz Air return) that save 30-50% vs booking with either airline alone.
 - **Token-efficient** — one tool call replaces what would take thousands of tokens of browser automation, scraping setup, and HTML parsing. Results come back as structured JSON.
+- **Works with any agent** — OpenClaw, Perplexity Computer, Claude Desktop, Cursor, Windsurf, or any MCP-compatible client. Also available as Python SDK, JS SDK, and CLI.
 - **Enterprise deals included** — contract-only inventory from GDS/NDC providers that individual developers can't access on their own.
 
 **API Base URL:** `https://api.boostedchat.com`

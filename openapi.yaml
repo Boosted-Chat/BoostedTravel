@@ -4,7 +4,7 @@ info:
   version: 0.2.16
   description: |
     Agent-native flight search & booking API. 400+ airlines, 73 direct airline connectors,
-    virtual interlining — built for AI agents and developers.
+    virtual interlining — built for AI agents (OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf) and developers.
 
     ## How It Works
     1. **Search** (free) — real-time offers from 400+ airlines

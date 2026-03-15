@@ -1,6 +1,8 @@
 # Building AI Agents with BoostedTravel
 
-Guidelines for building autonomous AI agents that search, evaluate, and book flights.
+Guidelines for building autonomous AI agents that search, evaluate, and book flights. Works with OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible agent framework.
+
+> 🎥 **[Watch the demo](https://github.com/Boosted-Chat/BoostedTravel#demo-boostedtravel-vs-default-agent-search)** — side-by-side comparison of default agent search vs BoostedTravel.
 
 ## Two Search Modes
 

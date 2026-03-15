@@ -1,11 +1,19 @@
 # BoostedTravel
 
-Agent-native flight search & booking. 400+ airlines, 73 ready-to-run airline connectors, virtual interlining — straight from the terminal. Built for AI agents and developers.
+Agent-native flight search & booking. 400+ airlines, 73 ready-to-run airline connectors, virtual interlining — straight from the terminal. Built for AI agents (OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf) and developers.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/boostedtravel)](https://pypi.org/project/boostedtravel/)
 [![npm](https://img.shields.io/npm/v/boostedtravel)](https://www.npmjs.com/package/boostedtravel)
 [![Smithery](https://smithery.ai/badge/boostedtravel-mcp)](https://smithery.ai/server/boostedtravel-mcp)
+
+## Demo: BoostedTravel vs Default Agent Search
+
+<div align="center">
+  <video src="https://github.com/Boosted-Chat/BoostedTravel/raw/main/assets/demo.mp4" width="720" controls></video>
+</div>
+
+> Side-by-side comparison: default agent search (OpenClaw, Perplexity Computer) vs BoostedTravel CLI. Same query — BoostedTravel finds cheaper flights across 73 airlines in seconds.
 
 ## Why BoostedTravel?
 
@@ -139,7 +147,7 @@ playwright install chromium  # needed for browser-based connectors
 npm install -g boostedtravel
 ```
 
-### MCP Server (Claude Desktop / Cursor / Windsurf)
+### MCP Server (Claude Desktop / Cursor / Windsurf / OpenClaw)
 
 ```bash
 npx boostedtravel-mcp

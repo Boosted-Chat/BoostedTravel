@@ -4,6 +4,10 @@ The largest open flight-search MCP server. 73 ready-to-run airline connectors fi
 
 **Your agent doesn't need to build a flight integration. It doesn't need to scrape. Just add this MCP server and it can search and book flights in seconds — what would take 30+ minutes of integration work becomes a single tool call.**
 
+Works with OpenClaw, Perplexity Computer, Claude Desktop, Cursor, Windsurf, and any MCP-compatible client.
+
+> 🎥 **[Watch the demo](https://github.com/Boosted-Chat/BoostedTravel#demo-boostedtravel-vs-default-agent-search)** — side-by-side comparison of default agent search vs BoostedTravel CLI.
+
 [![npm](https://img.shields.io/npm/v/boostedtravel-mcp)](https://www.npmjs.com/package/boostedtravel-mcp)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
 
@@ -112,6 +116,20 @@ mcpServers:
     args: ["-y", "boostedtravel-mcp"]
     env:
       BOOSTEDTRAVEL_API_KEY: trav_your_api_key
+```
+
+### OpenClaw / Perplexity Computer
+
+Any MCP-compatible agent works. Point it at the MCP server:
+
+```bash
+npx boostedtravel-mcp
+```
+
+Or connect via remote MCP (no install):
+
+```
+https://api.boostedchat.com/mcp
 ```
 
 ### Windows — `npx ENOENT` Fix
