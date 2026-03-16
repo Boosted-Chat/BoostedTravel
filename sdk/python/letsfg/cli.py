@@ -37,7 +37,8 @@ app = typer.Typer(
     help=(
         "LetsFG — Agent-native flight search & booking.\n\n"
         "Search 400+ airlines at raw airline prices — $20-50 cheaper than OTAs.\n"
-        "Search is FREE. Unlock: $1. Book: FREE after unlock.\n\n"
+        "100% FREE — just star our GitHub repo for unlimited access.\n\n"
+        "Quick start: letsfg register → letsfg star --github <username> → letsfg search\n"
         "Local search (no API key): letsfg search-local GDN BCN 2026-06-15\n"
         "Full search (API key):     letsfg search GDN BCN 2026-06-15"
     ),
@@ -321,6 +322,47 @@ def search_local_cmd(
     print()
 
 
+# ── Star (Link GitHub) ─────────────────────────────────────────────────────
+
+@app.command()
+def star(
+    github: str = typer.Option(..., "--github", "-g", help="Your GitHub username"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
+    base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
+):
+    """Link your GitHub account — star the repo for FREE unlimited access.
+
+    1. Star https://github.com/LetsFG/LetsFG
+    2. Run: letsfg star --github <your-username>
+    3. Done — unlimited search, unlock, and book forever.
+    """
+    bt = _get_client(api_key, base_url)
+    try:
+        result = bt.link_github(github)
+    except LetsFGError as e:
+        _err(f"{e.message}")
+
+    if output_json:
+        _json_out(result)
+        return
+
+    status = result.get("status", "unknown")
+    if status == "verified":
+        print(f"\n  ✓ GitHub star verified! Unlimited access granted.")
+        print(f"    Username: {result.get('github_username')}")
+        print(f"\n    You're all set — search, unlock, and book for free.\n")
+    elif status == "already_verified":
+        print(f"\n  ✓ Already verified! You have unlimited access.")
+        print(f"    Username: {result.get('github_username')}\n")
+    elif status == "star_required":
+        print(f"\n  ✗ Star not found for '{github}'.")
+        print(f"    1. Star the repo: https://github.com/LetsFG/LetsFG")
+        print(f"    2. Run this command again.\n")
+    else:
+        _err(f"Unexpected status: {status}")
+
+
 # ── Unlock ────────────────────────────────────────────────────────────────
 
 @app.command()
@@ -330,7 +372,7 @@ def unlock(
     api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
     base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
 ):
-    """Unlock a flight offer — $1 fee. Confirms price, reserves 30min."""
+    """Unlock a flight offer — FREE with GitHub star. Confirms price, reserves 30min."""
     bt = _get_client(api_key, base_url)
     try:
         result = bt.unlock(offer_id)
@@ -353,7 +395,6 @@ def unlock(
         print(f"\n  ✓ Offer unlocked!")
         print(f"    Confirmed price: {result.confirmed_currency} {result.confirmed_price:.2f}")
         print(f"    Expires at: {result.offer_expires_at}")
-        print(f"    $1 unlock fee charged")
         print(f"\n    Next: letsfg book {offer_id} --passenger '{{...}}' --email you@example.com\n")
     else:
         _err(f"Unlock failed: {result.message}")
@@ -480,7 +521,9 @@ def register(
     print(f"    API Key:  {result.get('api_key')}")
     print(f"\n    Save your API key:")
     print(f"    export LETSFG_API_KEY={result.get('api_key')}")
-    print(f"\n    Next: letsfg setup-payment --token tok_visa\n")
+    print(f"\n    Next: Star the repo and link your GitHub:")
+    print(f"    1. Star https://github.com/LetsFG/LetsFG")
+    print(f"    2. letsfg star --github <your-github-username>\n")
 
 
 # ── Setup Payment ──────────────────────────────────────────────────────────
@@ -492,7 +535,7 @@ def setup_payment(
     api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
     base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
 ):
-    """Set up payment method for booking."""
+    """Set up payment method (legacy — use 'letsfg star' instead)."""
     bt = _get_client(api_key, base_url)
     try:
         result = bt.setup_payment(token=token)
@@ -540,7 +583,15 @@ def me(
     print(f"\n  Agent: {profile.agent_name} ({profile.agent_id})")
     print(f"  Email: {profile.email}")
     print(f"  Tier:  {profile.tier}")
-    print(f"  Payment: {'✓ Ready' if profile.payment_ready else '✗ Not set up'}")
+    gh = getattr(profile, 'github_username', '') or ''
+    star_ok = getattr(profile, 'github_star_verified', False)
+    if star_ok:
+        print(f"  GitHub:  ✓ {gh} (star verified — unlimited access)")
+    elif gh:
+        print(f"  GitHub:  {gh} (star not verified)")
+    else:
+        print(f"  GitHub:  Not linked — run: letsfg star --github <username>")
+    print(f"  Payment: {'✓ Ready' if profile.payment_ready else '—'}")
     u = profile.usage
     print(f"  Searches: {u.get('total_searches', 0)}")
     print(f"  Unlocks:  {u.get('total_unlocks', 0)}")

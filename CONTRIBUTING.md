@@ -95,7 +95,7 @@ When editing any agent-facing text (READMEs, SDK docstrings, MCP tool descriptio
 
 1. **Zero price bias** messaging — this is a core differentiator
 2. **Real passenger details** warning — critical for bookings
-3. **Pricing accuracy** — search is free, unlock is $1, booking is free after unlock
+3. **Pricing accuracy** — everything is free (star GitHub repo for access)
 
 ## Report a Vulnerability
 

@@ -444,7 +444,7 @@ export class LetsFG {
   }
 
   /**
-   * Unlock a flight offer — $1 fee.
+   * Unlock a flight offer — FREE with GitHub star.
    * Confirms price, reserves for 30 minutes.
    */
   async unlock(offerId: string): Promise<UnlockResult> {
@@ -478,7 +478,7 @@ export class LetsFG {
   }
 
   /**
-   * Set up payment method (payment token).
+   * Set up payment method (legacy — use linkGithub instead).
    */
   async setupPayment(token = 'tok_visa'): Promise<Record<string, unknown>> {
     this.requireApiKey();
@@ -488,7 +488,7 @@ export class LetsFG {
   /**
    * Start automated checkout — drives to payment page, NEVER submits payment.
    *
-   * Requires unlock first ($1 fee). Returns progress with screenshot and
+   * Requires unlock first. Returns progress with screenshot and
    * booking URL for manual completion.
    *
    * @param offerId - Offer ID from search results
@@ -562,6 +562,17 @@ export class LetsFG {
       child.stdin.write(input);
       child.stdin.end();
     });
+  }
+
+  /**
+   * Link GitHub account for FREE unlimited access.
+   *
+   * Star https://github.com/LetsFG/LetsFG, then call this with your username.
+   * Once verified, access is permanent.
+   */
+  async linkGithub(githubUsername: string): Promise<Record<string, unknown>> {
+    this.requireApiKey();
+    return this.post<Record<string, unknown>>('/api/v1/agents/link-github', { github_username: githubUsername });
   }
 
   /**

@@ -25,7 +25,7 @@ The `letsfg` CLI is available via both Python and JavaScript. Same commands, sam
 | `letsfg search-local <origin> <dest> <date>` | Search flights locally (free, **no API key**) |
 | `letsfg system-info` | Show system resources & concurrency tier |
 | `letsfg locations <query>` | Resolve city/airport to IATA codes |
-| `letsfg unlock <offer_id>` | Unlock offer details ($1) |
+| `letsfg unlock <offer_id>` | Unlock offer details (free) |
 | `letsfg book <offer_id>` | Book the flight (free after unlock) |
 | `letsfg setup-payment` | Set up Stripe payment method |
 | `letsfg me` | View profile & usage stats |
@@ -137,7 +137,7 @@ RESULTS=$(letsfg search "$ORIGIN" "$DEST" 2026-04-01 --adults 2 --json)
 OFFER_ID=$(echo "$RESULTS" | jq -r '.offers[0].id')
 echo "Best offer: $OFFER_ID"
 
-# Unlock ($1)
+# Unlock (free)
 letsfg unlock "$OFFER_ID"
 
 # Book

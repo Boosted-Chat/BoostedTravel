@@ -7,7 +7,7 @@ LFG offers two search modes:
 | Mode | Command / Method | API Key | Coverage | Cost |
 |------|-----------------|---------|----------|------|
 | **Local search** | `search-local` / `search_local()` | **Not needed** | 75 airline connectors | Free |
-| **Full search** | `search` / `bt.search()` | Required | 400+ airlines (GDS/NDC) | Free (unlock $1) |
+| **Full search** | `search` / `bt.search()` | Required | 400+ airlines (GDS/NDC) | Free (star repo) |
 
 ### Local Search (No API Key)
 
@@ -275,12 +275,12 @@ def search_and_book(origin_city, dest_city, date, passenger_info, email):
     print(f"Cheapest: {flights.cheapest.price} {flights.cheapest.currency}")
     print(f"Passenger IDs: {flights.passenger_ids}")
 
-    # Step 3: Unlock ($1) — confirms price, reserves 30min
+    # Step 3: Unlock (free) — confirms price, reserves 30min
     try:
         unlocked = bt.unlock(flights.cheapest.id)
         print(f"Confirmed price: {unlocked.confirmed_currency} {unlocked.confirmed_price}")
     except PaymentRequiredError:
-        print("Setup payment first: letsfg setup-payment")
+        print("Star repo first: letsfg star --github <username>")
         return None
     except OfferExpiredError:
         print("Offer expired — search again")
@@ -367,7 +367,7 @@ letsfg book "$OFFER_ID" \
 
 ## How Unlock Works
 
-Unlocking is the only paid step ($1). It serves as proof of booking intent and confirms the live price with the airline.
+Unlocking confirms the live price with the airline. FREE with GitHub star verification.
 
 ### Endpoint
 
@@ -379,9 +379,8 @@ POST /api/v1/bookings/unlock
 
 1. LFG sends the `offer_id` to the airline's NDC/GDS system
 2. The airline confirms the **current live price** (may differ slightly from search)
-3. A $1.00 charge is made via Stripe to your saved payment method
-4. The offer is **reserved for 30 minutes** — no one else can book it
-5. You receive `confirmed_price`, `confirmed_currency`, and `offer_expires_at`
+3. The offer is **reserved for 30 minutes** — no one else can book it
+4. You receive `confirmed_price`, `confirmed_currency`, and `offer_expires_at`
 
 ### Python Example
 
@@ -394,14 +393,14 @@ bt = LetsFG()  # reads LETSFG_API_KEY
 flights = bt.search("LHR", "JFK", "2026-06-01")
 print(f"Search price: {flights.cheapest.price} {flights.cheapest.currency}")
 
-# Unlock ($1) — confirms live price
+# Unlock (free) — confirms live price
 try:
     unlocked = bt.unlock(flights.cheapest.id)
     print(f"Confirmed price: {unlocked.confirmed_price} {unlocked.confirmed_currency}")
     print(f"Expires at: {unlocked.offer_expires_at}")
     # Price may differ from search — airline prices change in real-time
 except PaymentRequiredError:
-    print("No payment method — run: letsfg setup-payment")
+    print("Star the repo first — run: letsfg star --github <username>")
 except OfferExpiredError:
     print("Offer no longer available — search again for fresh results")
 ```
@@ -440,18 +439,16 @@ curl -X POST https://api.letsfg.co/api/v1/bookings/unlock \
 
 ### Important Notes
 
-- **Payment method required.** You must call `setup-payment` before your first unlock. If payment is not set up, unlock returns HTTP 402 (`PaymentRequiredError`).
-- **$1 per unlock.** Each unlock costs $1 regardless of flight price. This is the only fee.
-- **30-minute window.** After unlock, you have 30 minutes to call `book`. If the window expires, you must search again (free) and unlock again ($1).
+- **GitHub star required.** You must star the repo and call `link-github` before your first unlock. If not verified, unlock returns HTTP 403.
+- **30-minute window.** After unlock, you have 30 minutes to call `book`. If the window expires, search again (free) and unlock again (free).
 - **Price confirmation.** The `confirmed_price` may differ from the search price because airline prices change in real-time. Always check `confirmed_price` before booking.
 - **Offer expired (HTTP 410).** If the airline has already sold the seats, unlock returns `OfferExpiredError`. Search again for fresh offers.
-- **No refund on expired unlock.** If you unlock but don't book within 30 minutes, the $1 is not refunded. Plan your workflow to book promptly after unlock.
 
 ---
 
-## Minimizing Unlock Costs
+## Unlock Best Practices
 
-Searching is **completely free** — you can search as many routes, dates, and configurations as you want without cost. The $1 unlock fee is only charged when you confirm a specific offer.
+Searching is **completely free** — unlock is also free with GitHub star.
 
 ### Strategy 1: Search Wide, Unlock Narrow
 
@@ -468,7 +465,7 @@ all_offers.sort(key=lambda x: x[1].price)
 best_date, best_offer = all_offers[0]
 print(f"Cheapest is {best_offer.price} {best_offer.currency} on {best_date}")
 
-# Only unlock the winner — $1
+# Only unlock the winner
 unlocked = bt.unlock(best_offer.id)
 ```
 
@@ -478,7 +475,7 @@ unlocked = bt.unlock(best_offer.id)
 # Search returns full details (airline, duration, conditions) for FREE
 flights = bt.search("LHR", "JFK", "2026-06-01", limit=50)
 
-# Apply all filters BEFORE paying $1
+# Apply all filters BEFORE unlocking
 candidates = [
     o for o in flights.offers
     if o.outbound.stopovers == 0                          # Direct only
@@ -515,6 +512,6 @@ booking = bt.book(offer_id=unlocked.offer_id, passengers=[...], contact_email=".
 | Search | FREE | Unlimited. Search as many routes/dates as you want |
 | Resolve location | FREE | Unlimited |
 | View offer details | FREE | All details (price, airline, duration, conditions) returned in search |
-| Unlock | $1 | Confirms price, holds for 30 minutes |
+| Unlock | FREE | Confirms price, holds for 30 minutes |
 | Book | FREE | After unlock — creates real airline PNR |
 | Re-search same route | FREE | Prices may change (real-time airline data) |

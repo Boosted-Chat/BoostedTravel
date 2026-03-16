@@ -68,7 +68,7 @@ hide:
 | Install | `pip install letsfg` | `pip install letsfg` |
 | Setup | Nothing | `letsfg register --email you@example.com` |
 | Airlines | 73 via local connectors | 73 local + 400+ via GDS/NDC |
-| Price | Free | Free search, $1 unlock |
+| Price | Free | Free — star GitHub repo for access |
 | Coverage | LCCs + major carriers with public APIs | Full global coverage including premium carriers |
 
 ## How it works
@@ -76,11 +76,11 @@ hide:
 <div class="flow">
 <span class="flow-step">Search <small>free</small></span>
 <span class="flow-arrow">→</span>
-<span class="flow-step">Unlock <small>$1</small></span>
+<span class="flow-step">Unlock <small>free</small></span>
 <span class="flow-arrow">→</span>
 <span class="flow-step">Book <small>free</small></span>
 </div>
 
 1. **Search** — real-time offers with price, airlines, duration, stopovers. Free and unlimited.
-2. **Unlock** — confirms the live price with the airline, reserves for 30 min. $1 flat.
+2. **Unlock** — confirms the live price with the airline, reserves for 30 min. Free with GitHub star.
 3. **Book** — creates real PNR. E-ticket sent to passenger email. Free after unlock.

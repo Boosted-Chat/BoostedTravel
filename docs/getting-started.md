@@ -83,37 +83,30 @@ creds = LetsFG.register("my-agent", "agent@example.com")
 bt = LetsFG(api_key=creds["api_key"])
 ```
 
-### 4. Setup Payment (required before unlock)
+### 4. Link GitHub (required before unlock)
 
-You must attach a payment method before you can unlock offers or book flights. This is a one-time step.
+Star the LetsFG repo and link your GitHub account for free unlimited access. This is a one-time step.
 
 ```bash
-# CLI — opens Stripe to attach a card
-letsfg setup-payment
+# 1. Star the repo: https://github.com/LetsFG/LetsFG
+# 2. Link your GitHub username:
+letsfg star --github your-username
 ```
 
 ```python
-# Python SDK — multiple options:
-
-# Option A: Stripe test token (for development)
-bt.setup_payment(token="tok_visa")
-
-# Option B: Stripe PaymentMethod ID (from Stripe.js or Elements)
-bt.setup_payment(payment_method_id="pm_xxx")
-
-# Option C: Raw card details (requires PCI-compliant Stripe account)
-bt.setup_payment(card_number="4242424242424242", exp_month=12, exp_year=2027, cvc="123")
+# Python SDK
+bt.link_github("your-username")
 ```
 
 ```bash
 # cURL
-curl -X POST https://api.letsfg.co/api/v1/agents/setup-payment \
+curl -X POST https://api.letsfg.co/api/v1/agents/link-github \
   -H "X-API-Key: trav_..." \
   -H "Content-Type: application/json" \
-  -d '{"token": "tok_visa"}'
+  -d '{"github_username": "your-username"}'
 ```
 
-After setup, all charges ($1 unlock) are automatic — no further payment interaction needed.
+After verification, all operations are free — no further setup needed.
 
 ### 5. Verify Authentication Works
 

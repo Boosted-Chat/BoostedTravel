@@ -72,22 +72,22 @@ Override auto-detected browser concurrency limit for local search.
 - **JS:** `await searchLocal('LHR', 'BCN', '2026-04-15', { maxBrowsers: 4 })`
 
 ### unlock_flight_offer
-Confirm live price with airline and reserve offer for 30 minutes. This is the only paid step.
-- **Cost:** $1.00 (Stripe) — charged to saved payment method
+Confirm live price with airline and reserve offer for 30 minutes. FREE with GitHub star.
+- **Cost:** FREE (requires GitHub star verification)
 - **Endpoint:** `POST /api/v1/bookings/unlock`
 - **Input:** offer_id from search results (only required parameter)
-- **Output:** confirmed_price, confirmed_currency, offer_expires_at, payment_status, charge_amount
-- **Prerequisite:** Payment method must be attached via `setup_payment` first
-- **HTTP 402:** No payment method — call setup_payment first (PaymentRequiredError)
+- **Output:** confirmed_price, confirmed_currency, offer_expires_at
+- **Prerequisite:** GitHub star verified via `link_github` first
+- **HTTP 403:** GitHub star not verified — call link_github first
 - **HTTP 410:** Offer expired — airline sold the seats, search again (OfferExpiredError)
-- **Note:** confirmed_price may differ from search price (airline prices change in real-time). After unlock, you have 30 minutes to call book. If the window expires, search again (free) and unlock again ($1).
+- **Note:** confirmed_price may differ from search price (airline prices change in real-time). After unlock, you have 30 minutes to call book. If the window expires, search again (free) and unlock again (free).
 - **Python:** `unlocked = bt.unlock(offer_id)` → returns UnlockResult
 - **CLI:** `letsfg unlock off_xxx`
 - **JS/TS:** `const unlocked = await bt.unlock(offerId)`
 
 ### book_flight
 Create a real airline reservation with PNR code. FREE after unlock.
-- **Cost:** FREE (after $1 unlock)
+- **Cost:** FREE
 - **Input:** offer_id, passengers (id, given_name, family_name, born_on, gender, title, email, phone_number), contact_email
 - **Output:** booking_reference (airline PNR), status, flight_price, currency
 - **CRITICAL:** Use real passenger names (must match passport/ID) and real email (airline sends e-ticket there)
@@ -123,7 +123,7 @@ Register a new AI agent.
 - **Output:** api_key (permanent credential)
 
 ### setup_payment
-Attach a payment card for booking (Stripe).
+Attach a payment card for booking (legacy — use link_github instead).
 - **Cost:** FREE
 - **Input:** token (e.g. "tok_visa") or payment_method_id or card details
 - **Output:** Payment status confirmation
@@ -143,7 +143,7 @@ X-API-Key: trav_...
 
 Get your key by calling `POST /api/v1/agents/register` with agent_name and email. The key is permanent — save it once.
 
-After registration, attach a payment card via `POST /api/v1/agents/setup-payment` before you can unlock/book.
+After registration, star the GitHub repo and link your account via `POST /api/v1/agents/link-github` to unlock and book for free.
 
 ## Complete Workflow
 
@@ -151,9 +151,9 @@ After registration, attach a payment card via `POST /api/v1/agents/setup-payment
 
 ```
 1. POST /api/v1/agents/register        → Get API key (once)
-2. POST /api/v1/agents/setup-payment   → Attach card (once)
+2. POST /api/v1/agents/link-github     → Star repo + verify (once)
 3. POST /api/v1/flights/search         → Search flights (FREE)
-4. POST /api/v1/bookings/unlock        → Unlock offer ($1)
+4. POST /api/v1/bookings/unlock        → Unlock offer (FREE)
 5. POST /api/v1/bookings/book          → Book flight (FREE)
 ```
 
@@ -161,7 +161,7 @@ After registration, attach a payment card via `POST /api/v1/agents/setup-payment
 
 ```
 1. POST /api/v1/agents/register        → Get API key (once)
-2. POST /api/v1/agents/setup-payment   → Attach card (once)
+2. POST /api/v1/agents/link-github     → Star repo + verify (once)
 3. POST /api/v1/hotels/search          → Search hotels (FREE)
 4. POST /api/v1/hotels/checkrate       → Confirm price (if rate_type=RECHECK)
 5. POST /api/v1/hotels/book            → Book room
@@ -256,9 +256,10 @@ LETSFG_API_KEY=trav_... letsfg-mcp
 |------|-------------|------|
 | `search_flights` | Search 400+ airlines worldwide | FREE |
 | `resolve_location` | City name → IATA code | FREE |
-| `unlock_flight_offer` | Confirm price, reserve 30min | $1 |
+| `link_github` | Star repo for free access (once) | FREE |
+| `unlock_flight_offer` | Confirm price, reserve 30min | FREE |
 | `book_flight` | Create real airline reservation | FREE |
-| `setup_payment` | Attach payment card (once) | FREE |
+| `setup_payment` | Legacy payment card (optional) | FREE |
 | `get_agent_profile` | View usage stats | FREE |
 
 ## Search Flags Reference
@@ -290,7 +291,7 @@ LETSFG_API_KEY=trav_... letsfg-mcp
 | Exception | HTTP Code | When |
 |-----------|-----------|------|
 | `AuthenticationError` | 401 | Invalid or missing API key |
-| `PaymentRequiredError` | 402 | No payment method attached |
+| `PaymentRequiredError` | 402 | No payment method (legacy flow) |
 | `OfferExpiredError` | 410 | Offer no longer available |
 | `LetsFGError` | 422 | Invalid request parameters |
 | `LetsFGError` | 429 | Too many requests (retry with backoff) |
@@ -308,8 +309,8 @@ except AuthenticationError:
     # API key invalid or expired — re-register
     creds = LetsFG.register("my-agent", "agent@example.com")
     bt = LetsFG(api_key=creds["api_key"])
-    # Don't forget to re-setup payment
-    bt.setup_payment(token="tok_visa")
+    # Don't forget to link GitHub
+    bt.link_github("your-github-username")
 ```
 
 ### Rate Limit and Timeout Handling
@@ -352,7 +353,7 @@ def search_with_retry(bt, origin, dest, date, max_retries=3):
 | Register agent | **Free** |
 | Setup payment | **Free** |
 | View profile | **Free** |
-| Unlock offer | **$1.00** |
+| Unlock offer | **Free** |
 | Book flight (after unlock) | **Free** |
 | Hotel booking | Room price only |
 | Hotel cancellation | Per cancellation policy |
@@ -367,5 +368,5 @@ def search_with_retry(bt, origin, dest, date, max_retries=3):
 - Real airline PNR codes and hotel confirmations
 - E-tickets sent directly to passenger email
 - Search is always free and unlimited
-- Only fee: $1 unlock per flight offer
+- Only requirement: star our GitHub repo for unlimited access
 - API designed for machines, not browsers

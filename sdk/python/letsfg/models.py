@@ -314,6 +314,8 @@ class AgentProfile:
     payment_ready: bool
     usage: dict
     payment: Optional[dict] = None
+    github_username: str = ""
+    github_star_verified: bool = False
 
     @classmethod
     def from_dict(cls, d: dict) -> "AgentProfile":
@@ -325,4 +327,6 @@ class AgentProfile:
             payment_ready=d.get("payment_ready", False),
             usage=d.get("usage", {}),
             payment=d.get("payment"),
+            github_username=d.get("github_username", ""),
+            github_star_verified=d.get("github_star_verified", False),
         )

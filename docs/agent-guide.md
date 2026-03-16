@@ -30,16 +30,16 @@ result = bt.search("LHR", "JFK", "2026-06-01")
 
 ```
 User request → Agent parses intent → Resolve locations → Search (free)
-  → Filter & rank offers → Present to user → Unlock best ($1) → Book (free)
+  → Filter & rank offers → Present to user → Unlock best (free) → Book (free)
 ```
 
 ## Agent Best Practices
 
 1. **Always resolve locations first.** City names are ambiguous — "London" could be LHR, LGW, STN, LCY, or LTN. Use `resolve_location()` to get IATA codes, then let the user confirm if multiple options exist.
 
-2. **Search is free — use it liberally.** Search multiple dates, multiple origin/destination pairs, different cabin classes. Build a complete picture before spending $1 on unlock.
+2. **Search is free — use it liberally.** Search multiple dates, multiple origin/destination pairs, different cabin classes. Build a complete picture before unlocking.
 
-3. **Understand the 30-minute expiration.** After unlocking, you have 30 minutes to book. If the window expires, you must search again (free) and unlock again ($1). Plan your workflow to minimize the gap between unlock and book.
+3. **Understand the 30-minute expiration.** After unlocking, you have 30 minutes to book. If the window expires, you must search again (free) and unlock again (free). Plan your workflow to minimize the gap between unlock and book.
 
 4. **Handle price changes gracefully.** Search prices are real-time snapshots. The unlock step confirms the actual current price with the airline. If the confirmed price differs significantly from the search price, inform the user before proceeding to book.
 

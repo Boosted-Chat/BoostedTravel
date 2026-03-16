@@ -121,7 +121,7 @@ https://api.letsfg.co/mcp
 | `resolve_location` | Convert city names to IATA codes |
 | `system_info` | System resources & recommended concurrency |
 | `setup_payment` | Attach a Stripe payment method |
-| `unlock_flight_offer` | Confirm price and reserve ($1) |
+| `unlock_flight_offer` | Confirm price and reserve (free) |
 | `book_flight` | Create airline booking (PNR) |
 
 [npm page →](https://www.npmjs.com/package/letsfg-mcp)
@@ -135,7 +135,7 @@ All packages connect to the same API:
 | `/api/v1/agents/register` | POST | Create account, get API key |
 | `/api/v1/flights/search` | POST | Search flights |
 | `/api/v1/flights/resolve-location` | GET | Resolve city/airport codes |
-| `/api/v1/bookings/unlock` | POST | Unlock offer ($1) |
+| `/api/v1/bookings/unlock` | POST | Unlock offer (free) |
 | `/api/v1/bookings/book` | POST | Book flight |
 | `/api/v1/agents/setup-payment` | POST | Setup Stripe payment |
 | `/api/v1/agents/me` | GET | Agent profile |

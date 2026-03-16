@@ -74,7 +74,7 @@ LFG/
 
 ### Three-Step Flow
 1. **Search** (free) → Returns flight offers from 400+ airlines
-2. **Unlock** ($1) → Confirms live price, locks offer for booking
+2. **Unlock** (free with GitHub star) → Confirms live price, locks offer for booking
 3. **Book** (free after unlock) → Creates the actual booking with the airline
 
 ### Two Search Modes
@@ -105,8 +105,8 @@ Key infrastructure files in `connectors/`:
 ### Zero Price Bias
 The API returns raw airline prices — no demand-based inflation, no cookie tracking, no surge pricing. This is a core selling point.
 
-### No Booking Fee
-Booking is free after the $1 unlock. The unlock fee is the only revenue.
+### 100% Free
+Everything is free — just star the GitHub repo (https://github.com/LetsFG/LetsFG) and verify via link-github.
 
 ### Real Passenger Details Required
 When booking, agents MUST use real passenger email and legal name. Airlines send e-tickets to the email provided. Placeholder/fake data will cause booking failures.
@@ -176,11 +176,12 @@ npm publish
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/agents/register` | Register for an API key |
-| `POST` | `/api/v1/agents/setup-payment` | Attach Stripe payment method |
+| `POST` | `/api/v1/agents/setup-payment` | Legacy Stripe payment (optional) |
 | `GET`  | `/api/v1/agents/me` | Agent profile + usage stats |
+| `POST` | `/api/v1/agents/link-github` | Star repo for free access |
 | `POST` | `/api/v1/flights/search` | Search flights (cloud providers) |
 | `GET`  | `/api/v1/flights/locations/{q}` | Resolve city/airport to IATA codes |
-| `POST` | `/api/v1/bookings/unlock` | Unlock an offer ($1) |
+| `POST` | `/api/v1/bookings/unlock` | Unlock an offer (free) |
 | `POST` | `/api/v1/bookings/book` | Book a flight (free) |
 | `GET`  | `/api/v1/bookings/booking/{id}` | Get booking details |
 | `GET`  | `/.well-known/ai-plugin.json` | OpenAI Plugin manifest |

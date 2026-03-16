@@ -2,19 +2,23 @@
 LetsFG Python SDK — agent-native flight search & booking.
 
 Zero-config, zero-browser, zero-markup. Built for autonomous agents.
+100% free — just star the GitHub repo.
 
     from letsfg import LetsFG
 
     bt = LetsFG(api_key="trav_...")
     
+    # Link GitHub (one-time — star the repo first)
+    bt.link_github("myusername")
+    
     # Search (FREE)
     flights = bt.search("LON", "BCN", "2026-04-01")
     print(flights.cheapest.summary())
     
-    # Unlock ($1)
+    # Unlock (FREE)
     unlock = bt.unlock(flights.cheapest.id)
     
-    # Book (FREE after unlock)
+    # Book (FREE)
     booking = bt.book(
         offer_id=flights.cheapest.id,
         passengers=[{
@@ -426,12 +430,32 @@ class LetsFG:
             return data
         return [data] if data else []
 
+    def link_github(self, github_username: str) -> dict:
+        """
+        Link your GitHub account for free unlimited access.
+
+        Star https://github.com/LetsFG/LetsFG first, then call this
+        with your GitHub username. Once verified, you get free access
+        to unlock, book, and checkout — forever.
+
+        Args:
+            github_username: Your GitHub username.
+
+        Returns:
+            Dict with verification status and message.
+        """
+        self._require_api_key()
+        return self._post(
+            "/api/v1/agents/link-github",
+            {"github_username": github_username},
+        )
+
     def unlock(self, offer_id: str) -> UnlockResult:
         """
-        Unlock a flight offer — $1 proof-of-intent fee.
+        Unlock a flight offer — confirms live price and reserves for 30 minutes.
 
-        Confirms the latest price with the airline and reserves
-        the offer for 30 minutes. Required before booking.
+        FREE with GitHub star (link your account first via link_github()).
+        Required before booking.
 
         Args:
             offer_id: The offer ID from search results.
@@ -519,8 +543,8 @@ class LetsFG:
         details, and extras, stopping at the payment page. The user can then
         complete payment manually via the returned booking_url.
 
-        Requires a checkout token from unlock() — the $1 unlock fee must be
-        paid before checkout automation runs. This prevents abuse since the
+        Requires a checkout token from unlock() — the unlock step must be
+        completed before checkout automation runs. This prevents abuse since the
         token is verified with the closed-source backend.
 
         For airlines without automated checkout, returns the booking_url
@@ -568,7 +592,7 @@ class LetsFG:
 
         This is the local-first version: the connector runs on your device,
         but the checkout token is still verified with the backend to enforce
-        the $1 paywall.
+        the star-gating (you must have linked your GitHub first).
 
         Requires: playwright install chromium
 

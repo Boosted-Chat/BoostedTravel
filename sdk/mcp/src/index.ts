@@ -126,12 +126,12 @@ const TOOLS = [
   {
     name: 'unlock_flight_offer',
     description:
-      'Unlock a flight offer for booking — $1 proof-of-intent fee.\n\n' +
+      'Unlock a flight offer for booking — FREE with GitHub star.\n\n' +
       'This is the "quote" step: confirms the latest price with the airline and reserves the offer for 30 minutes. ' +
       'ALWAYS call this before book_flight so the user can see the confirmed price.\n\n' +
       'If the confirmed price differs from the search price, inform the user before proceeding.\n\n' +
-      'Requires payment method (call setup_payment first).\n\n' +
-      'SAFETY: Charges $1. Not idempotent — calling twice on the same offer will charge twice.',
+      'Requires GitHub star verification (call link_github first).\n\n' +
+      'Not idempotent — calling twice on the same offer may process twice.',
     inputSchema: {
       type: 'object',
       required: ['offer_id'],
@@ -183,8 +183,8 @@ const TOOLS = [
   {
     name: 'setup_payment',
     description:
-      "Set up payment method. Required before unlock/book. For testing use token 'tok_visa'. Only needed once.\n\n" +
-      'Idempotent — safe to call multiple times (updates the payment method).',
+      "Legacy payment setup — no longer required. Use link_github instead for free unlimited access.\n\n" +
+      'Only needed if you want the old Stripe-based flow. For most users, star the GitHub repo and call link_github.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -204,7 +204,7 @@ const TOOLS = [
     name: 'start_checkout',
     description:
       'Automate airline checkout up to the payment page — NEVER submits payment.\n\n' +
-      'FLOW: search_flights → unlock_flight_offer ($1) → start_checkout\n\n' +
+      'FLOW: search_flights → unlock_flight_offer → start_checkout\n\n' +
       'Uses Playwright to drive the airline website: selects flights, fills passenger details, ' +
       'skips extras/seats, and stops at the payment form. Returns a screenshot and booking URL ' +
       'so the user can complete manually in their browser.\n\n' +
@@ -234,6 +234,22 @@ const TOOLS = [
             },
           },
         },
+      },
+    },
+  },
+  {
+    name: 'link_github',
+    description:
+      'Link your GitHub account for FREE unlimited access — star the repo and verify.\n\n' +
+      'FLOW: 1) User stars https://github.com/LetsFG/LetsFG  2) Call this tool with their GitHub username\n\n' +
+      'Once verified, the user gets unlimited search, unlock, and booking forever.\n' +
+      'Only needs to be called once. If already verified, returns confirmation.\n\n' +
+      'If status is "star_required", the user needs to star the repo first, then try again.',
+    inputSchema: {
+      type: 'object',
+      required: ['github_username'],
+      properties: {
+        github_username: { type: 'string', description: "User's GitHub username (e.g., 'octocat')" },
       },
     },
   },
@@ -332,6 +348,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
 
     case 'unlock_flight_offer': {
       const result = await apiRequest('POST', '/api/v1/bookings/unlock', { offer_id: args.offer_id });
+      return JSON.stringify(result, null, 2);
+    }
+
+    case 'link_github': {
+      const result = await apiRequest('POST', '/api/v1/agents/link-github', { github_username: args.github_username });
       return JSON.stringify(result, null, 2);
     }
 

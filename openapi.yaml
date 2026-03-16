@@ -8,7 +8,7 @@ info:
 
     ## How It Works
     1. **Search** (free) — real-time offers from 400+ airlines
-    2. **Unlock** ($1) — confirm live price, reserve for 30 minutes
+    2. **Unlock** (free with GitHub star) — confirm live price, reserve for 30 minutes
     3. **Book** (free) — create real airline PNR
 
     ## Local Search
@@ -422,8 +422,8 @@ paths:
   /api/v1/agents/setup-payment:
     post:
       operationId: setupPayment
-      summary: Set up payment method
-      description: "Attach a Stripe payment method. Required before unlock/book."
+      summary: Set up payment method (legacy)
+      description: "Legacy Stripe payment method. Use link-github instead for free access."
       tags: [Authentication]
       requestBody:
         required: true
@@ -434,6 +434,42 @@ paths:
       responses:
         '200':
           description: Payment method attached
+        '401':
+          description: Invalid or missing API key
+
+  /api/v1/agents/link-github:
+    post:
+      operationId: linkGithub
+      summary: Link GitHub account for free access
+      description: |
+        Star the LetsFG repo (https://github.com/LetsFG/LetsFG) and provide your GitHub
+        username to get free unlimited access. One-time setup — access is permanent.
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [github_username]
+              properties:
+                github_username:
+                  type: string
+                  description: Your GitHub username
+                  example: "octocat"
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [verified, star_required, already_verified]
+                  github_username:
+                    type: string
         '401':
           description: Invalid or missing API key
 
@@ -491,10 +527,10 @@ paths:
   /api/v1/bookings/unlock:
     post:
       operationId: unlockOffer
-      summary: Unlock a flight offer ($1)
+      summary: Unlock a flight offer (free)
       description: |
         Confirm the live price with the airline and reserve for 30 minutes.
-        Costs $1.00 flat via Stripe. Payment method must be set up first.
+        Free with GitHub star verification. Call link-github first.
         The confirmed price may differ from the search price (airline prices change in real-time).
       tags: [Bookings]
       requestBody:

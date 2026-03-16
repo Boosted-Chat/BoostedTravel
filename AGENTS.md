@@ -34,7 +34,7 @@ LetsFG is the largest agent-native flight search and booking toolkit. It gives y
 | Google Flights API | N/A | N/A | Doesn't exist (no public API) | N/A |
 | **LFG** | **10 seconds** | **1 tool call** | **75 airlines + GDS in parallel** | **We maintain it** |
 
-Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate prices based on demand tracking, cookie/session tracking, browser fingerprinting, and surge pricing. **LFG returns the raw airline price every time.** The only fee is a flat $1 to unlock an offer before checkout.
+Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate prices based on demand tracking, cookie/session tracking, browser fingerprinting, and surge pricing. **LFG returns the raw airline price every time.** 100% free — just star our GitHub repo for unlimited access.
 
 ## How It Works (3 Steps)
 
@@ -53,27 +53,26 @@ result = await search_local("GDN", "BCN", "2026-06-15")
 result = await search_local("GDN", "BCN", "2026-06-15", max_browsers=4)
 ```
 
-### 2. Unlock ($1.00)
+### 2. Unlock (FREE)
 ```
 POST /api/v1/bookings/unlock
 ```
-Confirm the live price and lock it for booking. Costs $1.00 via Stripe. This is the only charge.
+Confirm the live price and lock it for booking. FREE with GitHub star verification.
 
 **What happens when you unlock:**
 1. LFG sends `offer_id` to the airline's NDC/GDS system
 2. Airline confirms **current live price** (may differ from search)
-3. $1.00 charged via Stripe to your saved payment method
-4. Offer **reserved for 30 minutes** — you must book within this window
-5. Returns `confirmed_price`, `confirmed_currency`, `offer_expires_at`
+3. Offer **reserved for 30 minutes** — you must book within this window
+4. Returns `confirmed_price`, `confirmed_currency`, `offer_expires_at`
 
-**Requirements:** Payment method must be set up first (`letsfg setup-payment` or `bt.setup_payment()`). Without payment, unlock returns HTTP 402 (`PaymentRequiredError`).
+**Requirements:** GitHub star must be verified first (`letsfg star --github <username>` or `bt.link_github(username)`). Without verification, unlock returns HTTP 403.
 
 **Key unlock details:**
 - Input: `offer_id` (from search results) — this is the only required parameter
-- HTTP 402 → no payment method attached
+- HTTP 403 → GitHub star not verified — star the repo and call link-github
 - HTTP 410 → offer expired (airline sold the seats) — search again
 - The `confirmed_price` may differ from search price (airline prices change in real-time)
-- If 30-minute window expires without booking, the $1 is not refunded
+- If 30-minute window expires without booking, search and unlock again (free)
 
 ```python
 from letsfg import LetsFG, PaymentRequiredError, OfferExpiredError
@@ -87,7 +86,7 @@ try:
     print(f"Confirmed: {unlocked.confirmed_price} {unlocked.confirmed_currency}")
     print(f"Expires: {unlocked.offer_expires_at}")
 except PaymentRequiredError:
-    print("Run: letsfg setup-payment")
+    print("Star the repo first: letsfg star --github <username>")
 except OfferExpiredError:
     print("Offer expired — search again")
 ```
@@ -109,7 +108,7 @@ curl -X POST https://api.letsfg.co/api/v1/bookings/unlock \
 ```
 POST /api/v1/bookings/book
 ```
-Book the flight with real passenger details. **No additional charges** — booking is free after the $1 unlock.
+Book the flight with real passenger details. **No additional charges** — booking is free after unlock.
 
 ## ⚠️ CRITICAL: Use REAL Passenger Details
 
@@ -150,7 +149,7 @@ letsfg search JFK LHR 2026-05-01 --max-stops 0
 # Resolve city to IATA codes
 letsfg locations "New York"
 
-# Unlock an offer ($1)
+# Unlock an offer (free)
 letsfg unlock off_xxx
 
 # Book the flight (free after unlock)
@@ -232,9 +231,10 @@ Add to your MCP config:
 | `letsfg register` | Get your API key | Free |
 | `letsfg search <origin> <dest> <date>` | Search flights | Free |
 | `letsfg locations <query>` | Resolve city/airport to IATA | Free |
-| `letsfg unlock <offer_id>` | Unlock offer details | $1 |
+| `letsfg unlock <offer_id>` | Unlock offer details | Free |
 | `letsfg book <offer_id>` | Book the flight | Free (after unlock) |
-| `letsfg setup-payment` | Set up payment method | Free |
+| `letsfg star --github <username>` | Link GitHub for free access | Free |
+| `letsfg setup-payment` | Legacy payment setup | Free |
 | `letsfg me` | View profile & usage | Free |
 
 ## Authentication — How to Use Your API Key
@@ -288,14 +288,14 @@ creds = LetsFG.register("my-agent", "agent@example.com")
 bt = LetsFG(api_key=creds["api_key"])
 ```
 
-### Setup Payment (Required Before Unlock)
+### Link GitHub (Required Before Unlock)
 
 ```bash
-letsfg setup-payment  # opens Stripe to attach payment method
+letsfg star --github your-username  # verify GitHub star for free access
 ```
 
 ```python
-bt.setup_payment(token="tok_visa")  # Stripe payment token
+bt.link_github("your-username")  # GitHub username
 ```
 
 ## Resolve Locations Before Searching
@@ -412,7 +412,7 @@ The SDK raises specific exceptions for each failure mode. All errors include mac
 | `MISSING_PARAMETER` | validation | 422 | Required field missing |
 | `INVALID_PARAMETER` | validation | 422 | Field value out of range or wrong type |
 | `AUTH_INVALID` | business | 401 | API key missing or invalid |
-| `PAYMENT_REQUIRED` | business | 402 | No payment method (call setup_payment) |
+| `PAYMENT_REQUIRED` | business | 402 | Legacy — no payment method |
 | `PAYMENT_DECLINED` | business | 402 | Stripe charge failed |
 | `OFFER_EXPIRED` | business | 410 | Offer no longer available — search again |
 | `OFFER_NOT_UNLOCKED` | business | 403 | Tried to book without unlocking first |
@@ -491,7 +491,8 @@ This section documents the safety guarantees that make LFG safe for autonomous a
 | `resolve_location` | None (read-only) | Free | Yes | Yes |
 | `get_agent_profile` | None (read-only) | Free | Yes | Yes |
 | `setup_payment` | Updates payment method | Free | Yes | Yes (last write wins) |
-| `unlock_flight_offer` | Charges $1, reserves offer | $1 | **No** — charges again | **No** |
+| `link_github` | Verifies GitHub star | Free | Yes | Yes |
+| `unlock_flight_offer` | Reserves offer | Free | Not idempotent | **No** |
 | `book_flight` | Creates airline reservation | Free | **Only with idempotency_key** | **With key: yes** |
 
 ### Idempotency Keys (Preventing Double-Bookings)
@@ -528,7 +529,7 @@ LFG enforces a mandatory "quote" step (unlock) before booking:
 ```
 search_flights (free, read-only)
     ↓
-unlock_flight_offer ($1, confirms live price)
+unlock_flight_offer (free, confirms live price)
     ↓  ← agent shows confirmed price to user, gets approval
 book_flight (free, creates reservation)
 ```
@@ -605,12 +606,12 @@ def search_and_book(origin_city, dest_city, date, passenger_info, email):
 
     print(f"Found {flights.total_results} offers, cheapest: {flights.cheapest.price} {flights.cheapest.currency}")
 
-    # Step 3: Unlock ($1) — confirms price, reserves 30min
+    # Step 3: Unlock (free) — confirms price, reserves 30min
     try:
         unlocked = bt.unlock(flights.cheapest.id)
         print(f"Confirmed: {unlocked.confirmed_currency} {unlocked.confirmed_price}")
     except PaymentRequiredError:
-        print("Setup payment first: letsfg setup-payment")
+        print("Star the repo first: letsfg star --github <username>")
         return None
     except OfferExpiredError:
         print("Offer expired — search again")
@@ -668,9 +669,9 @@ if [ "$OFFER" = "null" ] || [ -z "$OFFER" ]; then
 fi
 echo "Found $TOTAL offers, best: $OFFER"
 
-# Step 3: Unlock ($1) — with error check
+# Step 3: Unlock (free) — with error check
 if ! letsfg unlock "$OFFER" --json > /dev/null 2>&1; then
-  echo "Unlock failed — check payment setup (letsfg setup-payment)" >&2
+  echo "Unlock failed — check GitHub star (letsfg star --github <username>)" >&2
   exit 1
 fi
 
@@ -681,9 +682,9 @@ letsfg book "$OFFER" \
   --email john.doe@example.com
 ```
 
-## Minimizing Unlock Costs (Price Aggregation)
+## Unlock Best Practices
 
-Searching is **completely free** — only unlock ($1) costs money. Smart strategies:
+Searching is **completely free** — unlock is also free with GitHub star. Best practices:
 
 ### Search Wide, Unlock Narrow
 
@@ -696,7 +697,7 @@ for date in dates:
     if result.offers and (best is None or result.cheapest.price < best[1].price):
         best = (date, result.cheapest)
 
-# Only unlock the winner — $1
+# Only unlock the winner
 unlocked = bt.unlock(best[1].id)
 ```
 
@@ -705,7 +706,7 @@ unlocked = bt.unlock(best[1].id)
 ```python
 flights = bt.search("LHR", "JFK", "2026-06-01", limit=50)
 
-# Apply all filters BEFORE paying $1
+# Apply all filters BEFORE unlocking
 candidates = [
     o for o in flights.offers
     if o.outbound.stopovers == 0
@@ -715,7 +716,7 @@ candidates = [
 
 if candidates:
     best = min(candidates, key=lambda o: o.price)
-    unlocked = bt.unlock(best.id)  # $1 only for the best match
+    unlocked = bt.unlock(best.id)  # free with GitHub star
 ```
 
 ### Use the 30-Minute Window
@@ -729,7 +730,7 @@ After unlock, the price is held for 30 minutes. Use this to present options to t
 | Search | FREE | Unlimited — any route, any date, any number of searches |
 | Resolve location | FREE | Unlimited |
 | View offer details | FREE | Price, airline, duration, conditions — all in search |
-| Unlock | $1 | Confirms price, holds 30 minutes |
+| Unlock | FREE | Confirms price, holds 30 minutes |
 | Book | FREE | After unlock — real airline PNR |
 
 ## Rate Limits and Timeouts
@@ -771,7 +772,7 @@ def search_with_retry(bt, origin, dest, date, max_retries=3):
 
 ```
 User request → Parse intent → Resolve locations → Search (free)
-  → Filter & rank → Present options → Unlock best ($1) → Collect passenger details → Book (free)
+  → Filter & rank → Present options → Unlock best (free) → Collect passenger details → Book (free)
 ```
 
 ### Best Practices
@@ -779,7 +780,7 @@ User request → Parse intent → Resolve locations → Search (free)
 1. **Resolve locations first.** "London" = 5+ airports. Use `resolve_location()` to get IATA codes.
 2. **Search liberally.** It's free. Search multiple dates, cabin classes, and airport combinations.
 3. **Filter before unlocking.** Apply all preferences (airline, stops, duration, conditions) on free search results.
-4. **Manage the 30-minute window.** Unlock → collect passenger details → book. If window expires, search+unlock again ($1 more).
+4. **Manage the 30-minute window.** Unlock → collect passenger details → book. If window expires, search+unlock again (free).
 5. **Handle price changes.** Unlock confirms the real-time airline price. It may differ slightly from search. Inform the user.
 6. **Map passenger IDs.** Search returns `passenger_ids` (e.g., `["pas_0", "pas_1"]`). Each booking passenger must include the correct `id`.
 7. **Use REAL details.** Airlines send e-tickets to the contact email. Names must match passport/ID.
@@ -986,7 +987,7 @@ class FlightAgent:
             else:
                 best_offer = flights.cheapest
             
-            # Step 4: Unlock ($1) — confirms live price with airline
+            # Step 4: Unlock (free) — confirms live price with airline
             try:
                 unlocked = self.bt.unlock(best_offer.id)
                 
