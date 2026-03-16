@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boostedtravel"
-version = "0.2.16"
-description = "Agent-native flight search & booking. 400+ airlines, 73 direct airline connectors run locally. Built for autonomous AI agents."
+version = "0.2.17"
+description = "Agent-native flight search & booking. 400+ airlines, 75 direct airline connectors run locally. Built for autonomous AI agents."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"

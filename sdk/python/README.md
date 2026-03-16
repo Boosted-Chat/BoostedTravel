@@ -1,8 +1,8 @@
 # BoostedTravel — Agent-Native Flight Search & Booking
 
-<!-- mcp-name: com.boostedchat/travel -->
+<!-- mcp-name: io.github.Efistoffeles/boostedtravel -->
 
-Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 73 direct airline connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents — works with OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible client.
+Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 75 direct airline connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents — works with OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible client.
 
 > 🎥 **[Watch the demo](https://github.com/Boosted-Chat/BoostedTravel#demo-boostedtravel-vs-default-agent-search)** — side-by-side comparison of default agent search vs BoostedTravel CLI.
 
