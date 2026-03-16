@@ -1,10 +1,11 @@
 # BoostedTravel
 
-Agent-native flight search & booking. 400+ airlines, 73 ready-to-run airline connectors, virtual interlining — straight from the terminal. Built for AI agents (OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf) and developers.
+Agent-native flight search & booking. 400+ airlines, 75 ready-to-run airline connectors, virtual interlining — straight from the terminal. Built for AI agents (OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf) and developers.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/boostedtravel)](https://pypi.org/project/boostedtravel/)
-[![npm](https://img.shields.io/npm/v/boostedtravel)](https://www.npmjs.com/package/boostedtravel)
+[![npm](https://img.shields.io/npm/v/boostedtravel-mcp?label=npm%20%28MCP%29)](https://www.npmjs.com/package/boostedtravel-mcp)
+[![npm](https://img.shields.io/npm/v/boostedtravel?label=npm%20%28JS%20SDK%29)](https://www.npmjs.com/package/boostedtravel)
 [![Smithery](https://smithery.ai/badge/boostedtravel-mcp)](https://smithery.ai/server/boostedtravel-mcp)
 
 ## Demo: BoostedTravel vs Default Agent Search
@@ -27,7 +28,7 @@ BoostedTravel works by finding the best price across the entire internet. It fir
 | View details & price | Free (with tracking/inflation) | **Free** (no tracking) |
 | Book | Ticket + hidden markup | **$1 unlock + ticket price** |
 | Price goes up on repeat search? | Yes | **Never** |
-| LCC coverage | Missing many low-cost carriers | **73 direct airline connectors** |
+| LCC coverage | Missing many low-cost carriers | **75 direct airline connectors** |
 
 ---
 
@@ -134,7 +135,7 @@ boostedtravel search GDN BER 2026-03-03 --json | jq '.offers[0]'
 
 ## Install
 
-### Python (recommended — includes 73 local airline connectors)
+### Python (recommended — includes 75 local airline connectors)
 
 ```bash
 pip install boostedtravel
@@ -169,7 +170,7 @@ Add to your MCP config:
 }
 ```
 
-> **Note:** `BOOSTEDTRAVEL_API_KEY` is optional. Without it, the MCP server still runs all 73 local connectors. With it, you also get enterprise GDS/NDC sources (400+ more airlines).
+> **Note:** `BOOSTEDTRAVEL_API_KEY` is optional. Without it, the MCP server still runs all 75 local connectors. With it, you also get enterprise GDS/NDC sources (400+ more airlines).
 
 ### Python SDK
 
@@ -358,7 +359,7 @@ configure_max_browsers(4)  # explicit override
 
 | Package | Install | What it is |
 |---------|---------|------------|
-| **Python SDK + CLI** | `pip install boostedtravel` | SDK + `boostedtravel` CLI + 73 local airline connectors |
+| **Python SDK + CLI** | `pip install boostedtravel` | SDK + `boostedtravel` CLI + 75 local airline connectors |
 | **JS/TS SDK + CLI** | `npm install -g boostedtravel` | SDK + `boostedtravel` CLI command |
 | **MCP Server** | `npx boostedtravel-mcp` | Model Context Protocol for Claude, Cursor, Windsurf |
 | **Remote MCP** | `https://api.boostedchat.com/mcp` | Streamable HTTP — no install needed |

@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.boostedchat/travel",
   "title": "BoostedTravel",
-  "description": "Flight search & booking for AI agents. 400+ airlines, 73 local connectors run free without API key. $20-50 cheaper than OTAs.",
+  "description": "Flight search & booking for AI agents. 400+ airlines, 75 local connectors run free without API key. $20-50 cheaper than OTAs.",
   "repository": {
     "url": "https://github.com/Boosted-Chat/BoostedTravel",
     "source": "github"
@@ -32,7 +32,7 @@
       },
       "environmentVariables": [
         {
-          "description": "Your BoostedTravel API key (optional — 73 local airline connectors work without it, API key adds 400+ GDS/NDC airlines)",
+          "description": "Your BoostedTravel API key (optional — 75 local airline connectors work without it, API key adds 400+ GDS/NDC airlines)",
           "isRequired": false,
           "format": "string",
           "isSecret": true,
@@ -49,7 +49,7 @@
       },
       "environmentVariables": [
         {
-          "description": "Your BoostedTravel API key (optional — 73 local airline connectors work without it, API key adds 400+ GDS/NDC airlines)",
+          "description": "Your BoostedTravel API key (optional — 75 local airline connectors work without it, API key adds 400+ GDS/NDC airlines)",
           "isRequired": false,
           "format": "string",
           "isSecret": true,
