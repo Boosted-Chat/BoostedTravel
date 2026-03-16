@@ -126,6 +126,23 @@ export interface SearchOptions {
   maxBrowsers?: number;
 }
 
+export interface CheckoutProgress {
+  status: string;               // "payment_page_reached", "url_only", "failed", "error"
+  step: string;                 // Current checkout step
+  step_index: number;           // Numeric step (0-8)
+  airline: string;              // Airline name
+  source: string;               // Source tag (e.g., "ryanair_direct")
+  offer_id: string;
+  total_price: number;          // Price shown on checkout page
+  currency: string;
+  booking_url: string;          // Direct URL for manual completion
+  screenshot_b64: string;       // Base64 screenshot of current state
+  message: string;
+  can_complete_manually: boolean;
+  elapsed_seconds: number;
+  details: Record<string, unknown>;
+}
+
 export interface BoostedTravelConfig {
   apiKey?: string;
   baseUrl?: string;
@@ -466,6 +483,85 @@ export class BoostedTravel {
   async setupPayment(token = 'tok_visa'): Promise<Record<string, unknown>> {
     this.requireApiKey();
     return this.post<Record<string, unknown>>('/api/v1/agents/setup-payment', { token });
+  }
+
+  /**
+   * Start automated checkout — drives to payment page, NEVER submits payment.
+   *
+   * Requires unlock first ($1 fee). Returns progress with screenshot and
+   * booking URL for manual completion.
+   *
+   * @param offerId - Offer ID from search results
+   * @param passengers - Passenger details (use test data for safety)
+   * @param checkoutToken - Token from unlock() response
+   */
+  async startCheckout(
+    offerId: string,
+    passengers: Passenger[],
+    checkoutToken: string,
+  ): Promise<CheckoutProgress> {
+    this.requireApiKey();
+    return this.post<CheckoutProgress>('/api/v1/bookings/start-checkout', {
+      offer_id: offerId,
+      passengers,
+      checkout_token: checkoutToken,
+    });
+  }
+
+  /**
+   * Start checkout locally via Python (runs on your machine).
+   * Requires: pip install boostedtravel && playwright install chromium
+   *
+   * @param offer - Full FlightOffer object from search results
+   * @param passengers - Passenger details
+   * @param checkoutToken - Token from unlock()
+   */
+  async startCheckoutLocal(
+    offer: FlightOffer,
+    passengers: Passenger[],
+    checkoutToken: string,
+  ): Promise<CheckoutProgress> {
+    const { spawn } = await import('child_process');
+
+    const input = JSON.stringify({
+      __checkout: true,
+      offer,
+      passengers,
+      checkout_token: checkoutToken,
+      api_key: this.apiKey,
+      base_url: this.baseUrl,
+    });
+
+    return new Promise((resolve, reject) => {
+      const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+      const child = spawn(pythonCmd, ['-m', 'boostedtravel.local'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 180_000,
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+      child.on('close', (code) => {
+        try {
+          const data = JSON.parse(stdout);
+          if (data.error) reject(new BoostedTravelError(data.error));
+          else resolve(data as CheckoutProgress);
+        } catch {
+          reject(new BoostedTravelError(`Checkout failed (code ${code}): ${stdout || stderr}`));
+        }
+      });
+
+      child.on('error', (err) => {
+        reject(new BoostedTravelError(`Cannot start Python: ${err.message}`));
+      });
+
+      child.stdin.write(input);
+      child.stdin.end();
+    });
   }
 
   /**

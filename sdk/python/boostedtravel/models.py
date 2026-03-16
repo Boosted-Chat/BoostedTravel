@@ -263,6 +263,48 @@ class BookingResult:
 
 
 @dataclass
+class CheckoutProgress:
+    """Progress report from automated airline checkout."""
+    status: str  # "payment_page_reached", "in_progress", "failed", "error", "url_only"
+    step: str                          # Current checkout step
+    step_index: int                    # Numeric step (0-8)
+    airline: str                       # Airline name
+    source: str                        # Source tag (e.g., "ryanair_direct")
+    offer_id: str
+    total_price: float                 # Price shown on checkout page
+    currency: str
+    booking_url: str                   # Direct URL for manual completion
+    screenshot_b64: str                # Base64 screenshot of current state
+    message: str
+    can_complete_manually: bool        # True if user can finish in browser
+    elapsed_seconds: float
+    details: dict
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CheckoutProgress":
+        return cls(
+            status=d.get("status", "not_started"),
+            step=d.get("step", "started"),
+            step_index=d.get("step_index", 0),
+            airline=d.get("airline", ""),
+            source=d.get("source", ""),
+            offer_id=d.get("offer_id", ""),
+            total_price=d.get("total_price", 0.0),
+            currency=d.get("currency", "EUR"),
+            booking_url=d.get("booking_url", ""),
+            screenshot_b64=d.get("screenshot_b64", ""),
+            message=d.get("message", ""),
+            can_complete_manually=d.get("can_complete_manually", True),
+            elapsed_seconds=d.get("elapsed_seconds", 0.0),
+            details=d.get("details", {}),
+        )
+
+    @property
+    def reached_payment(self) -> bool:
+        return self.step == "payment_page_reached"
+
+
+@dataclass
 class AgentProfile:
     """Agent's profile and usage stats."""
     agent_id: str

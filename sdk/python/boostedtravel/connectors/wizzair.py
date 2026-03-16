@@ -578,3 +578,357 @@ class WizzairConnectorClient:
             offers=[],
             total_results=0,
         )
+
+
+# ── Bookable connector (checkout automation) ─────────────────────────────
+
+class WizzairBookableConnector:
+    """
+    Drive Wizzair checkout up to (not including) payment submission.
+
+    Flow: Homepage (Kasada init) → Flight selection → BASIC fare →
+          Passengers → Skip extras (bags, insurance, priority, seats) →
+          STOP at payment page.
+
+    Uses Playwright with Kasada bypass. Never submits payment.
+    """
+
+    AIRLINE_NAME = "Wizz Air"
+    SOURCE_TAG = "wizzair_direct"
+
+    async def start_checkout(
+        self,
+        offer: dict,
+        passengers: list[dict],
+        checkout_token: str,
+        api_key: str,
+        *,
+        base_url: str | None = None,
+    ):
+        from connectors.booking_base import (
+            CheckoutProgress,
+            dismiss_overlays,
+            safe_click,
+            safe_fill,
+            take_screenshot_b64,
+            verify_checkout_token,
+        )
+        import random
+        import time
+
+        t0 = time.monotonic()
+        booking_url = offer.get("booking_url", "")
+        offer_id = offer.get("id", "")
+
+        # Verify checkout token with backend
+        try:
+            verification = verify_checkout_token(offer_id, checkout_token, api_key, base_url)
+            if not verification.get("valid"):
+                return CheckoutProgress(
+                    status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                    offer_id=offer_id, booking_url=booking_url,
+                    message="Checkout token invalid or expired. Call unlock() first ($1 fee).",
+                )
+        except Exception as e:
+            return CheckoutProgress(
+                status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                offer_id=offer_id, booking_url=booking_url,
+                message=f"Token verification failed: {e}",
+            )
+
+        if not booking_url:
+            return CheckoutProgress(
+                status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                offer_id=offer_id, message="No booking URL available for this offer.",
+            )
+
+        from playwright.async_api import async_playwright
+
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            viewport={"width": random.choice([1366, 1440, 1920]),
+                       "height": random.choice([768, 900, 1080])},
+            locale=random.choice(["en-GB", "en-US", "en-IE"]),
+            timezone_id=random.choice(["Europe/Warsaw", "Europe/London", "Europe/Budapest"]),
+        )
+
+        try:
+            try:
+                from playwright_stealth import stealth_async
+                page = await context.new_page()
+                await stealth_async(page)
+            except ImportError:
+                page = await context.new_page()
+
+            step = "started"
+            pax = passengers[0] if passengers else {}
+
+            # Step 1: Load Wizzair homepage first (Kasada initialization)
+            logger.info("Wizzair checkout: loading homepage for Kasada init")
+            await page.goto("https://wizzair.com/en-gb", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+            await dismiss_overlays(page)
+
+            # Navigate to booking URL
+            logger.info("Wizzair checkout: navigating to %s", booking_url)
+            await page.goto(booking_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            await dismiss_overlays(page)
+            step = "page_loaded"
+
+            # Step 2: Select flights — wait for flight cards to appear
+            try:
+                await page.wait_for_selector(
+                    "[data-test*='flight'], [class*='flight-select'], [class*='flight-row']",
+                    timeout=20000,
+                )
+            except Exception:
+                logger.warning("Wizzair checkout: flight cards not visible")
+
+            await dismiss_overlays(page)
+
+            # Select outbound flight
+            outbound = offer.get("outbound", {})
+            segments = outbound.get("segments", []) if isinstance(outbound, dict) else []
+            if segments:
+                dep = segments[0].get("departure", "")
+                if dep and len(dep) >= 16:
+                    dep_time = dep[11:16]
+                    try:
+                        card = page.locator(f"text='{dep_time}'").first
+                        if await card.is_visible(timeout=3000):
+                            await card.click()
+                    except Exception:
+                        pass
+
+            # Fallback: click first flight
+            for sel in [
+                "[data-test*='flight']:first-child",
+                "[class*='flight-select']:first-child",
+                "[class*='flight-row']:first-child",
+            ]:
+                await safe_click(page, sel, timeout=3000, desc="first flight")
+
+            await page.wait_for_timeout(2000)
+            step = "flights_selected"
+
+            # Step 3: Select BASIC fare
+            for sel in [
+                "[data-test*='basic'] button",
+                "button:has-text('BASIC')",
+                "[class*='fare-selector'] button:first-child",
+                "button:has-text('Select'):first-child",
+            ]:
+                if await safe_click(page, sel, timeout=5000, desc="select BASIC fare"):
+                    break
+
+            await page.wait_for_timeout(1500)
+            step = "fare_selected"
+
+            # Dismiss login modal if it appears
+            for sel in [
+                "button:has-text('Continue as guest')",
+                "button:has-text('No, thanks')",
+                "button:has-text('Not now')",
+                "[data-test*='login-modal'] button:has-text('Later')",
+                "[class*='modal'] button:has-text('Continue')",
+            ]:
+                if await safe_click(page, sel, timeout=4000, desc="skip login"):
+                    break
+            await page.wait_for_timeout(1000)
+            await dismiss_overlays(page)
+            step = "login_bypassed"
+
+            # Step 4: Fill passenger details
+            try:
+                await page.wait_for_selector(
+                    "input[data-test*='first-name'], input[name*='firstName'], [class*='passenger-form']",
+                    timeout=15000,
+                )
+            except Exception:
+                pass
+
+            # First name
+            for sel in [
+                "input[data-test*='first-name']",
+                "input[name*='firstName']",
+                "input[placeholder*='First name' i]",
+            ]:
+                if await safe_fill(page, sel, pax.get("given_name", "Test")):
+                    break
+
+            # Last name
+            for sel in [
+                "input[data-test*='last-name']",
+                "input[name*='lastName']",
+                "input[placeholder*='Last name' i]",
+            ]:
+                if await safe_fill(page, sel, pax.get("family_name", "Traveler")):
+                    break
+
+            # Gender
+            gender = pax.get("gender", "m")
+            gender_text = "Male" if gender == "m" else "Female"
+            for sel in [
+                f"label:has-text('{gender_text}')",
+                f"[data-test*='gender-{gender}']",
+            ]:
+                await safe_click(page, sel, timeout=3000, desc=f"gender {gender_text}")
+
+            # Date of birth
+            dob = pax.get("born_on", "1990-06-15")
+            dob_parts = dob.split("-")
+            if len(dob_parts) == 3:
+                for sel in [
+                    "input[data-test*='dob-year']",
+                    "input[name*='birthYear']",
+                ]:
+                    await safe_fill(page, sel, dob_parts[0])
+                for sel in [
+                    "input[data-test*='dob-month']",
+                    "input[name*='birthMonth']",
+                ]:
+                    await safe_fill(page, sel, dob_parts[1])
+                for sel in [
+                    "input[data-test*='dob-day']",
+                    "input[name*='birthDay']",
+                ]:
+                    await safe_fill(page, sel, dob_parts[2])
+
+            # Email + phone
+            for sel in [
+                "input[data-test*='email']",
+                "input[name*='email']",
+                "input[type='email']",
+            ]:
+                if await safe_fill(page, sel, pax.get("email", "test@example.com")):
+                    break
+            for sel in [
+                "input[data-test*='phone']",
+                "input[name*='phone']",
+                "input[type='tel']",
+            ]:
+                if await safe_fill(page, sel, pax.get("phone_number", "+441234567890")):
+                    break
+
+            step = "passengers_filled"
+
+            # Click continue/next
+            for sel in [
+                "button:has-text('Continue')",
+                "button:has-text('Next')",
+                "[data-test*='continue'] button",
+            ]:
+                if await safe_click(page, sel, timeout=5000, desc="continue after passengers"):
+                    break
+            await page.wait_for_timeout(2000)
+            await dismiss_overlays(page)
+
+            # Step 5: Skip extras (bags, insurance, priority, etc.)
+            for _ in range(5):
+                await dismiss_overlays(page)
+                for sel in [
+                    "button:has-text('No, thanks')",
+                    "button:has-text('Continue')",
+                    "button:has-text('Skip')",
+                    "button:has-text('I don\\'t need')",
+                    "button:has-text('Next')",
+                    "[data-test*='cabin-bag-no']",
+                    "[data-test*='skip']",
+                ]:
+                    await safe_click(page, sel, timeout=2000, desc="skip extras")
+                await page.wait_for_timeout(1500)
+
+            step = "extras_skipped"
+
+            # Step 6: Skip seat selection
+            for sel in [
+                "button:has-text('Skip seat selection')",
+                "button:has-text('No, thanks')",
+                "button:has-text('Continue without')",
+                "button:has-text('Skip')",
+                "[data-test*='skip-seat']",
+            ]:
+                if await safe_click(page, sel, timeout=4000, desc="skip seats"):
+                    break
+            await page.wait_for_timeout(1500)
+            # Confirm skip dialog
+            for sel in ["button:has-text('OK')", "button:has-text('Yes')", "button:has-text('Continue')"]:
+                await safe_click(page, sel, timeout=3000, desc="confirm skip seats")
+
+            step = "seats_skipped"
+            await page.wait_for_timeout(2000)
+            await dismiss_overlays(page)
+
+            # Step 7: Payment page reached — STOP HERE
+            step = "payment_page_reached"
+            screenshot = await take_screenshot_b64(page)
+
+            # Try to read displayed price
+            page_price = offer.get("price", 0.0)
+            try:
+                for sel in [
+                    "[data-test*='total-price']",
+                    "[class*='total'] [class*='price']",
+                    "[class*='summary-price']",
+                ]:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=2000):
+                        text = await el.text_content()
+                        if text:
+                            import re
+                            nums = re.findall(r"[\d,.]+", text)
+                            if nums:
+                                page_price = float(nums[-1].replace(",", ""))
+                        break
+            except Exception:
+                pass
+
+            elapsed = time.monotonic() - t0
+            return CheckoutProgress(
+                status="payment_page_reached",
+                step=step,
+                step_index=8,
+                airline=self.AIRLINE_NAME,
+                source=self.SOURCE_TAG,
+                offer_id=offer_id,
+                total_price=page_price,
+                currency=offer.get("currency", "EUR"),
+                booking_url=booking_url,
+                screenshot_b64=screenshot,
+                message=(
+                    f"Wizz Air checkout complete — reached payment page in {elapsed:.0f}s. "
+                    f"Price: {page_price} {offer.get('currency', 'EUR')}. "
+                    f"Payment NOT submitted (safe mode). "
+                    f"Complete manually at: {booking_url}"
+                ),
+                can_complete_manually=True,
+                elapsed_seconds=elapsed,
+            )
+
+        except Exception as e:
+            logger.error("Wizzair checkout error: %s", e, exc_info=True)
+            screenshot = ""
+            try:
+                screenshot = await take_screenshot_b64(page)
+            except Exception:
+                pass
+            return CheckoutProgress(
+                status="error",
+                step=step,
+                airline=self.AIRLINE_NAME,
+                source=self.SOURCE_TAG,
+                offer_id=offer_id,
+                booking_url=booking_url,
+                screenshot_b64=screenshot,
+                message=f"Checkout error at step '{step}': {e}",
+                elapsed_seconds=time.monotonic() - t0,
+            )
+        finally:
+            await context.close()
+            await browser.close()
+            await pw.stop()

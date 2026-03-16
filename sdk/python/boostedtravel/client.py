@@ -40,12 +40,81 @@ from urllib.parse import urlencode
 from boostedtravel.models import (
     AgentProfile,
     BookingResult,
+    CheckoutProgress,
     FlightSearchResult,
     Passenger,
     UnlockResult,
 )
 
 DEFAULT_BASE_URL = "https://api.boostedchat.com"
+
+# ── Bookable connector registry ────────────────────────────────────────────
+# Maps source tags to their BookableConnector subclass.
+# Loaded lazily to avoid importing Playwright at module level.
+# For the 3 airlines with hand-tuned connectors we keep explicit entries.
+# All other airlines are handled by the GenericCheckoutEngine via config.
+
+_BOOKABLE_CONNECTORS: dict[str, tuple[str, str]] = {
+    "ryanair_direct": ("boostedtravel.connectors.ryanair", "RyanairBookableConnector"),
+    "wizzair_api": ("boostedtravel.connectors.wizzair", "WizzairBookableConnector"),
+    "easyjet_direct": ("boostedtravel.connectors.easyjet", "EasyjetBookableConnector"),
+}
+
+
+def _get_bookable_connector(source: str):
+    """Dynamically load a bookable connector class by source tag.
+
+    Falls back to the generic config-driven checkout engine if no
+    hand-tuned connector exists but an airline config is registered.
+    """
+    # 1. Check for hand-tuned connector
+    entry = _BOOKABLE_CONNECTORS.get(source)
+    if entry:
+        mod_name, cls_name = entry
+        try:
+            import importlib
+            mod = importlib.import_module(mod_name)
+            return getattr(mod, cls_name)
+        except (ImportError, AttributeError):
+            pass
+
+    # 2. Fall back to generic checkout engine config
+    try:
+        from boostedtravel.connectors.checkout_engine import AIRLINE_CONFIGS
+        if source in AIRLINE_CONFIGS:
+            return _make_generic_connector(source)
+    except ImportError:
+        pass
+
+    return None
+
+
+def _make_generic_connector(source: str):
+    """Return a BookableConnector subclass backed by the generic engine."""
+    from boostedtravel.connectors.booking_base import BookableConnector, CheckoutProgress as _CP
+    from boostedtravel.connectors.checkout_engine import AIRLINE_CONFIGS, GenericCheckoutEngine
+
+    config = AIRLINE_CONFIGS[source]
+
+    class _GenericBookable(BookableConnector):
+        AIRLINE_NAME = config.airline_name
+        SOURCE_TAG = config.source_tag
+
+        async def _run_checkout(self, offer, passengers):
+            # Token already verified by base class start_checkout()
+            # but the engine also verifies — pass dummy to skip double-check
+            engine = GenericCheckoutEngine()
+            return await engine.run(
+                config=config,
+                offer=offer,
+                passengers=passengers,
+                checkout_token=self._last_token,
+                api_key=self._last_api_key,
+                base_url=self._last_base_url,
+            )
+
+    _GenericBookable.__name__ = f"{config.airline_name.replace(' ', '')}Bookable"
+    return _GenericBookable
 
 
 # ── Error codes ──────────────────────────────────────────────────────────
@@ -435,6 +504,127 @@ class BoostedTravel:
         """
         self._require_api_key()
         return self._post("/api/v1/agents/setup-payment", {"token": token})
+
+    def start_checkout(
+        self,
+        offer_id: str,
+        passengers: list[dict | Passenger] | None = None,
+        *,
+        checkout_token: str = "",
+    ) -> CheckoutProgress:
+        """
+        Drive automated checkout up to (not including) payment — SAFE, no charge.
+
+        This navigates the airline's website through flight selection, passenger
+        details, and extras, stopping at the payment page. The user can then
+        complete payment manually via the returned booking_url.
+
+        Requires a checkout token from unlock() — the $1 unlock fee must be
+        paid before checkout automation runs. This prevents abuse since the
+        token is verified with the closed-source backend.
+
+        For airlines without automated checkout, returns the booking_url
+        for manual completion.
+
+        Args:
+            offer_id: The offer ID from search results.
+            passengers: Passenger details. If None, uses safe test data
+                (Test Traveler, test@example.com). Pass real data for
+                actual bookings.
+            checkout_token: Token from unlock() response. Required.
+
+        Returns:
+            CheckoutProgress with status, screenshot, and booking_url.
+        """
+        self._require_api_key()
+        pax_list = []
+        if passengers:
+            for p in passengers:
+                if isinstance(p, Passenger):
+                    pax_list.append(p.to_dict())
+                else:
+                    pax_list.append(p)
+
+        body: dict[str, Any] = {
+            "offer_id": offer_id,
+            "checkout_token": checkout_token,
+        }
+        if pax_list:
+            body["passengers"] = pax_list
+
+        data = self._post("/api/v1/bookings/start-checkout", body)
+        return CheckoutProgress.from_dict(data)
+
+    def start_checkout_local(
+        self,
+        offer: dict,
+        passengers: list[dict] | None = None,
+        *,
+        checkout_token: str = "",
+    ) -> CheckoutProgress:
+        """
+        Run checkout locally using Playwright — drives the airline website
+        on your machine. Stops at the payment page (no charge).
+
+        This is the local-first version: the connector runs on your device,
+        but the checkout token is still verified with the backend to enforce
+        the $1 paywall.
+
+        Requires: playwright install chromium
+
+        Args:
+            offer: Full FlightOffer dict (from search results, must include
+                booking_url, source, price, currency, outbound).
+            passengers: Passenger dicts. If None, uses safe test data.
+            checkout_token: Token from unlock(). Required.
+
+        Returns:
+            CheckoutProgress with status, screenshot, and booking_url.
+        """
+        import asyncio
+        from boostedtravel.connectors.booking_base import (
+            FAKE_PASSENGER,
+            CheckoutProgress as _CP,
+        )
+
+        if not passengers:
+            passengers = [FAKE_PASSENGER.copy()]
+            passengers[0]["id"] = "pas_0"
+
+        source = (offer.get("source") or "").lower()
+        booking_url = offer.get("booking_url", "")
+
+        # Try to load the connector's booking module
+        connector_cls = _get_bookable_connector(source)
+        if connector_cls is None:
+            # No automated checkout — return URL-only progress
+            return CheckoutProgress.from_dict({
+                "status": "url_only",
+                "step": "started",
+                "step_index": 0,
+                "airline": offer.get("owner_airline", ""),
+                "source": source,
+                "offer_id": offer.get("id", ""),
+                "total_price": offer.get("price", 0.0),
+                "currency": offer.get("currency", "EUR"),
+                "booking_url": booking_url,
+                "message": (
+                    f"Automated checkout not available for {source}. "
+                    f"Use the booking URL to complete manually."
+                    + (f"\n\nBooking URL: {booking_url}" if booking_url else "")
+                ),
+                "can_complete_manually": bool(booking_url),
+            })
+
+        connector = connector_cls()
+        result = asyncio.run(connector.start_checkout(
+            offer=offer,
+            passengers=passengers,
+            checkout_token=checkout_token,
+            api_key=self.api_key,
+            base_url=self.base_url,
+        ))
+        return CheckoutProgress.from_dict(result.to_dict())
 
     def me(self) -> AgentProfile:
         """Get the current agent's profile, usage, and payment status."""

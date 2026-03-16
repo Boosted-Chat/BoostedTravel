@@ -658,3 +658,343 @@ class EasyjetConnectorClient:
             offers=[],
             total_results=0,
         )
+
+
+# ── Bookable connector (checkout automation) ─────────────────────────────
+
+class EasyjetBookableConnector:
+    """
+    Drive EasyJet checkout up to (not including) payment submission.
+
+    Flow: Navigate to booking URL → Select flights → Select fare →
+          Fill passengers → Skip extras → STOP at payment page.
+
+    Uses Playwright with Akamai-aware headed Chrome. Never submits payment.
+    """
+
+    AIRLINE_NAME = "easyJet"
+    SOURCE_TAG = "easyjet_direct"
+
+    async def start_checkout(
+        self,
+        offer: dict,
+        passengers: list[dict],
+        checkout_token: str,
+        api_key: str,
+        *,
+        base_url: str | None = None,
+    ):
+        from connectors.booking_base import (
+            CheckoutProgress,
+            dismiss_overlays,
+            safe_click,
+            safe_fill,
+            take_screenshot_b64,
+            verify_checkout_token,
+        )
+        import random
+        import time
+
+        t0 = time.monotonic()
+        booking_url = offer.get("booking_url", "")
+        offer_id = offer.get("id", "")
+
+        # Verify checkout token with backend
+        try:
+            verification = verify_checkout_token(offer_id, checkout_token, api_key, base_url)
+            if not verification.get("valid"):
+                return CheckoutProgress(
+                    status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                    offer_id=offer_id, booking_url=booking_url,
+                    message="Checkout token invalid or expired. Call unlock() first ($1 fee).",
+                )
+        except Exception as e:
+            return CheckoutProgress(
+                status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                offer_id=offer_id, booking_url=booking_url,
+                message=f"Token verification failed: {e}",
+            )
+
+        if not booking_url:
+            return CheckoutProgress(
+                status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                offer_id=offer_id, message="No booking URL available for this offer.",
+            )
+
+        from playwright.async_api import async_playwright
+
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            viewport={"width": random.choice([1366, 1440, 1920]),
+                       "height": random.choice([768, 900, 1080])},
+            locale="en-GB",
+            timezone_id="Europe/London",
+        )
+
+        try:
+            try:
+                from playwright_stealth import stealth_async
+                page = await context.new_page()
+                await stealth_async(page)
+            except ImportError:
+                page = await context.new_page()
+
+            step = "started"
+            pax = passengers[0] if passengers else {}
+
+            # Step 1: Navigate to EasyJet booking page
+            logger.info("EasyJet checkout: navigating to %s", booking_url)
+            await page.goto(booking_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+
+            # Dismiss EasyJet-specific overlays
+            await dismiss_overlays(page)
+            for sel in [
+                "#ensCloseBanner",
+                "button:has-text('Accept all cookies')",
+                "[class*='cookie-banner'] button",
+            ]:
+                await safe_click(page, sel, timeout=2000, desc="easyjet cookies")
+
+            step = "page_loaded"
+
+            # Step 2: Select flights (EasyJet shows flight cards)
+            try:
+                await page.wait_for_selector(
+                    "[class*='flight-grid'], [class*='flight-card'], [data-testid*='flight']",
+                    timeout=20000,
+                )
+            except Exception:
+                pass
+
+            await dismiss_overlays(page)
+
+            # Try to match by departure time
+            outbound = offer.get("outbound", {})
+            segments = outbound.get("segments", []) if isinstance(outbound, dict) else []
+            if segments:
+                dep = segments[0].get("departure", "")
+                if dep and len(dep) >= 16:
+                    dep_time = dep[11:16]
+                    try:
+                        card = page.locator(f"text='{dep_time}'").first
+                        if await card.is_visible(timeout=3000):
+                            await card.click()
+                    except Exception:
+                        pass
+
+            # Fallback: click first available flight
+            for sel in [
+                "[class*='flight-card']:first-child",
+                "[data-testid*='flight']:first-child",
+                "button:has-text('Select'):first-child",
+            ]:
+                await safe_click(page, sel, timeout=3000, desc="first flight")
+
+            await page.wait_for_timeout(2000)
+            step = "flights_selected"
+
+            # Step 3: Select fare (Standard/Flexi)
+            for sel in [
+                "button:has-text('Standard')",
+                "button:has-text('Continue')",
+                "[class*='fare'] button:first-child",
+                "button:has-text('Select')",
+            ]:
+                if await safe_click(page, sel, timeout=5000, desc="select fare"):
+                    break
+
+            await page.wait_for_timeout(1500)
+            await dismiss_overlays(page)
+            step = "fare_selected"
+
+            # Step 4: Skip login if prompted
+            for sel in [
+                "button:has-text('Continue as guest')",
+                "button:has-text('Skip')",
+                "button:has-text('No thanks')",
+                "[data-testid*='guest'] button",
+            ]:
+                if await safe_click(page, sel, timeout=4000, desc="skip login"):
+                    break
+            await page.wait_for_timeout(1500)
+            await dismiss_overlays(page)
+            step = "login_bypassed"
+
+            # Step 5: Fill passenger details
+            try:
+                await page.wait_for_selector(
+                    "input[name*='name'], [class*='passenger-form'], [data-testid*='passenger']",
+                    timeout=15000,
+                )
+            except Exception:
+                pass
+
+            # Title
+            title = "Mr" if pax.get("gender", "m") == "m" else "Ms"
+            for sel in [
+                f"select option:has-text('{title}')",
+                f"[data-testid*='title'] option:has-text('{title}')",
+            ]:
+                try:
+                    await page.select_option("select[name*='title'], [data-testid*='title'] select",
+                                             label=title, timeout=3000)
+                    break
+                except Exception:
+                    pass
+            # Fallback: click dropdown
+            await safe_click(page, f"button:has-text('{title}')", timeout=2000, desc=f"title {title}")
+
+            # First name
+            for sel in [
+                "input[name*='firstName']",
+                "input[data-testid*='first-name']",
+                "input[placeholder*='First name' i]",
+            ]:
+                if await safe_fill(page, sel, pax.get("given_name", "Test")):
+                    break
+
+            # Last name
+            for sel in [
+                "input[name*='lastName']",
+                "input[data-testid*='last-name']",
+                "input[placeholder*='Last name' i]",
+            ]:
+                if await safe_fill(page, sel, pax.get("family_name", "Traveler")):
+                    break
+
+            # Email
+            for sel in [
+                "input[name*='email']",
+                "input[data-testid*='email']",
+                "input[type='email']",
+            ]:
+                if await safe_fill(page, sel, pax.get("email", "test@example.com")):
+                    break
+
+            # Phone
+            for sel in [
+                "input[name*='phone']",
+                "input[data-testid*='phone']",
+                "input[type='tel']",
+            ]:
+                if await safe_fill(page, sel, pax.get("phone_number", "+441234567890")):
+                    break
+
+            step = "passengers_filled"
+
+            # Continue
+            for sel in [
+                "button:has-text('Continue')",
+                "button:has-text('Next')",
+                "[data-testid*='continue'] button",
+            ]:
+                if await safe_click(page, sel, timeout=5000, desc="continue"):
+                    break
+            await page.wait_for_timeout(2000)
+            await dismiss_overlays(page)
+
+            # Step 6: Skip extras (bags, insurance, seats)
+            for _ in range(5):
+                await dismiss_overlays(page)
+                for sel in [
+                    "button:has-text('No, thanks')",
+                    "button:has-text('Continue')",
+                    "button:has-text('Skip')",
+                    "button:has-text('No hold luggage')",
+                    "button:has-text('Continue without')",
+                    "button:has-text('Next')",
+                ]:
+                    await safe_click(page, sel, timeout=2000, desc="skip extras")
+                await page.wait_for_timeout(1500)
+
+            step = "extras_skipped"
+
+            # Skip seats
+            for sel in [
+                "button:has-text('Skip')",
+                "button:has-text('No thanks')",
+                "button:has-text('Continue without')",
+                "button:has-text('Assign random seats')",
+            ]:
+                if await safe_click(page, sel, timeout=4000, desc="skip seats"):
+                    break
+            await page.wait_for_timeout(1500)
+            for sel in ["button:has-text('OK')", "button:has-text('Continue')"]:
+                await safe_click(page, sel, timeout=3000, desc="confirm skip")
+
+            step = "seats_skipped"
+            await page.wait_for_timeout(2000)
+            await dismiss_overlays(page)
+
+            # Step 7: Payment page reached — STOP HERE
+            step = "payment_page_reached"
+            screenshot = await take_screenshot_b64(page)
+
+            page_price = offer.get("price", 0.0)
+            try:
+                for sel in [
+                    "[class*='total-price']",
+                    "[data-testid*='total']",
+                    "[class*='summary'] [class*='price']",
+                ]:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=2000):
+                        text = await el.text_content()
+                        if text:
+                            import re
+                            nums = re.findall(r"[\d,.]+", text)
+                            if nums:
+                                page_price = float(nums[-1].replace(",", ""))
+                        break
+            except Exception:
+                pass
+
+            elapsed = time.monotonic() - t0
+            return CheckoutProgress(
+                status="payment_page_reached",
+                step=step,
+                step_index=8,
+                airline=self.AIRLINE_NAME,
+                source=self.SOURCE_TAG,
+                offer_id=offer_id,
+                total_price=page_price,
+                currency=offer.get("currency", "EUR"),
+                booking_url=booking_url,
+                screenshot_b64=screenshot,
+                message=(
+                    f"easyJet checkout complete — reached payment page in {elapsed:.0f}s. "
+                    f"Price: {page_price} {offer.get('currency', 'EUR')}. "
+                    f"Payment NOT submitted (safe mode). "
+                    f"Complete manually at: {booking_url}"
+                ),
+                can_complete_manually=True,
+                elapsed_seconds=elapsed,
+            )
+
+        except Exception as e:
+            logger.error("EasyJet checkout error: %s", e, exc_info=True)
+            screenshot = ""
+            try:
+                screenshot = await take_screenshot_b64(page)
+            except Exception:
+                pass
+            return CheckoutProgress(
+                status="error",
+                step=step,
+                airline=self.AIRLINE_NAME,
+                source=self.SOURCE_TAG,
+                offer_id=offer_id,
+                booking_url=booking_url,
+                screenshot_b64=screenshot,
+                message=f"Checkout error at step '{step}': {e}",
+                elapsed_seconds=time.monotonic() - t0,
+            )
+        finally:
+            await context.close()
+            await browser.close()
+            await pw.stop()

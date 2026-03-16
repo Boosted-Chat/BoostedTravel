@@ -280,3 +280,63 @@ class AgentProfile:
             usage=d.get("usage", {}),
             payment=d.get("payment"),
         )
+
+
+@dataclass
+class CheckoutProgress:
+    """Progress report from an automated checkout attempt."""
+    status: str = "not_started"
+    step: str = "started"
+    step_index: int = 0
+    airline: str = ""
+    source: str = ""
+    offer_id: str = ""
+    total_price: float = 0.0
+    currency: str = "EUR"
+    booking_url: str = ""
+    screenshot_b64: str = ""
+    message: str = ""
+    can_complete_manually: bool = True
+    elapsed_seconds: float = 0.0
+    details: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "step": self.step,
+            "step_index": self.step_index,
+            "airline": self.airline,
+            "source": self.source,
+            "offer_id": self.offer_id,
+            "total_price": self.total_price,
+            "currency": self.currency,
+            "booking_url": self.booking_url,
+            "screenshot_b64": self.screenshot_b64,
+            "message": self.message,
+            "can_complete_manually": self.can_complete_manually,
+            "elapsed_seconds": round(self.elapsed_seconds, 1),
+            "details": self.details,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CheckoutProgress":
+        return cls(
+            status=d.get("status", "not_started"),
+            step=d.get("step", "started"),
+            step_index=d.get("step_index", 0),
+            airline=d.get("airline", ""),
+            source=d.get("source", ""),
+            offer_id=d.get("offer_id", ""),
+            total_price=d.get("total_price", 0.0),
+            currency=d.get("currency", "EUR"),
+            booking_url=d.get("booking_url", ""),
+            screenshot_b64=d.get("screenshot_b64", ""),
+            message=d.get("message", ""),
+            can_complete_manually=d.get("can_complete_manually", True),
+            elapsed_seconds=d.get("elapsed_seconds", 0.0),
+            details=d.get("details", {}),
+        )
+
+    @property
+    def reached_payment(self) -> bool:
+        return self.status == "payment_page_reached"

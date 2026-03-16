@@ -201,6 +201,43 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'start_checkout',
+    description:
+      'Automate airline checkout up to the payment page — NEVER submits payment.\n\n' +
+      'FLOW: search_flights → unlock_flight_offer ($1) → start_checkout\n\n' +
+      'Uses Playwright to drive the airline website: selects flights, fills passenger details, ' +
+      'skips extras/seats, and stops at the payment form. Returns a screenshot and booking URL ' +
+      'so the user can complete manually in their browser.\n\n' +
+      'Supported airlines: Ryanair, Wizz Air, EasyJet. Other airlines return booking URL only.\n\n' +
+      'SAFETY: Uses fake test data by default. Never enters payment info. The checkout_token from ' +
+      'unlock_flight_offer is required — prevents unauthorized usage.\n\n' +
+      'Runs locally via Python subprocess (pip install boostedtravel && playwright install chromium).',
+    inputSchema: {
+      type: 'object',
+      required: ['offer_id', 'checkout_token'],
+      properties: {
+        offer_id: { type: 'string', description: 'Offer ID from search results (off_xxx)' },
+        checkout_token: { type: 'string', description: 'Token from unlock_flight_offer response' },
+        passengers: {
+          type: 'array',
+          description: 'Passenger details. If omitted, uses safe test data (John Doe, test@example.com)',
+          items: {
+            type: 'object',
+            properties: {
+              given_name: { type: 'string' },
+              family_name: { type: 'string' },
+              born_on: { type: 'string', description: 'DOB YYYY-MM-DD' },
+              gender: { type: 'string', description: 'm or f' },
+              title: { type: 'string', description: 'mr, ms, mrs' },
+              email: { type: 'string' },
+              phone_number: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
     name: 'system_info',
     description:
       'Get system resource info (RAM, CPU cores) and recommended concurrency settings.\n\n' +
@@ -326,6 +363,35 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
     case 'system_info': {
       const result = await searchLocal({ __system_info: true }) as Record<string, unknown>;
       return JSON.stringify(result, null, 2);
+    }
+
+    case 'start_checkout': {
+      // Runs locally via Python — drives browser to payment page
+      const result = await searchLocal({
+        __checkout: true,
+        offer_id: args.offer_id,
+        passengers: args.passengers || null,
+        checkout_token: args.checkout_token,
+        api_key: API_KEY,
+        base_url: BASE_URL,
+      }) as Record<string, unknown>;
+
+      if (result.error) return JSON.stringify(result, null, 2);
+
+      const summary: Record<string, unknown> = {
+        status: result.status,
+        step: result.step,
+        airline: result.airline,
+        message: result.message,
+        total_price: result.total_price ? `${result.total_price} ${result.currency}` : undefined,
+        booking_url: result.booking_url,
+        can_complete_manually: result.can_complete_manually,
+        elapsed_seconds: result.elapsed_seconds,
+      };
+      if (result.screenshot_b64) {
+        summary.screenshot = '(base64 screenshot attached — render with image tool if available)';
+      }
+      return JSON.stringify(summary, null, 2);
     }
 
     default:
