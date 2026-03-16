@@ -1,9 +1,14 @@
 # LetsFG ✈️
 
-> **Formerly BoostedTravel** — same project, new name. [letsfg.co](https://letsfg.co)
+### Save $20–$50 on every flight. Search 400+ airlines in 10 seconds. Native to AI agents.
 
-Agent-native flight search & booking. 400+ airlines, 75 ready-to-run airline connectors, virtual interlining — straight from the terminal. Built for AI agents (OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf) and developers.
+LetsFG finds the cheapest flights across the entire internet — 75 airline connectors firing in parallel + enterprise GDS sources (Amadeus, Duffel, Sabre, Travelport) — and returns results in ~10 seconds. No web scraping wait times, no browser tabs, no inflated prices. Just raw airline prices, zero markup.
 
+Native to **OpenClaw**, **Perplexity Computer**, **Manus**, **Claude Code**, **Codex**, **Cursor**, **Windsurf** — any AI agent that supports CLI, MCP, or packages.
+
+> ⭐ **Free forever for the first 1,000 GitHub stars.** Star this repo → register → get unlimited access. No credit card, no trial, no catch. Once we hit 1,000 stars, this offer closes permanently.
+
+[![GitHub stars](https://img.shields.io/github/stars/Boosted-Chat/LetsFG?style=social)](https://github.com/Boosted-Chat/LetsFG)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/boostedtravel)](https://pypi.org/project/boostedtravel/)
 [![npm](https://img.shields.io/npm/v/boostedtravel-mcp?label=npm%20%28MCP%29)](https://www.npmjs.com/package/boostedtravel-mcp)
@@ -26,11 +31,12 @@ LetsFG works by finding the best price across the entire internet. It fires 75 a
 
 | | Google Flights / Booking.com / Expedia | **LetsFG** |
 |---|---|---|
-| Search | Free | **Free** |
-| View details & price | Free (with tracking/inflation) | **Free** (no tracking) |
-| Book | Ticket + hidden markup | **$1 unlock + ticket price** |
-| Price goes up on repeat search? | Yes | **Never** |
+| Search speed | 30s+ (loading, ads, redirects) | **~10 seconds** |
+| Search | Free (with tracking/inflation) | **Free** (no tracking, no cookies) |
+| Booking | Ticket + hidden markup | **Free** (raw airline price) |
+| Price goes up on repeat search? | Yes (demand tracking) | **Never** |
 | LCC coverage | Missing many low-cost carriers | **75 direct airline connectors** |
+| Works inside AI agents? | No | **Native** (CLI, MCP, SDK) |
 
 ---
 
@@ -92,10 +98,12 @@ boostedtravel search LHR JFK 2026-04-15
 - **Enterprise GDS/NDC providers** — Amadeus, Duffel, Sabre, Travelport, Kiwi. These are contract-only data sources that normally require enterprise agreements worth $50k+/year. LetsFG is contracted with these providers and makes their inventory available to every user.
 - **400+ full-service airlines** — Lufthansa, British Airways, Emirates, Singapore Airlines, ANA, Cathay Pacific, and hundreds more that don't have public APIs
 - **Competitive pricing** — the backend aggregates offers from multiple GDS sources and picks the cheapest for each route
-- **Unlock & book** — confirm live prices ($1) and create real airline PNRs with e-tickets
+- **Unlock & book** — confirm live prices and create real airline PNRs with e-tickets
 - Both local connectors AND cloud sources run simultaneously — results merged and deduplicated automatically
 
-**Registration is instant, free, and handled by CLI** — an AI agent can do it in one command. The API key connects you to our closed-source backend service which maintains enterprise contracts with GDS/NDC providers and premium carriers. We advise using the API key to connect to all sources for the best prices.
+**Registration is instant, free, and handled by CLI** — an AI agent can do it in one command. The API key connects you to our closed-source backend service which maintains enterprise contracts with GDS/NDC providers and premium carriers.
+
+> ⭐ **Star this repo and register to get unlimited access for free — forever.** First 1,000 stars only.
 
 ```python
 from boostedtravel import BoostedTravel
@@ -120,10 +128,10 @@ export BOOSTEDTRAVEL_API_KEY=trav_...
 boostedtravel search LHR JFK 2026-04-15
 boostedtravel search LON BCN 2026-04-01 --return 2026-04-08 --cabin M --sort price
 
-# Unlock ($1 — confirms live price, reserves for 30 min)
+# Unlock (confirms live price, reserves for 30 min)
 boostedtravel unlock off_xxx
 
-# Book (free after unlock)
+# Book
 boostedtravel book off_xxx \
   --passenger '{"id":"pas_0","given_name":"John","family_name":"Doe","born_on":"1990-01-15","gender":"m","title":"mr"}' \
   --email john.doe@example.com
@@ -209,9 +217,8 @@ console.log(`${flights.totalResults} offers`);
 | `boostedtravel register` | Get your API key |
 | `boostedtravel search <origin> <dest> <date>` | Search flights (free) |
 | `boostedtravel locations <query>` | Resolve city/airport to IATA codes |
-| `boostedtravel unlock <offer_id>` | Unlock offer details ($1) |
-| `boostedtravel book <offer_id>` | Book the flight (free after unlock) |
-| `boostedtravel setup-payment` | Set up payment method |
+| `boostedtravel unlock <offer_id>` | Confirm live price & reserve for 30 min |
+| `boostedtravel book <offer_id>` | Book the flight |
 | `boostedtravel system-info` | Show system resources & concurrency tier |
 | `boostedtravel me` | View profile & usage stats |
 
@@ -220,8 +227,8 @@ All commands accept `--json` for structured output and `--api-key` to override t
 ## How It Works
 
 1. **Search** (free) — returns offers with full details: price, airlines, duration, stopovers, conditions
-2. **Unlock** ($1) — confirms live price with the airline, reserves for 30 minutes
-3. **Book** (free) — creates real airline PNR, e-ticket sent to passenger email
+2. **Unlock** — confirms live price with the airline, reserves for 30 minutes
+3. **Book** — creates real airline PNR, e-ticket sent to passenger email
 
 ### Two Search Modes
 
@@ -353,7 +360,6 @@ configure_max_browsers(4)  # explicit override
 | Exception | HTTP | When |
 |-----------|------|------|
 | `AuthenticationError` | 401 | Missing or invalid API key |
-| `PaymentRequiredError` | 402 | No payment method (call `setup-payment`) |
 | `OfferExpiredError` | 410 | Offer no longer available (search again) |
 | `BoostedTravelError` | any | Base class for all API errors |
 
