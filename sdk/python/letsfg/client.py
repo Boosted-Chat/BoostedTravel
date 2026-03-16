@@ -691,7 +691,7 @@ class LetsFG:
         req = Request(
             f"{url}/api/v1/agents/register",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": "LetsFG-Python-SDK/1.0.3"},
             method="POST",
         )
         try:
@@ -715,7 +715,7 @@ class LetsFG:
         return {
             "Content-Type": "application/json",
             "X-API-Key": self.api_key,
-            "User-Agent": "letsfg-python/1.0.0",
+            "User-Agent": "LetsFG-Python-SDK/1.0.3",
         }
 
     def _post(self, path: str, body: dict) -> Any:
