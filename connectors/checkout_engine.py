@@ -1321,6 +1321,348 @@ _register(_base_cfg("Kiwi.com", "kiwi_connector",
 ))
 
 
+# ─── Coverage Expansion — EveryMundo / httpx connectors ──────────────────
+# These connectors have booking_url pointing to airline fare pages.
+# The checkout engine navigates to that URL and proceeds through the
+# standard airline booking flow.
+
+_register(_base_cfg("Aegean Airlines", "aegean_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('GoLight')",
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept All')",
+        "[class*='cookie'] button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("Icelandair", "icelandair_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='journey']",
+    fare_selectors=[
+        "button:has-text('Economy Light')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("Air Canada", "aircanada_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('Basic')",
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("Finnair", "finnair_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('Light')",
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("TAP Air Portugal", "tap_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('Discount')",
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("SAS", "sas_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('SAS Go Light')",
+        "button:has-text('SAS Go')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept All')",
+        "button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("Wingo", "wingo_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Basic')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("Sky Airline", "skyairline_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("Arajet", "arajet_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Basic')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("Ethiopian Airlines", "ethiopian_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("Kenya Airways", "kenyaairways_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("Royal Air Maroc", "royalairmaroc_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("Philippine Airlines", "philippineairlines_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("South African Airways", "saa_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+))
+
+_register(_base_cfg("Aer Lingus", "aerlingus_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('Saver')",
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept All')",
+        "button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("Air New Zealand", "airnewzealand_direct",
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
+    fare_selectors=[
+        "button:has-text('Seat')",
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept')",
+    ],
+))
+
+_register(_base_cfg("Virgin Australia", "virginaustralia_direct",
+    # VA booking URLs go to the Virgin Australia booking page
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='fare']",
+    fare_selectors=[
+        "button:has-text('Choice')",
+        "button:has-text('Getaway')",
+        "button:has-text('Economy')",
+        "button:has-text('Select')",
+    ],
+    cookie_selectors=[
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept')",
+    ],
+))
+
+# SpiceJet has dual source tags in engine (spicejet_direct vs spicejet_direct_api)
+_register(_base_cfg("SpiceJet", "spicejet_direct",
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Select')",
+        "button:has-text('Book')",
+    ],
+))
+
+# ─── Blocked airline stubs — redirect to manual booking URL ─────────────
+# These connectors are blocked (no accessible API) but still registered in
+# the engine. Their checkout configs exist so the engine doesn't error when
+# queried — they cleanly return the booking URL for manual completion.
+
+_register(_base_cfg("Air India", "airindia_direct",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=["button:has-text('Select')"],
+))
+
+_register(_base_cfg("Qantas", "qantas_direct",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=["button:has-text('Select')"],
+))
+
+_register(_base_cfg("EgyptAir", "egyptair_direct",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=["button:has-text('Select')"],
+))
+
+_register(_base_cfg("Japan Airlines", "jal_direct",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=["button:has-text('Select')"],
+))
+
+_register(_base_cfg("Garuda Indonesia", "garuda_direct",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=["button:has-text('Select')"],
+))
+
+_register(_base_cfg("Bangkok Airways", "bangkokairways_direct",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=["button:has-text('Select')"],
+))
+
+_register(_base_cfg("ITA Airways", "itaairways_direct",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=["button:has-text('Select')"],
+))
+
+# ─── OTA / Aggregator connectors ────────────────────────────────────────
+# OTAs have their own booking flows—checkout configs handle navigation
+# through their specific checkout UIs (passenger forms, payment page).
+
+_register(_base_cfg("Google Flights (SerpAPI)", "serpapi_google_ota",
+    # SerpAPI returns Google Flights deep links → lands on airline checkout
+    # or OTA checkout. The engine navigates the intermediary.
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='offer']",
+    fare_selectors=["button:has-text('Select')"],
+    cookie_selectors=[
+        "button:has-text('Accept all')",
+        "button:has-text('I agree')",
+    ],
+))
+
+_register(_base_cfg("Traveloka", "traveloka_ota",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result'], [data-testid*='flight']",
+    fare_selectors=[
+        "button:has-text('Select')",
+        "button:has-text('Book')",
+    ],
+    cookie_selectors=[
+        "button:has-text('Accept')",
+        "[class*='cookie'] button",
+    ],
+    login_skip_selectors=[
+        "button:has-text('Continue as guest')",
+        "button:has-text('Skip')",
+        "button:has-text('Later')",
+        "[class*='close']",
+    ],
+))
+
+_register(_base_cfg("Cleartrip", "cleartrip_ota",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result']",
+    fare_selectors=[
+        "button:has-text('Select')",
+        "button:has-text('Book')",
+    ],
+    login_skip_selectors=[
+        "button:has-text('Continue as guest')",
+        "button:has-text('Skip')",
+        "[class*='close']",
+    ],
+))
+
+_register(_base_cfg("Despegar", "despegar_ota",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='cluster']",
+    fare_selectors=[
+        "button:has-text('Select')",
+        "button:has-text('Seleccionar')",
+        "button:has-text('Comprar')",
+    ],
+    cookie_selectors=[
+        "button:has-text('Accept')",
+        "button:has-text('Aceptar')",
+    ],
+    login_skip_selectors=[
+        "button:has-text('Continue as guest')",
+        "button:has-text('Continuar sin cuenta')",
+        "[class*='close']",
+    ],
+))
+
+_register(_base_cfg("Wego", "wego_ota",
+    goto_timeout=60000,
+    flight_cards_selector="[class*='flight'], [class*='result'], [class*='deal']",
+    fare_selectors=[
+        "button:has-text('View Deal')",
+        "button:has-text('Select')",
+        "button:has-text('Book')",
+    ],
+    cookie_selectors=[
+        "button:has-text('Accept')",
+        "[class*='cookie'] button",
+    ],
+))
+
+# ─── Source tag aliases ──────────────────────────────────────────────────
+# Some connectors use different source tags in engine.py vs checkout_engine.
+# Register aliases so checkout lookups work for both tags.
+
+# Norwegian: engine registers "norwegian_direct", checkout has "norwegian_api"
+AIRLINE_CONFIGS["norwegian_direct"] = AIRLINE_CONFIGS["norwegian_api"]
+
+# Porter: engine registers "porter_direct", checkout has "porter_scraper"
+AIRLINE_CONFIGS["porter_direct"] = AIRLINE_CONFIGS["porter_scraper"]
+
+# Wizzair: engine registers "wizzair_direct", checkout has "wizzair_api"
+AIRLINE_CONFIGS["wizzair_direct"] = AIRLINE_CONFIGS["wizzair_api"]
+
+
 # ── Generic Checkout Engine ──────────────────────────────────────────────
 
 class GenericCheckoutEngine:
