@@ -27,7 +27,7 @@
 
 ---
 
-## Connectors (75 total)
+## Connectors (101 total)
 
 ### Already Working (20) — DO NOT TOUCH
 
@@ -159,6 +159,45 @@
 | 70 | latam | LA | API | `done` | copilot-main | 2026-03-13T21:00Z | Direct API connector. 50 offers tested. LATAM Airlines — SCL/GRU hubs → Americas/EU/AU. |
 | 71 | copa | CM | API | `done` | copilot-main | 2026-03-13T21:00Z | Direct API connector. 9 offers tested. Copa Airlines — PTY hub → Americas. |
 | 72 | avianca | AV | API | `done` | copilot-main | 2026-03-13T21:00Z | Direct API connector. 24 offers tested. Avianca — BOG hub → Americas/EU. |
+
+### New Coverage Expansion Connectors — Airlines (24)
+
+| # | Connector | IATA | Type | Status | Notes |
+|---|-----------|------|------|--------|-------|
+| 73 | aegean | A3 | API | `done` | Aegean Airlines. ATH hub → EU/ME. EveryMundo + calendar API. |
+| 74 | icelandair | FI | API | `done` | Icelandair. KEF hub → transatlantic EU↔NA. Calendar API + EveryMundo. |
+| 75 | aircanada | AC | API | `done` | Air Canada. YYZ/YVR/YUL hubs → 200+ destinations. Lowfare calendar API. |
+| 76 | finnair | AY | API | `done` | Finnair. HEL hub → Nordic/Asia. NDC lowfare calendar API. |
+| 77 | tap | TP | API | `done` | TAP Air Portugal. LIS hub → EU/Brazil/Africa. Lowfare API. |
+| 78 | sas | SK | API | `done` | SAS Scandinavian. CPH/OSL/ARN hubs → 180+ destinations. Lowfare calendar API. |
+| 79 | wingo | P5 | API | `done` | Wingo (Copa subsidiary). Colombia LCC. Navitaire API. |
+| 80 | skyairline | H2 | API | `done` | Sky Airline Chile. Chile's largest LCC. Navitaire API. |
+| 81 | arajet | DM | API | `done` | Arajet. SDQ hub → Caribbean/Americas ULCC. Radixx booking API. |
+| 82 | ethiopian | ET | API | `done` | Ethiopian Airlines. ADD hub → Africa's largest. Calendar API + EveryMundo. |
+| 83 | kenyaairways | KQ | API | `done` | Kenya Airways. NBO hub → East Africa. Calendar API. |
+| 84 | royalairmaroc | AT | API | `done` | Royal Air Maroc. CMN hub → Africa gateway. Calendar API. |
+| 85 | philippineairlines | PR | API | `done` | Philippine Airlines. MNL hub → Asia/ME/US. Calendar API. |
+| 86 | airindia | AI | API | `done` | Air India (Tata). DEL/BOM hubs → India flag carrier. Calendar API. |
+| 87 | qantas | QF | API | `done` | Qantas. SYD/MEL hubs → Australia's flag carrier. Calendar API. |
+| 88 | egyptair | MS | API | `done` | EgyptAir. CAI hub → Africa/EU/ME/Asia. Calendar API. |
+| 89 | virginaustralia | VA | API | `done` | Virgin Australia. SYD/MEL/BNE → 110+ domestic + NZ/FJ/ID. Calendar API. |
+| 90 | airnewzealand | NZ | API | `done` | Air New Zealand. AKL hub → NZ/Pacific/AU/Asia/US. Calendar API. |
+| 91 | jal | JL | API | `done` | Japan Airlines. NRT/HND hubs → OneWorld. Calendar API. |
+| 92 | garuda | GA | API | `done` | Garuda Indonesia. CGK/DPS hubs → SkyTeam. Calendar API. |
+| 93 | bangkokairways | PG | API | `done` | Bangkok Airways. BKK/USM hubs → Koh Samui monopoly routes. Calendar API. |
+| 94 | saa | SA | API | `done` | South African Airways. JNB hub → Africa/EU/US. Calendar API. |
+| 95 | aerlingus | EI | API | `done` | Aer Lingus. DUB hub → EU + transatlantic. Calendar API. |
+| 96 | itaairways | AZ | API | `done` | ITA Airways (ex-Alitalia). FCO/MXP hubs → EU/Americas/Asia. Calendar API. |
+
+### New Coverage Expansion Connectors — OTAs / Aggregators (5)
+
+| # | Connector | Type | Status | Notes |
+|---|-----------|------|--------|-------|
+| 97 | serpapi_google | OTA | `done` | Google Flights via SerpAPI. 900+ airlines globally. Requires SERPAPI_KEY env var. |
+| 98 | traveloka | OTA | `done` | Traveloka. SE Asia's #1 OTA. 100+ airlines, exclusive promotional fares. |
+| 99 | cleartrip | OTA | `done` | Cleartrip (Flipkart). India's leading OTA. All Indian + intl airlines. |
+| 100 | despegar | OTA | `done` | Despegar/Decolar. Latin America's #1 OTA. All LATAM airlines. |
+| 101 | wego | OTA | `done` | Wego. Middle East/Asia metasearch. 700+ airlines, GCC focus. |
 
 ---
 
