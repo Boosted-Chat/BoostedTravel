@@ -371,7 +371,7 @@ def _parse(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 conditions={
                     "cabin": cabin,
                     "fare_family": fare_family,
-                    "seats_left": seats,
+                    "seats_left": str(seats),
                 },
                 booking_url=booking_url,
                 is_locked=False,
