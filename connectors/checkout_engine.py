@@ -79,6 +79,10 @@ class AirlineCheckoutConfig:
     # CDP Chrome mode (Kasada bypass — launch real Chrome as subprocess, connect via CDP)
     use_cdp_chrome: bool = False       # Launch real Chrome + CDP instead of Playwright
     cdp_port: int = 9448               # CDP debugging port (unique per airline)
+    cdp_user_data_dir: str = ""        # Custom user data dir name (default: .{source_tag}_chrome_data)
+
+    # Custom checkout handler (method name on GenericCheckoutEngine, e.g. "_wizzair_checkout")
+    custom_checkout_handler: str = ""
 
     # Anti-bot
     service_workers: str = ""          # "block" | "" — block SW for cleaner interception
@@ -368,7 +372,9 @@ _register(_base_cfg("Ryanair", "ryanair_direct",
 _register(_base_cfg("Wizz Air", "wizzair_api",
     goto_timeout=60000,
     use_cdp_chrome=True,
-    cdp_port=9448,
+    cdp_port=9446,
+    cdp_user_data_dir=".wizzair_chrome_data",
+    custom_checkout_handler="_wizzair_checkout",
     homepage_url="https://wizzair.com/en-gb",
     homepage_wait_ms=5000,
     clear_storage_keep=["kpsdk", "_kas"],
@@ -1378,9 +1384,10 @@ class GenericCheckoutEngine:
             # injected into the Chrome binary, so KPSDK JS runs naturally.
             from .browser import find_chrome, stealth_popen_kwargs
             chrome_path = find_chrome()
+            _udd_name = config.cdp_user_data_dir or f".{config.source_tag}_chrome_data"
             _user_data_dir = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
-                f".{config.source_tag}_chrome_data",
+                _udd_name,
             )
             os.makedirs(_user_data_dir, exist_ok=True)
             vp = random.choice([(1366, 768), (1440, 900), (1920, 1080)])
@@ -1392,7 +1399,6 @@ class GenericCheckoutEngine:
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
-                "--disable-background-networking",
                 "--window-position=-2400,-2400",
                 "about:blank",
             ]
@@ -1529,6 +1535,19 @@ class GenericCheckoutEngine:
                     }}""")
 
             # ── Step 1: Navigate to booking page ─────────────────────
+
+            # Check for custom checkout handler (e.g. WizzAir needs Vue SPA injection)
+            if config.custom_checkout_handler:
+                handler = getattr(self, config.custom_checkout_handler, None)
+                if handler:
+                    result = await handler(page, config, offer, offer_id, booking_url, passengers, t0)
+                    if result is not None:
+                        return result
+                    # If handler returned None, fall through to generic flow
+                else:
+                    logger.warning("%s checkout: custom handler '%s' not found, using generic flow",
+                                   config.airline_name, config.custom_checkout_handler)
+
             logger.info("%s checkout: navigating to %s", config.airline_name, booking_url)
             try:
                 await page.goto(booking_url, wait_until="domcontentloaded", timeout=config.goto_timeout)
@@ -1827,6 +1846,252 @@ class GenericCheckoutEngine:
                 pass
             # Synchronous kill — guarantees browser dies even on CancelledError
             _force_kill_browser()
+
+    async def _wizzair_checkout(self, page, config, offer, offer_id, booking_url, passengers, t0):
+        """WizzAir custom checkout: API search + Vuex injection + Vue Router navigation.
+
+        WizzAir's Vue 2 SPA has Kasada KPSDK anti-bot + route guards that block
+        direct page.goto().  We bypass by:
+        1. Load homepage (KPSDK initialises from cached Chrome profile)
+        2. Call search API via fetch() — KPSDK injects challenge headers
+        3. Inject results into Vuex store
+        4. Remove Vue Router guards
+        5. Navigate by route name → VUE renders flight selection
+        6. Click flight → fare → Continue → passengers → payment
+        """
+        import re as _re
+
+        pax = passengers[0] if passengers else FAKE_PASSENGER
+        step = "init"
+
+        # Extract origin/dest/date from booking_url or offer
+        origin = offer.get("outbound", {}).get("segments", [{}])[0].get("origin", "")
+        dest = offer.get("outbound", {}).get("segments", [{}])[0].get("destination", "")
+        dep_date = offer.get("outbound", {}).get("segments", [{}])[0].get("departure", "")[:10]
+
+        if not origin or not dest or not dep_date:
+            # Parse from booking URL: .../BUD/LTN/2026-04-16/...
+            parts = booking_url.rstrip("/").split("/")
+            for i, p in enumerate(parts):
+                if _re.match(r"^[A-Z]{3}$", p) and i + 1 < len(parts) and _re.match(r"^[A-Z]{3}$", parts[i + 1]):
+                    origin, dest = p, parts[i + 1]
+                    if i + 2 < len(parts) and _re.match(r"^\d{4}-\d{2}-\d{2}$", parts[i + 2]):
+                        dep_date = parts[i + 2]
+                    break
+
+        if not all([origin, dest, dep_date]):
+            logger.warning("WizzAir checkout: could not extract route from offer/URL")
+            return None  # fall through to generic
+
+        # Detect API version from page content
+        content = await page.content()
+        m = _re.search(r'be\.wizzair\.com/(\d+\.\d+\.\d+)/', content)
+        api_version = m.group(1) if m else "28.2.0"
+        logger.info("WizzAir checkout: %s→%s on %s, API v%s", origin, dest, dep_date, api_version)
+
+        # Dismiss cookies
+        try:
+            await page.evaluate("() => { try { UC_UI.acceptAllConsents(); } catch {} }")
+        except Exception:
+            pass
+        await self._dismiss_cookies(page, config)
+
+        # ── Search API + Vuex injection + guard bypass + navigate ─────
+        result = await page.evaluate("""async (params) => {
+            const {origin, dest, depDate, version} = params;
+            const store = document.querySelector('#app').__vue__.$store;
+            const router = document.querySelector('#app').__vue__.$router;
+            const Vue = document.querySelector('#app').__vue__.$root.constructor;
+            const log = [];
+
+            // 1. Search API
+            const rvt = (document.cookie.split('; ').find(c => c.startsWith('RequestVerificationToken=')) || '').split('=').slice(1).join('=');
+            const resp = await fetch(`https://be.wizzair.com/${version}/Api/search/search`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json;charset=UTF-8', 'X-RequestVerificationToken': rvt},
+                body: JSON.stringify({
+                    flightList: [{departureStation: origin, arrivalStation: dest, departureDate: depDate}],
+                    adultCount: 1, childCount: 0, infantCount: 0,
+                    wdc: true, isFlightChange: false, isSeniorOrStudent: false,
+                    rescueFareCode: '', priceType: 'regular',
+                }),
+                credentials: 'include',
+            });
+            if (resp.status !== 200) return {error: 'search_api_' + resp.status};
+            const data = await resp.json();
+            log.push('flights:' + (data.outboundFlights?.length || 0));
+
+            // 2. Vuex state injection
+            const stations = store.state.resources?.stations || [];
+            const depStn = stations.find(s => s.iata === origin);
+            const arrStn = stations.find(s => s.iata === dest);
+            store.state.search.departureStation = depStn;
+            store.state.search.arrivalStation = arrStn;
+            store.state.search.departureDate = depDate;
+            store.state.search.returnDate = null;
+            store.state.search.isLoaded = true;
+            store.state.search.currencyCode = data.currencyCode;
+            store.state.search.isDomestic = data.isDomestic || false;
+            try { store.commit('search/setPassengers', {adultCount: 1, childCount: 0, infantCount: 0}); } catch(e) {}
+            if (!store.state.search.outbound) {
+                Vue.set(store.state.search, 'outbound', {flights: [], bundles: [], fees: {}});
+            }
+            Vue.set(store.state.search.outbound, 'flights', data.outboundFlights || []);
+            Vue.set(store.state.search.outbound, 'bundles', data.outboundBundles || []);
+
+            // 3. Remove ALL route guards
+            router.beforeHooks = [];
+            router.resolveHooks = [];
+            const target = router.resolve({
+                name: 'select-flight',
+                params: {locale: 'en-gb', departureStationIata: origin, arrivalStationIata: dest,
+                         departureDate: depDate, returnDate: '', adult: '1', child: '0', infant: '0'}
+            });
+            if (target.route?.matched) {
+                for (const rec of target.route.matched) rec.beforeEnter = null;
+            }
+
+            // 4. Navigate to flight selection
+            try {
+                await router.push({
+                    name: 'select-flight',
+                    params: {locale: 'en-gb', departureStationIata: origin, arrivalStationIata: dest,
+                             departureDate: depDate, returnDate: '', adult: '1', child: '0', infant: '0'}
+                });
+                log.push('nav:ok');
+            } catch(e) {
+                log.push('nav:' + e.message?.slice(0, 80));
+            }
+
+            return {log, flights: data.outboundFlights?.length || 0};
+        }""", {"origin": origin, "dest": dest, "depDate": dep_date, "version": api_version})
+
+        if result.get("error"):
+            logger.warning("WizzAir checkout: %s", result["error"])
+            return CheckoutProgress(
+                status="failed", airline=config.airline_name, source=config.source_tag,
+                offer_id=offer_id, booking_url=booking_url,
+                message=f"WizzAir search API failed: {result['error']}",
+                elapsed_seconds=time.monotonic() - t0,
+            )
+
+        logger.info("WizzAir checkout: %d flights, nav: %s", result.get("flights", 0), result.get("log", []))
+        step = "flights_loaded"
+
+        # ── Wait for flight cards to render ──────────────────────────
+        await page.wait_for_timeout(5000)
+
+        # Click first flight card
+        await page.evaluate("""() => {
+            const card = document.querySelector('[data-test="flight-select-flight0"]')
+                || document.querySelector('[data-test*="flight-select-flight"]');
+            if (card) card.click();
+        }""")
+        await page.wait_for_timeout(3000)
+
+        # Select cheapest fare
+        await page.evaluate("""() => {
+            const btns = document.querySelectorAll('[data-test="select-fare"]');
+            if (btns.length > 0) btns[0].click();
+        }""")
+        await page.wait_for_timeout(3000)
+        step = "fare_selected"
+
+        # Click Continue
+        await page.evaluate("""() => {
+            const btns = [...document.querySelectorAll('button')].filter(b =>
+                b.innerText.trim().toLowerCase().startsWith('continue'));
+            if (btns.length > 0) btns[0].click();
+        }""")
+        await page.wait_for_timeout(6000)
+
+        # Navigate to passengers (guard bypass)
+        await page.evaluate("""async () => {
+            const router = document.querySelector('#app').__vue__.$router;
+            router.beforeHooks = [];
+            router.resolveHooks = [];
+            const target = router.resolve({name: 'passengers', params: {locale: 'en-gb'}});
+            if (target.route?.matched) {
+                for (const rec of target.route.matched) rec.beforeEnter = null;
+            }
+            await router.push({name: 'passengers', params: {locale: 'en-gb'}});
+        }""")
+        await page.wait_for_timeout(5000)
+        step = "passengers_page"
+
+        # Fill passenger form
+        given_name = pax.get("given_name", "Test")
+        family_name = pax.get("family_name", "Traveler")
+        await page.evaluate("""(params) => {
+            function fill(sel, val) {
+                const el = document.querySelector(sel);
+                if (!el) return;
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                setter.call(el, val);
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                el.dispatchEvent(new Event('blur', {bubbles: true}));
+            }
+            fill('[data-test="passenger-first-name-0"]', params.first);
+            fill('[data-test="passenger-last-name-0"]', params.last);
+            const male = [...document.querySelectorAll('input[name="gender0"]')].find(r => r.value === 'male');
+            if (male) male.click();
+        }""", {"first": given_name, "last": family_name})
+        await page.wait_for_timeout(2000)
+        step = "passengers_filled"
+
+        # Navigate to payment (skip seats/services via route)
+        await page.evaluate("""async () => {
+            const router = document.querySelector('#app').__vue__.$router;
+            router.beforeHooks = [];
+            router.resolveHooks = [];
+            const target = router.resolve({name: 'payment', params: {locale: 'en-gb'}});
+            if (target.route?.matched) {
+                for (const rec of target.route.matched) rec.beforeEnter = null;
+            }
+            await router.push({name: 'payment', params: {locale: 'en-gb'}});
+        }""")
+        await page.wait_for_timeout(5000)
+        step = "payment_page_reached"
+
+        # Extract price
+        page_price = offer.get("price", 0.0)
+        try:
+            text = await page.evaluate("""() => {
+                const el = document.querySelector('[data-test*="total-price"], [class*="total"]');
+                return el?.innerText || '';
+            }""")
+            if text:
+                import re as _re2
+                nums = _re2.findall(r"[\d,.]+", text)
+                if nums:
+                    page_price = float(nums[-1].replace(",", ""))
+        except Exception:
+            pass
+
+        screenshot = await take_screenshot_b64(page)
+        elapsed = time.monotonic() - t0
+
+        return CheckoutProgress(
+            status="payment_page_reached",
+            step=step,
+            step_index=8,
+            airline=config.airline_name,
+            source=config.source_tag,
+            offer_id=offer_id,
+            total_price=page_price,
+            currency=offer.get("currency", "EUR"),
+            booking_url=booking_url,
+            screenshot_b64=screenshot,
+            message=(
+                f"Wizz Air checkout complete — reached payment page in {elapsed:.0f}s. "
+                f"Price: {page_price} {offer.get('currency', 'EUR')}. "
+                f"Payment NOT submitted (safe mode). "
+                f"Complete manually at: {booking_url}"
+            ),
+            can_complete_manually=True,
+            elapsed_seconds=elapsed,
+        )
 
     async def _dismiss_cookies(self, page, config: AirlineCheckoutConfig) -> None:
         """Dismiss cookie banners using airline-specific selectors (fast combined check)."""
