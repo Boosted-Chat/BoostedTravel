@@ -1421,6 +1421,17 @@ _register(_base_cfg("Sky Airline", "skyairline_direct",
     ],
 ))
 
+_register(_base_cfg("FlyArystan", "flyarystan_direct",
+    flight_cards_selector=".js-journey, .availability-flight-table",
+    fare_selectors=[
+        ".fare-item.js-fare-item-selector",
+    ],
+    cookie_selectors=[
+        "button:has-text('Accept')",
+        "button:has-text('Accept All')",
+    ],
+))
+
 _register(_base_cfg("PLAY", "play_direct",
     flight_cards_selector="[class*='flight'], [class*='result'], [class*='bound']",
     fare_selectors=[
