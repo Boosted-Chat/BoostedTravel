@@ -211,11 +211,26 @@ console.log(`${flights.totalResults} offers`);
 ```
 
 ### MCP Server (Claude Desktop / Cursor / Windsurf)
+
+**Option A: Remote (Streamable HTTP) — no install, always latest**
+```json
+{
+  "mcpServers": {
+    "letsfg": {
+      "url": "https://api.letsfg.co/mcp",
+      "headers": {
+        "X-API-Key": "trav_your_api_key"
+      }
+    }
+  }
+}
+```
+
+**Option B: Local (stdio) — runs on your machine**
 ```bash
 npx letsfg-mcp
 ```
 
-Add to your MCP config:
 ```json
 {
   "mcpServers": {
@@ -229,6 +244,8 @@ Add to your MCP config:
   }
 }
 ```
+
+> **Star verification required.** Star this repo, then call `link_github` with your GitHub username. Once verified, all tools are unlocked forever. First 1,000 stars only.
 
 ## CLI Commands
 
