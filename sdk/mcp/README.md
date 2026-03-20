@@ -182,23 +182,30 @@ To avoid unexpected updates:
 | Tool | Description | Cost | Side Effects |
 |------|-------------|------|--------------|
 | `search_flights` | Search 400+ airlines worldwide | FREE | None (read-only) |
+| `search_hotels` | Search 300,000+ hotels worldwide | FREE | None (read-only) |
 | `resolve_location` | City name → IATA code | FREE | None (read-only) |
+| `link_github` | Verify GitHub star for access | FREE | Updates profile |
 | `unlock_flight_offer` | Confirm live price, reserve 30 min | — | Confirms price |
 | `book_flight` | Create real airline reservation (PNR) | Ticket price | Creates booking |
 | `setup_payment` | Attach payment card (required for booking) | FREE | Updates payment |
 | `get_agent_profile` | Usage stats & payment status | FREE | None (read-only) |
+| `start_checkout` | Automate LCC checkout to payment page | — | Browser automation |
 | `system_info` | System resources & concurrency tier | FREE | None (read-only) |
 
 ### Booking Flow
 
 ```
-search_flights  →  unlock_flight_offer  →  setup_payment (once)  →  book_flight
-   (free)              (quote)              (attach card)        (ticket price, creates PNR)
+link_github  →  search_flights  →  unlock_flight_offer  →  setup_payment (once)  →  book_flight
+ (verify star)     (free)              (quote)              (attach card)        (ticket price, creates PNR)
 ```
 
-1. `search_flights("LON", "BCN", "2026-06-15")` — returns offers with prices from 102 airlines
-2. `unlock_flight_offer("off_xxx")` — confirms live price with airline, reserves for 30 min
-3. `book_flight("off_xxx", passengers, email)` — creates real booking, airline sends e-ticket
+**GitHub star verification is required before searching.** The agent calls `link_github` once with the user's GitHub username. If verified, all tools are unlocked forever.
+
+1. Star https://github.com/LetsFG/LetsFG
+2. `link_github("your-github-username")` — verifies the star
+3. `search_flights("LON", "BCN", "2026-06-15")` — returns offers with prices from 102+ airlines
+4. `unlock_flight_offer("off_xxx")` — confirms live price with airline, reserves for 30 min
+5. `book_flight("off_xxx", passengers, email)` — creates real booking, airline sends e-ticket
 
 The `search_flights` tool accepts an optional `max_browsers` parameter (1–32) to limit concurrent browser instances. Omit it to auto-detect based on system RAM.
 
@@ -210,7 +217,13 @@ The agent has native tools — no API docs needed, no URL building, no token-bur
 
 ## Get an API Key
 
-**Search is free and works without a key.** An API key is needed for unlock, book, and enterprise GDS sources.
+**An API key + GitHub star verification is required.** Search, unlock, and book all require a verified star.
+
+The flow for agents:
+1. Register to get an API key (free, instant)
+2. Star https://github.com/LetsFG/LetsFG
+3. Call `link_github` with the GitHub username
+4. Once verified — unlimited access forever. First 1,000 stars only.
 
 ```bash
 curl -X POST https://api.letsfg.co/api/v1/agents/register \

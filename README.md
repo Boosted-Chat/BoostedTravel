@@ -203,7 +203,7 @@ Add to your MCP config:
 }
 ```
 
-> **Note:** `LETSFG_API_KEY` is optional. Without it, the MCP server still runs all 102 local connectors. With it, you also get enterprise GDS/NDC sources (400+ more airlines).
+> **Note:** `LETSFG_API_KEY` is required. Get one by running `letsfg register`. Star this repo and call `link_github` to verify — all tools unlock forever. First 1,000 stars only.
 
 ### Python SDK
 
