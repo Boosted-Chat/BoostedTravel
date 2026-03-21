@@ -2787,6 +2787,8 @@ class GenericCheckoutEngine:
         *,
         base_url: str | None = None,
         headless: bool = False,
+        submit_payment: bool = False,
+        payment: dict | None = None,
     ) -> CheckoutProgress:
         t0 = time.monotonic()
         booking_url = offer.get("booking_url", "")
@@ -2983,7 +2985,8 @@ class GenericCheckoutEngine:
             if config.custom_checkout_handler:
                 handler = getattr(self, config.custom_checkout_handler, None)
                 if handler:
-                    result = await handler(page, config, offer, offer_id, booking_url, passengers, t0)
+                    result = await handler(page, config, offer, offer_id, booking_url, passengers, t0,
+                                           submit_payment=submit_payment, payment=payment)
                     if result is not None:
                         return result
                     # If handler returned None, fall through to generic flow
@@ -3290,7 +3293,8 @@ class GenericCheckoutEngine:
             # Synchronous kill — guarantees browser dies even on CancelledError
             _force_kill_browser()
 
-    async def _skyairline_checkout(self, page, config, offer, offer_id, booking_url, passengers, t0):
+    async def _skyairline_checkout(self, page, config, offer, offer_id, booking_url, passengers, t0,
+                                     *, submit_payment=False, payment=None):
         """Sky Airline custom checkout: Vue SPA with custom dropdown components.
 
         Flow: flight selection → fare brand → upsell dismiss → seat skip →
@@ -3636,10 +3640,117 @@ class GenericCheckoutEngine:
             screenshot = await take_screenshot_b64(page)
             elapsed = time.monotonic() - t0
 
+            if not submit_payment or not payment:
+                return CheckoutProgress(
+                    status="payment_page_reached",
+                    step=step,
+                    step_index=8,
+                    airline=config.airline_name,
+                    source=config.source_tag,
+                    offer_id=offer_id,
+                    total_price=page_price,
+                    currency=offer.get("currency", "CLP") if offer else "CLP",
+                    booking_url=booking_url,
+                    screenshot_b64=screenshot,
+                    message=(
+                        f"Sky Airline checkout complete — reached payment page in "
+                        f"{elapsed:.0f}s. Price: {page_price} CLP. "
+                        f"Payment NOT submitted (safe mode). "
+                        f"Complete manually at: {booking_url}"
+                    ),
+                    can_complete_manually=True,
+                    elapsed_seconds=elapsed,
+                )
+
+            # ── Step 11: Fill payment form and submit ─────────────────
+            logger.info("Sky Airline checkout: filling payment form (DEUNA)")
+            card_number = payment.get("card_number", "")
+            expiry_month = str(payment.get("expiry_month", "")).zfill(2)
+            expiry_year = str(payment.get("expiry_year", ""))[-2:]  # Last 2 digits
+            cvv = str(payment.get("cvv", ""))
+            cardholder = payment.get("cardholder_name", "")
+
+            # Sky DEUNA form: direct inputs (card number, MM/YY, CVV, name)
+            # Fill via native setter + events for React-controlled inputs
+            await page.evaluate("""(params) => {
+                const { cardNumber, expiry, cvv, cardholder } = params;
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                function fill(input, value) {
+                    setter.call(input, value);
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                    input.dispatchEvent(new Event('change', {bubbles: true}));
+                    input.dispatchEvent(new Event('blur', {bubbles: true}));
+                }
+                const inputs = [...document.querySelectorAll('input')]
+                    .filter(x => x.offsetParent !== null);
+                for (const inp of inputs) {
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    const name = (inp.name || '').toLowerCase();
+                    const label = inp.closest('.textfield')
+                        ?.querySelector('label')?.innerText?.toLowerCase() || '';
+                    if (ph.includes('0000') || label.includes('número') || name.includes('card')) {
+                        fill(inp, cardNumber);
+                    } else if (ph.includes('mm') || label.includes('expiración') || name.includes('expir')) {
+                        fill(inp, expiry);
+                    } else if (ph.includes('cvv') || ph.includes('cvc') || label.includes('cvv')) {
+                        fill(inp, cvv);
+                    } else if (ph.includes('zapata') || label.includes('nombre como')
+                               || label.includes('tarjeta') || name.includes('holder')) {
+                        fill(inp, cardholder);
+                    }
+                }
+            }""", {
+                "cardNumber": card_number,
+                "expiry": f"{expiry_month} / {expiry_year}",
+                "cvv": cvv,
+                "cardholder": cardholder,
+            })
+            await page.wait_for_timeout(1000)
+
+            # Check terms & conditions checkbox
+            try:
+                checkbox = page.locator("input[type='checkbox']").first
+                if await checkbox.is_visible(timeout=2000):
+                    if not await checkbox.is_checked():
+                        await checkbox.click(force=True)
+            except Exception:
+                pass
+            await page.wait_for_timeout(500)
+            step = "payment_form_filled"
+            logger.info("Sky Airline checkout: payment form filled, clicking Ir a pagar")
+
+            # Click "Ir a pagar" button
+            try:
+                ir_btn = page.locator("button:has-text('Ir a pagar')")
+                if await ir_btn.is_visible(timeout=5000):
+                    await ir_btn.click()
+            except Exception:
+                await page.evaluate("""() => {
+                    const btns = [...document.querySelectorAll('button')]
+                        .filter(b => b.offsetParent);
+                    const btn = btns.find(b => /ir a pagar/i.test(b.innerText));
+                    if (btn) btn.click();
+                }""")
+            step = "payment_submitted"
+
+            # Wait for confirmation or error
+            await page.wait_for_timeout(15000)
+            screenshot = await take_screenshot_b64(page)
+            elapsed = time.monotonic() - t0
+
+            # Check for success indicators
+            page_text = await page.evaluate("document.body?.innerText || ''")
+            confirmed = any(kw in page_text.lower() for kw in [
+                "confirmación", "confirmacion", "reserva confirmada",
+                "compra exitosa", "pago exitoso", "booking confirmed",
+                "confirmation", "código de reserva", "codigo de reserva",
+            ])
+
             return CheckoutProgress(
-                status="payment_page_reached",
+                status="booking_confirmed" if confirmed else "payment_submitted",
                 step=step,
-                step_index=8,
+                step_index=9,
                 airline=config.airline_name,
                 source=config.source_tag,
                 offer_id=offer_id,
@@ -3648,12 +3759,10 @@ class GenericCheckoutEngine:
                 booking_url=booking_url,
                 screenshot_b64=screenshot,
                 message=(
-                    f"Sky Airline checkout complete — reached payment page in "
-                    f"{elapsed:.0f}s. Price: {page_price} CLP. "
-                    f"Payment NOT submitted (safe mode). "
-                    f"Complete manually at: {booking_url}"
+                    f"Sky Airline checkout — payment {'confirmed' if confirmed else 'submitted'} "
+                    f"in {elapsed:.0f}s. Price: {page_price} CLP. URL: {page.url}"
                 ),
-                can_complete_manually=True,
+                can_complete_manually=not confirmed,
                 elapsed_seconds=elapsed,
             )
 
@@ -3677,7 +3786,8 @@ class GenericCheckoutEngine:
                 elapsed_seconds=time.monotonic() - t0,
             )
 
-    async def _wizzair_checkout(self, page, config, offer, offer_id, booking_url, passengers, t0):
+    async def _wizzair_checkout(self, page, config, offer, offer_id, booking_url, passengers, t0,
+                                   *, submit_payment=False, payment=None):
         """WizzAir custom checkout: API search + Vuex injection + Vue Router navigation.
 
         WizzAir's Vue 2 SPA has Kasada KPSDK anti-bot + route guards that block
@@ -3924,7 +4034,8 @@ class GenericCheckoutEngine:
         )
 
     async def _virginaustralia_checkout(self, page, config, offer, offer_id,
-                                        booking_url, passengers, t0):
+                                        booking_url, passengers, t0,
+                                        *, submit_payment=False, payment=None):
         """Virgin Australia custom checkout via main site modal + DX SPA.
 
         The DX SPA flight-search hash route 404s when navigated directly, so we
@@ -4502,10 +4613,176 @@ class GenericCheckoutEngine:
             screenshot = await take_screenshot_b64(page)
             elapsed = time.monotonic() - t0
 
+            if not submit_payment or not payment:
+                return CheckoutProgress(
+                    status="payment_page_reached",
+                    step=step,
+                    step_index=8,
+                    airline=config.airline_name,
+                    source=config.source_tag,
+                    offer_id=offer_id,
+                    total_price=page_price,
+                    currency=offer.get("currency", "AUD") if offer else "AUD",
+                    booking_url=booking_url,
+                    screenshot_b64=screenshot,
+                    message=(
+                        f"Virgin Australia checkout complete — reached payment page "
+                        f"in {elapsed:.0f}s. Price: {page_price} AUD. "
+                        f"Payment NOT submitted (safe mode). "
+                        f"Complete manually at: {page.url}"
+                    ),
+                    can_complete_manually=True,
+                    elapsed_seconds=elapsed,
+                )
+
+            # ── Step 9: Fill payment form and submit ─────────────────
+            logger.info("VA checkout: filling payment form on Finalise page")
+            card_number = payment.get("card_number", "")
+            expiry_month = str(payment.get("expiry_month", "")).zfill(2)
+            expiry_year = str(payment.get("expiry_year", ""))
+            cvv = str(payment.get("cvv", ""))
+            cardholder = payment.get("cardholder_name", "")
+
+            # Scroll down to reveal payment section
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(2000)
+
+            # VA DX SPA Finalise page: look for "Pay now" / "Confirm and pay"
+            # or the payment form with card inputs
+            # First check if there's a terms/conditions checkbox
+            try:
+                checkbox = page.locator("input[type='checkbox']").first
+                if await checkbox.is_visible(timeout=2000):
+                    if not await checkbox.is_checked():
+                        await checkbox.click(force=True)
+                        await page.wait_for_timeout(500)
+            except Exception:
+                pass
+
+            # VA DX SPA may show a direct card form or redirect to payment gateway
+            # Fill card details using native setter for React/Angular compatibility
+            card_filled = await page.evaluate("""(params) => {
+                const { cardNumber, expiryMonth, expiryYear, cvv, cardholder } = params;
+                const results = [];
+                function setNativeValue(el, value) {
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) setter.call(el, value);
+                    else el.value = value;
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    el.dispatchEvent(new Event('blur', {bubbles: true}));
+                }
+                const inputs = [...document.querySelectorAll('input')]
+                    .filter(x => x.offsetParent !== null);
+                for (const inp of inputs) {
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    const name = (inp.name || '').toLowerCase();
+                    const id = (inp.id || '').toLowerCase();
+                    const type = (inp.type || '').toLowerCase();
+                    const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+                    const all = ph + ' ' + name + ' ' + id + ' ' + aria;
+                    if (all.match(/card.?num|numero|0000/)) {
+                        setNativeValue(inp, cardNumber); results.push('cardNumber');
+                    } else if (all.match(/expir.*month|mm/)) {
+                        setNativeValue(inp, expiryMonth); results.push('expiryMonth');
+                    } else if (all.match(/expir.*year|yy/)) {
+                        setNativeValue(inp, expiryYear); results.push('expiryYear');
+                    } else if (all.match(/cvv|cvc|security/)) {
+                        setNativeValue(inp, cvv); results.push('cvv');
+                    } else if (all.match(/holder|name on|cardholder/)) {
+                        setNativeValue(inp, cardholder); results.push('cardholder');
+                    }
+                }
+                return results;
+            }""", {
+                "cardNumber": card_number,
+                "expiryMonth": expiry_month,
+                "expiryYear": expiry_year,
+                "cvv": cvv,
+                "cardholder": cardholder,
+            })
+            logger.info("VA checkout: card form fill result: %s", card_filled)
+            await page.wait_for_timeout(1000)
+
+            # If no card inputs found, try filling via Playwright for iframes
+            if not card_filled:
+                # Check for payment iframe (common in airline gateways)
+                for frame in page.frames:
+                    if frame == page.main_frame:
+                        continue
+                    try:
+                        card_inp = frame.locator("input[name*='card'], input[placeholder*='0000']").first
+                        if await card_inp.is_visible(timeout=2000):
+                            await card_inp.fill(card_number)
+                            # Try filling other fields in the same iframe
+                            for sel, val in [
+                                ("input[name*='expir'], input[placeholder*='MM']", f"{expiry_month}/{expiry_year}"),
+                                ("input[name*='cvv'], input[name*='cvc']", cvv),
+                                ("input[name*='holder'], input[name*='name']", cardholder),
+                            ]:
+                                try:
+                                    f_inp = frame.locator(sel).first
+                                    if await f_inp.is_visible(timeout=1000):
+                                        await f_inp.fill(val)
+                                except Exception:
+                                    pass
+                            logger.info("VA checkout: card filled via iframe")
+                            break
+                    except Exception:
+                        continue
+
+            step = "payment_form_filled"
+            await page.wait_for_timeout(1000)
+
+            # Click Pay / Confirm button
+            logger.info("VA checkout: clicking Pay/Confirm button")
+            pay_clicked = False
+            for sel in [
+                'button:has-text("Pay now")',
+                'button:has-text("Confirm and pay")',
+                'button:has-text("Pay")',
+                'button:has-text("Complete booking")',
+                'button:has-text("Confirm")',
+                'button.continue',
+            ]:
+                try:
+                    btn = page.locator(sel).first
+                    if await btn.is_visible(timeout=2000):
+                        await btn.click()
+                        pay_clicked = True
+                        logger.info("VA checkout: clicked %s", sel)
+                        break
+                except Exception:
+                    continue
+
+            if not pay_clicked:
+                # Fallback: find any prominent button at bottom
+                await page.evaluate("""() => {
+                    const btns = [...document.querySelectorAll('button')]
+                        .filter(b => b.offsetParent && b.innerText?.trim());
+                    const pay = btns.find(b => /pay|confirm|complete|finalise/i.test(b.innerText));
+                    if (pay) pay.click();
+                }""")
+            step = "payment_submitted"
+
+            # Wait for confirmation or processing
+            await page.wait_for_timeout(15000)
+            screenshot = await take_screenshot_b64(page)
+            elapsed = time.monotonic() - t0
+
+            # Check for success indicators
+            page_text = await page.evaluate("document.body?.innerText || ''")
+            confirmed = any(kw in page_text.lower() for kw in [
+                "booking confirmed", "confirmation", "booking reference",
+                "itinerary", "e-ticket", "thank you for your booking",
+                "booking number", "pnr",
+            ])
+
             return CheckoutProgress(
-                status="payment_page_reached",
+                status="booking_confirmed" if confirmed else "payment_submitted",
                 step=step,
-                step_index=8,
+                step_index=9,
                 airline=config.airline_name,
                 source=config.source_tag,
                 offer_id=offer_id,
@@ -4514,12 +4791,10 @@ class GenericCheckoutEngine:
                 booking_url=booking_url,
                 screenshot_b64=screenshot,
                 message=(
-                    f"Virgin Australia checkout complete — reached payment page "
-                    f"in {elapsed:.0f}s. Price: {page_price} AUD. "
-                    f"Payment NOT submitted (safe mode). "
-                    f"Complete manually at: {page.url}"
+                    f"Virgin Australia checkout — payment {'confirmed' if confirmed else 'submitted'} "
+                    f"in {elapsed:.0f}s. Price: {page_price} AUD. URL: {page.url}"
                 ),
-                can_complete_manually=True,
+                can_complete_manually=not confirmed,
                 elapsed_seconds=elapsed,
             )
 
