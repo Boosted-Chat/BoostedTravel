@@ -13,7 +13,7 @@
 </tr>
 </table>
 
-LetsFG finds the cheapest flights across the entire internet — 102 airline connectors firing in parallel + enterprise GDS sources (Amadeus, Duffel, Sabre, Travelport) — and returns results in ~5 seconds. No web scraping wait times, no browser tabs, no inflated prices. Just raw airline prices, zero markup.
+LetsFG finds the cheapest flights across the entire internet — 150+ airline connectors firing in parallel + enterprise GDS sources (Amadeus, Duffel, Sabre, Travelport) — and returns results in ~5 seconds. No web scraping wait times, no browser tabs, no inflated prices. Just raw airline prices, zero markup.
 
 Native to **OpenClaw**, **Perplexity Computer**, **Manus**, **Claude Code**, **Codex**, **Cursor**, **Windsurf** — any AI agent that supports CLI, MCP, or packages.
 
@@ -33,13 +33,13 @@ Native to **OpenClaw**, **Perplexity Computer**, **Manus**, **Claude Code**, **C
   <img src="assets/demo.gif" alt="Demo: LetsFG vs Default Agent Search" width="640">
 </div>
 
-> Side-by-side comparison: default agent search (OpenClaw, Perplexity Computer) vs LetsFG CLI. Same query — LetsFG finds cheaper flights across 102 airlines in seconds.
+> Side-by-side comparison: default agent search (OpenClaw, Perplexity Computer) vs LetsFG CLI. Same query — LetsFG finds cheaper flights across 150+ airlines in seconds.
 
 ## Why LetsFG?
 
 Flight websites inflate prices with demand tracking, cookie-based pricing, and surge markup. The same flight is often **$20–$50 cheaper** through LetsFG — raw airline price, zero markup.
 
-LetsFG works by finding the best price across the entire internet. It fires 102 airline connectors in parallel, scanning carriers across Europe, Asia, Americas, Middle East, Africa, and Oceania — then merges results with enterprise GDS/NDC sources (Amadeus, Duffel, Sabre, Travelport) that provide competitive pricing from 400+ carriers including premium airlines like Lufthansa, British Airways, and Emirates. The best price wins.
+LetsFG works by finding the best price across the entire internet. It fires 150+ airline connectors in parallel, scanning carriers across Europe, Asia, Americas, Middle East, Africa, and Oceania — then merges results with enterprise GDS/NDC sources (Amadeus, Duffel, Sabre, Travelport) that provide competitive pricing from 400+ carriers including premium airlines like Lufthansa, British Airways, and Emirates. The best price wins.
 
 | | Google Flights / Booking.com / Expedia | **LetsFG** |
 |---|---|---|
@@ -47,7 +47,7 @@ LetsFG works by finding the best price across the entire internet. It fires 102 
 | Search | Free (with tracking/inflation) | **Free** (no tracking, no cookies) |
 | Booking | Ticket + hidden markup | **Ticket price only** (raw airline price, zero markup) |
 | Price goes up on repeat search? | Yes (demand tracking) | **Never** |
-| LCC coverage | Missing many low-cost carriers | **102 direct airline connectors** |
+| LCC coverage | Missing many low-cost carriers | **150+ direct airline connectors** |
 | Works inside AI agents? | No | **Native** (CLI, MCP, SDK) |
 
 ---
@@ -64,7 +64,7 @@ That's it. You can search flights immediately — no account, no API key, no con
 letsfg search-local GDN BCN 2026-06-15
 ```
 
-This runs 102 airline connectors locally on your machine and returns real-time prices. Completely free, unlimited, zero setup.
+This runs 150+ airline connectors locally on your machine and returns real-time prices. Completely free, unlimited, zero setup.
 
 ---
 
@@ -92,7 +92,7 @@ letsfg search-local LHR BCN 2026-04-15
 ```
 
 **What you get:**
-- 102 airline connectors running on your machine (Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, Qantas, and 95 more)
+- 150+ airline connectors running on your machine (Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, Qantas, and 140+ more)
 - Real-time prices scraped directly from airline websites
 - Virtual interlining — cross-airline round-trips that save 30–50%
 - Completely free, unlimited searches
@@ -169,7 +169,7 @@ letsfg search GDN BER 2026-03-03 --json | jq '.offers[0]'
 
 ## Install
 
-### Python (recommended — includes 102 local airline connectors)
+### Python (recommended — includes 150+ local airline connectors)
 
 ```bash
 pip install letsfg
@@ -277,7 +277,7 @@ All commands accept `--json` for structured output and `--api-key` to override t
 |------|-------------|-------|------|
 | **MCP cloud** | MCP server queries 75+ airline connectors + GDS/NDC via cloud backend | 5-15s | None (10 req/min rate limit) |
 | **Cloud search** | Queries GDS/NDC providers (Duffel, Amadeus, Sabre, Travelport, Kiwi) via backend API | 2-15s | API key |
-| **Local search** | Fires 102 airline connectors on your machine via Playwright + httpx | 5-25s | None |
+| **Local search** | Fires 150+ airline connectors on your machine via Playwright + httpx | 5-25s | None |
 
 MCP cloud is the default for `npx letsfg-mcp` — zero setup, no API key. Cloud search + local search run simultaneously in the Python SDK. Results are merged, deduplicated, currency-normalized, and sorted.
 
@@ -296,7 +296,7 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 │  AI Agents / CLI / SDK / MCP Server                 │
 ├──────────────────┬──────────────────────────────────┤
 │  Local connectors │  Enterprise Cloud API            │
-│  (102 airlines via│  (Amadeus, Duffel, Sabre,        │
+│  (150+ airlines via│  (Amadeus, Duffel, Sabre,        │
 │   Playwright)     │   Travelport, Kiwi — contract-   │
 │                   │   only GDS/NDC providers)        │
 ├──────────────────┴──────────────────────────────────┤
@@ -305,9 +305,9 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 └─────────────────────────────────────────────────────┘
 ```
 
-## Local Airline Connectors (102 airlines)
+## Local Airline Connectors (150+ airlines)
 
-The Python SDK includes 102 production-grade airline connectors — not fragile scrapers, but maintained integrations that handle each airline's specific API pattern. No API key needed for local search. Each connector uses one of three proven strategies:
+The Python SDK includes 150+ production-grade airline connectors — not fragile scrapers, but maintained integrations that handle each airline's specific API pattern. No API key needed for local search. Each connector uses one of three proven strategies:
 
 | Strategy | How it works | Example airlines |
 |----------|-------------|-----------------|
@@ -318,7 +318,7 @@ The Python SDK includes 102 production-grade airline connectors — not fragile 
 ### Supported Airlines
 
 <details>
-<summary>Full list of 102 airline connectors</summary>
+<summary>Full list of 150+ airline connectors</summary>
 
 | Region | Airlines |
 |--------|----------|
@@ -409,7 +409,7 @@ configure_max_browsers(4)  # explicit override
 
 | Package | Install | What it is |
 |---------|---------|------------|
-| **Python SDK + CLI** | `pip install letsfg` | SDK + `letsfg` CLI + 102 local airline connectors |
+| **Python SDK + CLI** | `pip install letsfg` | SDK + `letsfg` CLI + 150+ local airline connectors |
 | **JS/TS SDK + CLI** | `npm install -g letsfg` | SDK + `letsfg` CLI command |
 | **MCP Server** | `npx letsfg-mcp` | Model Context Protocol for Claude, Cursor, Windsurf — **no API key needed** for search |
 | **Remote MCP** | `https://api.letsfg.co/mcp` | Streamable HTTP — no install needed (API key required) |

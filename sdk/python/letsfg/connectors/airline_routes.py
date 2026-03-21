@@ -166,16 +166,6 @@ AIRPORT_COUNTRY: dict[str, str] = {
     "CMN": "MA", "RAK": "MA", "FEZ": "MA", "AGA": "MA", "TNG": "MA",
     "ALG": "DZ", "ORN": "DZ",
     "TUN": "TN", "NBE": "TN", "DJE": "TN",
-    # Additional Africa / Indian Ocean
-    "DAR": "TZ", "ZNZ": "TZ", "JRO": "TZ",
-    "EBB": "UG", "KGL": "RW", "JIB": "DJ", "KRT": "SD",
-    "LUN": "ZM", "HRE": "ZW", "MPM": "MZ", "GBE": "BW", "WDH": "NA",
-    "ABJ": "CI", "DKR": "SN", "DLA": "CM", "LBV": "GA", "BZV": "CG",
-    "FIH": "CD", "LLW": "MW", "MRU": "MU", "SEZ": "SC", "TNR": "MG",
-    "LAD": "AO", "MPM": "MZ",
-    # Pacific
-    "NAN": "FJ", "SUV": "FJ", "NOU": "NC", "PPT": "PF",
-    "TBU": "TO", "APW": "WS", "RAR": "CK",
 }
 
 # City codes that map to multiple airports in a country
@@ -185,83 +175,6 @@ CITY_COUNTRY: dict[str, str] = {
     "SEL": "KR", "BJS": "CN", "SHA": "CN", "BKK": "TH", "KUL": "MY",
     "REK": "IS", "MOW": "RU", "STO": "SE",
 }
-
-# ── Multi-airport city groups ────────────────────────────────────────────
-# Maps a city code (or any airport in the group) to all airports in that city.
-# Used to expand searches: GDN→STN also searches GDN→LHR, GDN→LGW, etc.
-CITY_AIRPORTS: dict[str, list[str]] = {
-    # United Kingdom
-    "LON": ["LHR", "LGW", "STN", "LTN", "SEN"],
-    # France
-    "PAR": ["CDG", "ORY", "BVA"],
-    # Italy
-    "ROM": ["FCO", "CIA"],
-    "MIL": ["MXP", "LIN", "BGY"],
-    # United States
-    "NYC": ["JFK", "EWR", "LGA"],
-    "WAS": ["IAD", "DCA", "BWI"],
-    "CHI": ["ORD", "MDW"],
-    "LAX": ["LAX", "SNA", "BUR", "LGB", "ONT"],
-    "SFO": ["SFO", "OAK", "SJC"],
-    "MIA": ["MIA", "FLL", "PBI"],
-    "HOU": ["IAH", "HOU"],
-    "DFW": ["DFW", "DAL"],
-    # Japan
-    "TYO": ["NRT", "HND"],
-    "OSA": ["KIX", "ITM"],
-    # South Korea
-    "SEL": ["ICN", "GMP"],
-    # China
-    "BJS": ["PEK", "PKX"],
-    "SHA": ["PVG", "SHA"],
-    # Turkey
-    "IST": ["IST", "SAW"],
-    # Germany
-    "BER": ["BER", "SXF"],
-    # Sweden
-    "STO": ["ARN", "BMA", "NYO"],
-    # Russia
-    "MOW": ["SVO", "DME", "VKO"],
-    # Argentina
-    "BUE": ["EZE", "AEP"],
-    # Brazil
-    "SAO": ["GRU", "CGH", "VCP"],
-    "RIO": ["GIG", "SDU"],
-    # UAE
-    "DXB": ["DXB", "DWC"],
-    # Thailand
-    "BKK": ["BKK", "DMK"],
-    # Malaysia
-    "KUL": ["KUL", "SZB"],
-    # Indonesia
-    "JKT": ["CGK", "HLP"],
-    # Iceland
-    "REK": ["KEF", "RKV"],
-    # Ireland
-    "DUB": ["DUB"],
-}
-
-# Build reverse lookup: airport → city code
-_AIRPORT_TO_CITY: dict[str, str] = {}
-for _city, _airports in CITY_AIRPORTS.items():
-    for _apt in _airports:
-        _AIRPORT_TO_CITY[_apt] = _city
-
-
-def get_city_airports(iata: str) -> list[str]:
-    """Return all airports in the same city as *iata*.
-
-    If *iata* is a city code (LON, NYC), returns its airports.
-    If *iata* is an airport in a multi-airport city, returns all sibling airports.
-    Otherwise returns [iata] (single-airport city).
-    """
-    iata = iata.upper().strip()
-    if iata in CITY_AIRPORTS:
-        return CITY_AIRPORTS[iata]
-    city = _AIRPORT_TO_CITY.get(iata)
-    if city:
-        return CITY_AIRPORTS[city]
-    return [iata]
 
 
 def get_country(iata: str) -> str | None:
@@ -546,203 +459,376 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "US",
         "ZA", "KE",
     },
-    "suncountry": {"US", "MX", "JM", "BZ", "CR", "DO"},
-    "qatar": {
-        "QA", "AE", "SA", "KW", "BH", "OM", "EG", "JO", "LB", "IQ", "IR",
-        "PK", "IN", "LK", "BD", "NP", "MV",
-        "TH", "MY", "SG", "ID", "PH", "VN", "KH", "MM",
-        "CN", "HK", "JP", "KR", "TW", "AU", "NZ",
-        "GB", "IE", "FR", "DE", "IT", "ES", "PT", "CH", "NL", "BE",
-        "AT", "SE", "NO", "DK", "FI", "PL", "CZ", "HU", "RO", "BG",
-        "GR", "CY", "TR", "RU",
-        "US", "CA", "BR", "AR", "CL", "MX",
-        "KE", "TZ", "ZA", "NG", "ET", "GH", "UG", "MU", "SC",
-        "KZ", "UZ", "AZ", "GE",
-    },
-    "westjet": {
-        "CA", "US", "MX", "GB", "IE", "FR", "DE", "IT", "ES",
-        "JM", "CU", "DO", "BB", "TC", "BS", "HT", "LC", "GD",
-        "CR", "BZ", "HN", "PA",
-        "JP",
-    },
-    "latam": {
-        "CL", "BR", "AR", "PE", "CO", "EC", "UY", "PY", "BO",
-        "US", "MX", "DO", "CU",
-        "GB", "FR", "DE", "IT", "ES", "NL",
-        "AU", "NZ",
-    },
-    "copa": {
-        "PA", "US", "CO", "BR", "AR", "CL", "PE", "EC", "MX",
-        "CR", "GT", "SV", "HN", "NI", "BZ",
-        "DO", "JM", "CU", "CW", "AW", "TT", "BB",
-        "VE", "GY", "SR", "PY", "UY", "BO",
-    },
-    "avianca": {
-        "CO", "SV", "GT", "CR", "EC", "PE", "HN", "NI",
-        "US", "MX", "BR", "AR", "CL", "DO", "CU",
-        "ES", "GB", "DE", "IT", "FR",
-    },
-    "lot": {
-        "PL", "GB", "DE", "FR", "IT", "ES", "NL", "BE", "CH", "AT",
-        "SE", "NO", "DK", "FI", "CZ", "HU", "RO", "BG", "HR", "RS",
-        "UA", "GR", "CY", "PT", "IE", "IS", "LT", "LV", "EE",
-        "US", "CA",
-        "TR", "IL", "EG", "AE", "SA", "KZ", "UZ", "GE",
-        "CN", "JP", "KR", "IN", "LK", "TH", "SG",
-    },
-
-    # ── New airline connectors ──
+    # ── Wired 2026-03-20 ──────────────────────────────────────────
     "aegean": {
-        "GR", "GB", "DE", "FR", "IT", "ES", "NL", "BE", "CH", "AT",
-        "CZ", "PL", "RO", "BG", "CY", "IL", "EG", "TR", "GE", "AE",
-        "SA", "SE", "DK", "IE", "PT",
+        "GR", "CY", "DE", "GB", "FR", "IT", "ES", "CH", "AT", "RO",
+        "BG", "EG", "SA", "GE", "AM", "IL", "RU", "UA", "CZ", "PL",
+        "NL", "SE",
     },
-    "icelandair": {
-        "IS", "US", "CA", "GB", "DE", "FR", "NL", "DK", "SE", "NO",
-        "FI", "ES", "IT", "CH", "BE", "IE", "PT", "PL", "CZ", "GL",
+    "olympicair": {
+        "GR", "CY", "DE", "GB", "FR", "IT", "ES", "CH", "AT", "RO",
+        "BG", "EG", "SA", "GE", "AM", "IL", "RU", "UA", "CZ", "PL",
+        "NL", "SE",
+    },
+    "aerlingus": {
+        "IE", "GB", "US", "FR", "ES", "PT", "IT", "DE", "NL", "BE",
+        "AT", "CH", "PL", "HR",
+    },
+    "airbaltic": {
+        "LV", "LT", "EE", "FI", "SE", "NO", "DK", "DE", "AT", "CH",
+        "NL", "BE", "FR", "IT", "ES", "PT", "GB", "IE", "GR", "CY",
+        "TR", "GE", "AZ", "IL", "EG", "AE",
     },
     "aircanada": {
-        "CA", "US", "MX", "GB", "IE", "FR", "DE", "IT", "ES", "PT",
-        "NL", "BE", "CH", "AT", "DK", "SE", "NO", "PL", "CZ", "HU",
-        "HR", "GR", "IS", "JP", "KR", "CN", "HK", "TW", "IN",
-        "AU", "NZ", "BR", "AR", "CL", "CO", "PE",
-        "DO", "JM", "CU", "BB", "TT", "BS", "CR", "PA", "GT", "BZ",
-        "AE", "IL",
+        "CA", "US", "MX", "GB", "IE", "FR", "DE", "CH", "IT", "ES",
+        "PT", "NL", "BE", "AT", "DK", "SE", "NO", "JP", "KR", "CN",
+        "HK", "IN", "AU", "NZ", "BR", "CO", "CR", "DO", "JM", "CU",
+        "BB", "TT", "BS",
     },
-    "finnair": {
-        "FI", "SE", "NO", "DK", "EE", "LV", "LT", "GB", "IE", "FR",
-        "DE", "IT", "ES", "PT", "NL", "BE", "CH", "AT", "PL", "CZ",
-        "HU", "RO", "BG", "HR", "GR", "CY", "TR",
-        "JP", "KR", "CN", "HK", "TH", "SG", "IN",
-        "US",
+    "airindia": {
+        "IN", "US", "CA", "GB", "FR", "DE", "IT", "AT", "CH", "DK",
+        "SE", "NO", "FI", "AE", "SA", "QA", "KW", "BH", "OM", "SG",
+        "TH", "MY", "AU", "NZ", "JP", "KR", "HK", "LK", "BD", "NP",
+        "KE",
     },
-    "tap": {
-        "PT", "ES", "FR", "DE", "IT", "GB", "IE", "NL", "BE", "CH",
-        "AT", "LU", "DK", "SE", "NO", "FI", "PL", "CZ", "HU", "RO",
-        "GR", "HR", "BG", "TR", "MA", "TN", "CV",
-        "BR", "US", "CA", "MX", "VE", "CO",
-        "AO", "MZ", "GW", "SN", "GH",
-    },
-    "sas": {
-        "SE", "NO", "DK", "FI", "IS", "GB", "IE", "FR", "DE", "IT",
-        "ES", "PT", "NL", "BE", "CH", "AT", "PL", "CZ", "GR", "HR",
-        "TR", "EE", "LV", "LT",
-        "US", "TH",
-    },
-    "wingo": {
-        "CO", "PA", "VE", "EC", "PE", "MX", "CU", "DO", "JM", "CW",
-        "AW", "GT", "CR",
-    },
-    "skyairline": {
-        "CL", "PE", "BR", "AR", "UY",
+    "airnewzealand": {
+        "NZ", "AU", "FJ", "NC", "CK", "TO", "WS", "US", "CA", "GB",
+        "JP", "CN", "HK", "SG",
     },
     "arajet": {
         "DO", "CO", "MX", "GT", "SV", "HN", "CR", "PA", "CU", "JM",
-        "PE", "EC", "CL", "BR", "CA", "US",
-    },
-    "ethiopian": {
-        "ET", "KE", "TZ", "UG", "RW", "DJ", "SD", "SS", "SO", "ER",
-        "CD", "CG", "CM", "GA", "CI", "GH", "NG", "SN", "ML", "BF",
-        "NE", "TD", "MG", "MU", "SC", "MW", "ZM", "ZW", "MZ", "BW",
-        "ZA",
-        "AE", "SA", "QA", "BH", "KW", "OM", "IL", "EG", "LB", "JO",
-        "IN", "CN", "JP", "KR", "TH", "SG", "HK",
-        "GB", "FR", "DE", "IT", "ES", "BE", "AT", "SE", "IE",
-        "US", "CA", "BR", "AR",
-    },
-    "kenyaairways": {
-        "KE", "TZ", "UG", "RW", "ET", "CD", "CG", "CM", "NG", "GH",
-        "CI", "SN", "ZA", "MU", "SC", "MG", "MW", "ZM", "ZW",
-        "AE", "SA", "OM", "BH", "EG",
-        "IN", "CN", "TH", "HK",
-        "GB", "FR", "NL", "DE", "IT",
-        "US",
-    },
-    "royalairmaroc": {
-        "MA", "FR", "ES", "IT", "DE", "GB", "NL", "BE", "PT", "CH",
-        "TR", "EG", "TN", "DZ", "SN", "CI", "ML", "GH", "NG", "CM",
-        "GA", "CG", "CD", "MR", "GN", "BF", "NE",
-        "AE", "SA", "QA", "JO",
-        "US", "CA", "BR",
-    },
-    "philippineairlines": {
-        "PH", "JP", "KR", "CN", "HK", "TW", "SG", "MY", "TH", "VN",
-        "ID", "IN", "AU",
-        "AE", "SA", "QA", "BH", "KW", "OM",
-        "US", "CA",
-        "GB",
-    },
-    "airindia": {
-        "IN", "AE", "SA", "QA", "KW", "BH", "OM",
-        "GB", "FR", "DE", "IT", "ES", "AT", "CH", "DK", "SE", "NL",
-        "US", "CA", "AU",
-        "JP", "KR", "HK", "SG", "TH", "MY",
-        "KE", "ET",
-        "LK", "NP", "BD", "MV",
-    },
-    "qantas": {
-        "AU", "NZ", "SG", "MY", "ID", "TH", "VN", "PH", "HK", "JP",
-        "CN", "IN", "LK",
-        "GB", "FR", "DE", "IT",
-        "US", "CA", "CL", "AR",
-        "ZA", "AE", "FJ", "PG", "NC", "NR",
-    },
-    "egyptair": {
-        "EG", "SA", "AE", "QA", "KW", "BH", "OM", "JO", "LB", "IQ",
-        "GB", "FR", "DE", "IT", "ES", "NL", "GR", "CH", "AT", "BE",
-        "US", "CA",
-        "IN", "CN", "JP", "TH", "KR",
-        "KE", "ET", "TZ", "NG", "GH", "ZA", "SD", "TN", "DZ", "MA",
-    },
-    "virginaustralia": {
-        "AU", "NZ", "FJ", "ID", "JP",
-    },
-    "airnewzealand": {
-        "NZ", "AU", "FJ", "NC", "TO", "CK", "WS",
-        "SG", "HK", "JP", "CN",
-        "US", "CA",
-        "GB",
-    },
-    "jal": {
-        "JP", "US", "CA", "MX",
-        "GB", "FR", "DE", "FI", "SE",
-        "CN", "HK", "TW", "KR",
-        "TH", "SG", "MY", "VN", "ID", "PH", "IN",
-        "AU",
-        "AE", "QA",
-    },
-    "garuda": {
-        "ID", "SG", "MY", "TH", "PH", "VN", "AU", "JP", "KR", "CN",
-        "HK", "IN", "NL", "GB", "AE", "SA",
+        "EC", "PE", "CL", "BR", "CA",
     },
     "bangkokairways": {
-        "TH", "KH", "LA", "MM", "VN", "SG", "MY", "IN", "MV", "CN",
-        "HK",
+        "TH", "KH", "LA", "MM", "MY", "SG", "IN", "MV", "HK", "CN",
     },
-    "saa": {
-        "ZA", "MU", "MW", "ZM", "ZW", "BW", "MZ", "NA", "SZ", "LS",
-        "KE", "TZ", "UG", "ET", "GH", "NG", "SN", "CI", "CD",
-        "GB", "DE", "FR",
-        "US",
-        "AU", "HK", "IN",
-        "AE",
+    "egyptair": {
+        "EG", "SA", "AE", "KW", "QA", "BH", "OM", "JO", "LB", "IQ",
+        "GB", "FR", "DE", "IT", "ES", "GR", "TR", "US", "CA", "IN",
+        "TH", "CN", "JP", "KR", "ZA", "KE", "NG", "ET", "TZ", "SD",
     },
-    "aerlingus": {
-        "IE", "GB", "FR", "ES", "IT", "DE", "NL", "BE", "PT", "AT",
-        "CH", "PL", "CZ", "HR", "GR", "CY",
-        "US", "CA",
+    "ethiopian": {
+        "ET", "KE", "TZ", "UG", "NG", "GH", "ZA", "EG", "SA", "AE",
+        "QA", "IN", "CN", "HK", "JP", "KR", "GB", "FR", "DE", "IT",
+        "US", "CA", "BR", "IL", "TR",
+    },
+    "finnair": {
+        "FI", "SE", "NO", "DK", "EE", "LV", "LT", "GB", "IE", "FR",
+        "DE", "ES", "IT", "NL", "BE", "AT", "CH", "PL", "CZ", "GR",
+        "HR", "PT", "US", "JP", "KR", "CN", "HK", "TH", "SG", "IN",
+    },
+    "garuda": {
+        "ID", "SG", "MY", "TH", "AU", "JP", "KR", "CN", "HK", "NL",
+        "SA", "AE",
+    },
+    "icelandair": {
+        "IS", "US", "CA", "GB", "IE", "FR", "DE", "NL", "BE", "DK",
+        "SE", "NO", "FI",
     },
     "itaairways": {
-        "IT", "FR", "DE", "GB", "ES", "NL", "BE", "CH", "AT", "GR",
-        "PL", "CZ", "HU", "RO", "BG", "HR", "AL", "PT", "IE",
-        "US", "BR", "AR",
-        "JP", "IN",
-        "AE", "IL", "EG", "TN", "DZ", "LY",
+        "IT", "FR", "DE", "ES", "GB", "NL", "BE", "CH", "AT", "GR",
+        "US", "BR", "AR", "JP", "IL", "EG", "TN",
     },
-
-    # ── OTA / aggregator connectors (global or broad regional) ──
-    # OTAs are NOT filtered by route — they search across all airlines.
-    # We intentionally omit them from AIRLINE_COUNTRIES so they always run.
+    "jal": {
+        "JP", "US", "CA", "GB", "FR", "DE", "FI", "AU", "CN", "HK",
+        "TW", "KR", "TH", "SG", "MY", "ID", "VN", "IN",
+    },
+    "jazeera": {
+        "KW", "AE", "SA", "BH", "QA", "OM", "EG", "IN", "PK", "BD",
+        "LK", "NP", "TR", "GE", "AZ",
+    },
+    "kenyaairways": {
+        "KE", "TZ", "UG", "ET", "NG", "ZA", "EG", "SA", "AE", "IN",
+        "CN", "HK", "TH", "GB", "FR", "NL", "US",
+    },
+    "philippineairlines": {
+        "PH", "US", "CA", "JP", "KR", "CN", "HK", "TW", "SG", "AU",
+        "AE", "SA", "GB",
+    },
+    "qantas": {
+        "AU", "NZ", "US", "GB", "JP", "SG", "HK", "CN", "IN", "ID",
+        "TH", "MY", "PH", "VN", "FJ", "ZA", "CL", "CA",
+    },
+    "royalairmaroc": {
+        "MA", "FR", "ES", "IT", "DE", "GB", "NL", "BE", "PT", "US",
+        "CA", "BR", "SA", "AE", "QA", "EG", "TN", "DZ", "SN", "CI",
+        "GA", "CM", "ML",
+    },
+    "saa": {
+        "ZA", "GH", "NG", "KE", "TZ", "MU", "MZ", "ZW", "NA", "GB",
+        "DE", "US", "AU", "HK", "SG", "IN",
+    },
+    "sas": {
+        "SE", "NO", "DK", "FI", "IS", "GB", "IE", "FR", "DE", "NL",
+        "BE", "ES", "IT", "PT", "GR", "CH", "AT", "PL", "US", "JP",
+        "CN", "HK", "TH",
+    },
+    "skyairline": {
+        "CL", "PE", "AR", "BR", "CO", "UY",
+    },
+    "skyexpress": {
+        "GR", "CY", "TR", "DE", "FR", "IT", "BE", "NL", "AT", "CZ",
+        "HU", "PL", "GB", "IE", "AL", "AM", "GE",
+    },
+    "aerolineas": {
+        "AR", "BR", "CL", "UY", "PY", "BO", "PE", "EC", "CO", "VE",
+        "US", "MX", "CU", "DO", "ES", "IT",
+    },
+    "chinaairlines": {
+        "US", "TW", "VN", "PH",
+    },
+    "flyarystan": {
+        "KZ", "TR", "GE", "KG", "AE", "AZ", "UZ", "CN", "IN",
+    },
+    "tap": {
+        "PT", "ES", "FR", "DE", "IT", "GB", "NL", "BE", "CH", "LU",
+        "US", "CA", "BR", "MZ", "CV", "GW", "SN", "MA",
+    },
+    "virginaustralia": {
+        "AU", "NZ", "US", "JP", "HK", "ID", "FJ", "TO", "WS", "VU",
+    },
+    "wingo": {
+        "CO", "PA", "VE", "EC", "MX", "DO", "CU", "GT", "CW", "AW",
+    },
+    "klm": {
+        "NL", "GB", "IE", "FR", "DE", "ES", "IT", "PT", "BE", "CH",
+        "AT", "CZ", "PL", "HU", "RO", "BG", "HR", "RS", "SI", "SK",
+        "DK", "SE", "NO", "FI", "IS", "GR", "CY", "TR",
+        "US", "CA", "MX", "BR", "AR", "CL", "CO", "PE", "PA",
+        "AE", "QA", "BH", "KW", "SA", "IL", "JO",
+        "EG", "MA", "TN", "KE", "SN", "GH", "NG", "ZA", "ET", "TZ",
+        "JP", "KR", "CN", "HK", "TW", "SG", "MY", "TH", "VN", "ID",
+        "IN", "AU", "NZ",
+    },
+    "airfrance": {
+        "FR", "NL", "GB", "IE", "DE", "ES", "IT", "PT", "BE", "CH",
+        "AT", "CZ", "PL", "HU", "RO", "BG", "HR", "RS", "SI", "SK",
+        "DK", "SE", "NO", "FI", "GR", "CY", "TR",
+        "US", "CA", "MX", "BR", "AR", "CL", "CO", "PE",
+        "AE", "QA", "SA", "IL", "JO",
+        "EG", "MA", "TN", "SN", "CI", "CM", "GA", "CG", "MG",
+        "JP", "KR", "CN", "HK", "SG", "TH", "VN", "IN",
+    },
+    "iberia": {
+        "ES", "GB", "US", "FR", "DE", "IT", "PT", "NL", "BE", "CH",
+        "AT", "CZ", "PL", "HU", "RO", "BG", "HR", "GR", "CY", "TR",
+        "DK", "SE", "NO", "FI",
+        "MX", "BR", "AR", "CL", "CO", "PE", "EC", "UY", "PA", "DO",
+        "CR", "GT", "SV", "HN", "NI", "CU", "VE",
+        "MA", "EG", "IL", "AE", "QA", "SA", "BH",
+        "JP", "KR", "CN", "IN", "TH", "AU", "NZ",
+        "ZA", "KE", "NG", "GH", "SN",
+    },
+    "virginatlantic": {
+        "GB", "US", "BB", "JM", "AG", "GD", "LC", "TT", "BS", "DO",
+        "CU", "MX", "IL", "AE", "IN", "HK", "CN",
+        "ZA", "KE", "NG",
+    },
+    # ── British Airways (SOLR pricing feed — oneworld, IAG) ──
+    "britishairways": {
+        "GB", "IE", "FR", "DE", "ES", "IT", "PT", "NL", "BE", "CH",
+        "AT", "CZ", "PL", "HU", "RO", "BG", "HR", "RS", "SI", "SK",
+        "DK", "SE", "NO", "FI", "IS", "GR", "CY", "TR", "MT",
+        "US", "CA", "MX", "BR", "AR", "CL", "CO", "PE", "CR", "PA",
+        "BB", "JM", "AG", "GD", "LC", "TT", "BS", "KY", "BM", "DO",
+        "AE", "QA", "BH", "KW", "SA", "OM", "IL", "JO",
+        "EG", "MA", "TN", "KE", "ZA", "GH", "NG", "MU", "SC",
+        "JP", "KR", "CN", "HK", "SG", "MY", "TH", "IN", "LK", "MV",
+        "AU", "NZ",
+    },
+    # ── Iberia Express (via Iberia LD+JSON — domestic Spain + short-haul EU) ──
+    "iberiaexpress": {
+        "ES", "PT", "IT", "GR", "IE", "DE", "CZ", "HU", "DK",
+    },
+    # ── Lufthansa Group (JSON-LD from lufthansa.com flight pages) ──
+    "lufthansa": {
+        "DE", "AT", "CH", "BE", "NL", "LU",
+        "GB", "IE", "FR", "IT", "ES", "PT", "GR", "CY", "TR", "MT",
+        "PL", "CZ", "HU", "RO", "BG", "HR", "RS", "SI", "BA", "MK", "AL", "ME", "SK",
+        "DK", "SE", "NO", "FI", "IS", "EE", "LV", "LT",
+        "US", "CA", "MX", "BR", "AR", "CL", "CO", "PA",
+        "AE", "SA", "QA", "BH", "OM", "KW", "JO", "LB", "IL", "EG",
+        "JP", "KR", "CN", "HK", "SG", "TH", "IN", "PK", "LK", "MV", "BD", "NP",
+        "ZA", "KE", "NG", "ET", "GH", "TZ", "MA", "TN", "DZ", "MU",
+        "AU", "NZ",
+    },
+    "swiss": {
+        "CH", "DE", "AT", "GB", "IE", "FR", "IT", "ES", "PT", "GR", "CY", "TR",
+        "NL", "BE", "LU", "PL", "CZ", "HU", "RO", "BG", "HR", "RS",
+        "DK", "SE", "NO", "FI", "EE", "LV", "LT",
+        "US", "CA", "BR",
+        "AE", "SA", "IL", "EG", "JO",
+        "JP", "CN", "HK", "SG", "TH", "IN",
+        "ZA", "KE",
+    },
+    "austrian": {
+        "AT", "DE", "CH", "GB", "IE", "FR", "IT", "ES", "GR", "CY", "TR",
+        "NL", "BE", "PL", "CZ", "HU", "RO", "BG", "HR", "RS", "SI", "BA", "MK", "AL", "ME", "SK",
+        "DK", "SE", "NO", "FI", "EE", "LV", "LT",
+        "US", "CA",
+        "AE", "IL", "EG", "JO", "LB",
+        "JP", "CN", "TH", "IN", "MV", "LK",
+        "ZA", "KE", "ET", "MA", "TN",
+    },
+    "brusselsairlines": {
+        "BE", "DE", "AT", "CH", "GB", "IE", "FR", "IT", "ES", "PT", "GR", "CY", "TR",
+        "NL", "LU", "PL", "CZ", "HU", "RO", "BG", "HR", "RS",
+        "DK", "SE", "NO", "FI", "EE", "LV", "LT",
+        "US", "CA",
+        "AE", "IL", "EG",
+        "SN", "CI", "CM", "CD", "CG", "RW", "BJ", "BF", "GN", "ML", "TG", "GM", "SL", "LR", "KE", "UG", "ET", "GH", "NG",
+    },
+    "discover": {
+        "DE", "ES", "PT", "GR", "IT", "HR", "TR", "CY", "MT",
+        "MX", "DO", "JM", "CU", "CR", "PA",
+        "CV", "MU", "SC", "KE", "TZ", "ZA", "NA", "MW",
+    },
+    "elal": {
+        "IL",
+        "GB", "FR", "DE", "IT", "ES", "GR", "CY", "AT", "CH", "BE", "NL", "CZ", "HU", "RO", "BG", "PL",
+        "US",
+        "TH", "IN",
+        "ZA", "KE", "ET",
+    },
+    "saudia": {
+        "SA",
+        "AE", "BH", "KW", "OM", "QA", "JO", "EG", "LB", "IQ",
+        "GB", "FR", "DE", "IT", "ES", "CH", "GR", "TR",
+        "US", "CA",
+        "IN", "PK", "BD", "LK", "MY", "ID", "PH",
+        "ET", "KE", "ZA", "NG", "SD", "DJ", "MA", "TN",
+        "CN", "JP", "KR",
+    },
+    "omanair": {
+        "OM",
+        "AE", "BH", "KW", "SA", "QA", "IR",
+        "GB", "FR", "DE", "IT", "CH",
+        "IN", "PK", "BD", "LK", "MY", "TH", "ID", "PH",
+        "EG", "JO", "TZ", "KE", "ET",
+        "CN",
+    },
+    # ── EVA Air (EveryMundo __NEXT_DATA__ — Star Alliance, TPE hub) ──
+    "evaair": {
+        "TW", "JP", "KR", "CN", "HK", "MO",
+        "SG", "TH", "VN", "PH", "MY", "ID", "KH", "MM",
+        "IN", "BD",
+        "US", "CA",
+        "GB", "FR", "NL", "AT", "IT",
+        "AU", "NZ",
+        "AE",
+    },
+    # ── Rex Airlines (EveryMundo __NEXT_DATA__ — Australian domestic regional) ──
+    "rex": {
+        "AU",
+    },
+    # ── Fiji Airways (EveryMundo __NEXT_DATA__ — Pacific hub at NAN) ──
+    "fijiairways": {
+        "FJ", "AU", "NZ", "US",
+        "SG", "HK", "JP",
+        "TO", "WS", "VU", "SB", "KI", "TV", "NR",
+    },
+    # ── Airnorth (.NET B2C — northern Australia + Dili) ──
+    "airnorth": {"AU", "TL"},
+    # ── I Want That Flight (AU aggregator — domestic + international from AU) ──
+    "iwantthatflight": {
+        "AU", "NZ", "FJ", "NC", "PF", "PG", "VU", "WS", "TO",
+        "SG", "MY", "TH", "ID", "VN", "KH", "PH", "JP", "KR", "CN", "HK", "TW", "IN",
+        "AE", "QA", "US", "GB", "FR", "DE", "IT", "ES", "NL",
+        "CL", "MV", "LK",
+    },
+    # ── CDP Chrome browser connectors (Batch 5/6/7) ──
+    "airchina": {
+        "CN", "HK", "MO", "TW",
+        "JP", "KR", "TH", "SG", "MY", "VN", "KH", "MM", "ID", "PH", "IN", "BD", "LK", "NP", "PK",
+        "US", "CA", "AU",
+        "GB", "FR", "DE", "IT", "ES", "RU", "SE", "DK", "GR", "AT", "CH", "NL", "BE", "HU", "PL",
+        "AE", "EG", "ET", "KE", "ZA", "BR", "AR", "MX", "PE", "CU",
+    },
+    "chinaeastern": {
+        "CN", "HK", "MO", "TW",
+        "JP", "KR", "TH", "SG", "MY", "VN", "KH", "ID", "PH", "IN", "BD", "LK", "NP", "MM",
+        "US", "CA", "AU", "NZ",
+        "GB", "FR", "DE", "IT", "ES", "RU", "NL", "CZ",
+        "AE", "EG", "ET", "KE",
+    },
+    "chinasouthern": {
+        "CN", "HK", "MO", "TW",
+        "JP", "KR", "TH", "SG", "MY", "VN", "KH", "ID", "PH", "IN", "BD", "LK", "NP", "PK", "MM",
+        "US", "CA", "AU", "NZ",
+        "GB", "FR", "DE", "IT", "ES", "RU", "NL", "TR",
+        "AE", "EG", "ET", "KE", "NG", "ZA",
+    },
+    "vietnamairlines": {
+        "VN",
+        "JP", "KR", "TW", "CN", "HK", "TH", "SG", "MY", "KH", "LA", "MM", "ID", "PH", "IN",
+        "US", "AU",
+        "GB", "FR", "DE", "RU",
+    },
+    "asiana": {
+        "KR",
+        "JP", "CN", "HK", "TW", "TH", "SG", "VN", "KH", "PH", "MY", "ID", "IN", "UZ",
+        "US", "CA",
+        "GB", "FR", "DE", "IT", "ES", "TR", "HR", "CZ", "RU",
+        "AU",
+    },
+    "airtransat": {
+        "CA",
+        "US",
+        "GB", "FR", "ES", "PT", "IT", "GR", "NL", "BE", "CH", "IE",
+        "MX", "CU", "DO", "JM", "HT", "CR", "PA", "CO", "SV", "HN",
+    },
+    "airserbia": {
+        "RS",
+        "DE", "FR", "IT", "ES", "GB", "NL", "BE", "CH", "AT", "GR", "HR", "SI", "ME", "BA",
+        "MK", "AL", "BG", "RO", "HU", "CZ", "PL", "SE", "NO", "DK",
+        "TR", "CY", "EG", "TN",
+        "US",
+        "RU",
+    },
+    "aireuropa": {
+        "ES",
+        "FR", "IT", "PT", "DE", "GB", "NL", "BE", "CH", "AT", "GR", "HR", "BG", "RO",
+        "IL", "MA", "TN", "SN", "GM",
+        "US",
+        "MX", "CU", "DO", "CO", "EC", "PE", "BR", "AR", "UY", "PY", "BO", "VE", "PA", "CR", "HN", "SV",
+    },
+    "mea": {
+        "LB",
+        "AE", "SA", "KW", "QA", "BH", "OM", "JO", "IQ", "EG", "CY",
+        "GB", "FR", "DE", "IT", "ES", "BE", "CH", "GR", "DK", "SE", "TR",
+        "GH", "NG", "CI", "SN", "ET",
+        "US", "CA", "BR",
+    },
+    "hainan": {
+        "CN", "HK", "MO", "TW",
+        "JP", "KR", "TH", "SG", "MY", "VN", "ID", "PH", "IN",
+        "US", "CA", "AU",
+        "GB", "FR", "DE", "IT", "ES", "RU", "BE", "CH", "AT", "CZ", "NO", "IE",
+        "AE", "EG", "IL", "ET", "KE",
+        "MX",
+    },
+    "royaljordanian": {
+        "JO",
+        "AE", "SA", "KW", "QA", "BH", "OM", "IQ", "LB", "EG", "SD",
+        "GB", "FR", "DE", "IT", "ES", "NL", "CH", "AT", "GR", "CY", "TR", "RO",
+        "US", "CA",
+        "TH", "MY", "IN", "LK", "CN", "HK",
+        "NG", "ET", "KE",
+    },
+    "kuwaitairways": {
+        "KW",
+        "AE", "SA", "BH", "QA", "OM", "JO", "LB", "IQ", "EG", "IR",
+        "GB", "FR", "DE", "IT", "ES", "CH", "GR", "TR", "GE",
+        "US",
+        "IN", "PK", "BD", "LK", "TH", "MY", "PH", "SG", "CN",
+        "ET", "KE", "NG",
+    },
+    "level": {
+        "ES",
+        "FR", "IT", "PT", "DE", "GB", "NL", "AT", "GR",
+        "US",
+        "AR", "CL", "BR",
+    },
 }
 
 
@@ -753,10 +839,9 @@ def get_relevant_connectors(
 ) -> list[tuple[str, type, float]]:
     """Filter connectors to only those that could serve the given route.
 
-    A connector is included when the airline serves BOTH the origin and
-    destination countries (all our connectors search direct flights only,
-    they don't build connections).  If the country lookup fails for either
-    airport, all connectors are returned (safe fallback).
+    Returns the subset of connectors whose airlines operate in at least one
+    of the origin or destination countries. If country lookup fails for
+    either airport, all connectors are returned (safe fallback).
 
     Args:
         origin: IATA airport/city code (e.g. "CDG", "LON")
@@ -787,8 +872,8 @@ def get_relevant_connectors(
         if countries is None:
             # Unknown airline — always include (safe default)
             relevant.append((source, cls, timeout))
-        elif origin_country in countries and dest_country in countries:
+        elif origin_country in countries or dest_country in countries:
             relevant.append((source, cls, timeout))
-        # else: skip — airline doesn't serve both endpoints
+        # else: skip — neither endpoint is in this airline's network
 
     return relevant

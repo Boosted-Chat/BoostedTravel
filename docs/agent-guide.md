@@ -9,7 +9,7 @@ Guidelines for building autonomous AI agents that search, evaluate, and book fli
 Agents can use **local search** (free, no API key) for quick lookups, or **full search** (API key) for comprehensive results:
 
 ```python
-# Local search — no API key, 102 airline connectors
+# Local search — no API key, 150+ airline connectors
 from letsfg.local import search_local
 result = await search_local("LHR", "JFK", "2026-06-01")
 
@@ -22,7 +22,7 @@ bt = LetsFG(api_key="trav_...")
 result = bt.search("LHR", "JFK", "2026-06-01")
 ```
 
-**When to use local search:** Quick price checks, free-tier agents, routes served by the 102 local connectors, no-registration workflows.
+**When to use local search:** Quick price checks, free-tier agents, routes served by the 150+ local connectors, no-registration workflows.
 
 **When to use full search:** Comprehensive coverage across 400+ airlines, booking flow (unlock → book), GDS/NDC fares not available on airline websites.
 
@@ -47,7 +47,7 @@ User request → Agent parses intent → Resolve locations → Search (free)
 
 6. **Use REAL passenger details.** Airlines send e-tickets to the contact email. Names must match the passenger's passport or government ID. Never use placeholder data.
 
-7. **Be aware of system resources.** Local search fires up to 102 browser-based connectors in parallel. LetsFG auto-scales concurrency based on available RAM, but agents can check resources and override:
+7. **Be aware of system resources.** Local search fires up to 150+ browser-based connectors in parallel. LetsFG auto-scales concurrency based on available RAM, but agents can check resources and override:
 
 ```python
 from letsfg import get_system_profile, configure_max_browsers

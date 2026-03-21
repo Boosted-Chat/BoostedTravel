@@ -63,7 +63,7 @@ If omitted, the search returns all cabin classes.
 ### Local Search (No API Key)
 
 ```bash
-# Search 102 local airline connectors — completely free, no registration
+# Search 150+ local airline connectors — completely free, no registration
 letsfg search-local LHR JFK 2026-04-15
 
 # With cabin class and JSON output
@@ -73,7 +73,7 @@ letsfg search-local LON BCN 2026-04-01 --cabin M --json
 letsfg search-local LHR BCN 2026-04-15 --max-browsers 4
 ```
 
-Local search queries 102 airline websites directly. No API key needed — install and search immediately.
+Local search queries 150+ airline websites directly. No API key needed — install and search immediately.
 
 ### Basic Search
 

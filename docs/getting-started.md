@@ -14,7 +14,7 @@ That's it. Search flights immediately:
 letsfg search-local LHR BCN 2026-04-15
 ```
 
-This runs 102 airline connectors locally on your machine — Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, Qatar Airways, LATAM, Finnair, and 93 more. Completely free, unlimited, zero configuration.
+This runs 150+ airline connectors locally on your machine — Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, Qatar Airways, LATAM, Finnair, and 140+ more. Completely free, unlimited, zero configuration.
 
 ```python
 from letsfg.local import search_local
