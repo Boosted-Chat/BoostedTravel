@@ -336,9 +336,7 @@ class RoyalJordanianConnectorClient:
                 # Check if page has results loaded
                 has_results = await page.evaluate("""() => {
                     return document.querySelectorAll(
-                        '[class*="bound"], [class*="flight"], [class*="recommendation"],
-                         [class*="avail"], [class*="itinerary"], [class*="offer"],
-                         [class*="result"], [class*="fare-row"], [class*="price"]'
+                        '[class*="bound"], [class*="flight"], [class*="recommendation"], [class*="avail"], [class*="itinerary"], [class*="offer"], [class*="result"], [class*="fare-row"], [class*="price"]'
                     ).length > 3;
                 }""")
                 if has_results:

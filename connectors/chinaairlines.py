@@ -135,7 +135,7 @@ class ChinaAirlinesConnectorClient:
         end = max(inbound or outbound, start + timedelta(days=90))
 
         return {
-            "markets": ["US"],
+            "markets": ["US", "PH"],
             "languageCode": "en",
             "dataExpirationWindow": "2d",
             "datePattern": "dd MMM yy (E)",
@@ -162,7 +162,7 @@ class ChinaAirlinesConnectorClient:
                 "roundPrices": True,
                 "currencyToDisplay": "",
             },
-            "routesLimit": 40,
+            "routesLimit": 200,
             "sorting": [{"popularity": "DESC"}],
             "airlineCode": "ci",
         }
@@ -210,17 +210,6 @@ class ChinaAirlinesConnectorClient:
 
         for card in cards:
             if card["origin"] != req.origin or card["destination"] != req.destination:
-                continue
-            # Accept exact date or nearest within +-14 days
-            dep = card["departure_date"]
-            delta = abs((dep - outbound_date).days)
-            if delta > 14:
-                continue
-            if inbound_date and card.get("return_date"):
-                ret_delta = abs((card["return_date"] - inbound_date).days)
-                if ret_delta > 14:
-                    continue
-            if not inbound_date and card.get("trip_type") not in {"one-way", "round-trip"}:
                 continue
             if card["price"] <= 0:
                 continue

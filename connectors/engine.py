@@ -149,6 +149,7 @@ from connectors.britishairways import BritishAirwaysConnectorClient
 from connectors.evaair import EvaAirConnectorClient
 from connectors.rex import RexConnectorClient
 from connectors.fijiairways import FijiAirwaysConnectorClient
+from connectors.airnorth import AirnorthConnectorClient
 from connectors.airchina import AirChinaConnectorClient
 from connectors.chinaeastern import ChinaEasternConnectorClient
 from connectors.chinasouthern import ChinaSouthernConnectorClient
@@ -372,6 +373,8 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("rex_direct", RexConnectorClient, 25.0),
     # ── Fiji Airways (EveryMundo __NEXT_DATA__ via curl_cffi) ──
     ("fijiairways_direct", FijiAirwaysConnectorClient, 25.0),
+    # ── Airnorth (.NET B2C form POST via curl_cffi) ──
+    ("airnorth_direct", AirnorthConnectorClient, 30.0),
     # ── CDP Chrome browser connectors (Batch 5/6/7 — form fill + API intercept) ──
     ("airchina_direct", AirChinaConnectorClient, 55.0),
     ("chinaeastern_direct", ChinaEasternConnectorClient, 55.0),

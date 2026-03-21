@@ -727,6 +727,8 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "SG", "HK", "JP",
         "TO", "WS", "VU", "SB", "KI", "TV", "NR",
     },
+    # ── Airnorth (.NET B2C — northern Australia + Dili) ──
+    "airnorth": {"AU", "TL"},
     # ── CDP Chrome browser connectors (Batch 5/6/7) ──
     "airchina": {
         "CN", "HK", "MO", "TW",
