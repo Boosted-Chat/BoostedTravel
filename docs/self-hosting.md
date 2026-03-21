@@ -1,6 +1,6 @@
 # Self-Hosting: HTTP Endpoints for Local Connectors
 
-Deploy LetsFG's 103 airline connectors as HTTP endpoints on your own infrastructure. This guide covers wrapping the local search in a web server and calling it from any backend (Node.js, Next.js, Go, etc.).
+Deploy LetsFG's 150+ airline connectors as HTTP endpoints on your own infrastructure. This guide covers wrapping the local search in a web server and calling it from any backend (Node.js, Next.js, Go, etc.).
 
 ---
 

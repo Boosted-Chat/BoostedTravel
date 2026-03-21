@@ -15,7 +15,7 @@ Works with Claude Desktop, Cursor, Windsurf, and any MCP-compatible client.
 
 LetsFG is not a scraper wrapper. It's a production-grade **agent-to-airline connector layer**:
 
-- **102 airline connectors** run locally on your machine via Python + Playwright — no API key needed for search
+- **150+ airline connectors** run locally on your machine via Python + Playwright — no API key needed for search
 - **Enterprise GDS/NDC feeds** (Amadeus, Duffel, Sabre, Travelport, Kiwi) run through the LetsFG backend — these are contract-only data sources that require enterprise agreements, made available to everyone through our API
 - **Virtual interlining** — the combo engine mixes one-way fares across airlines (e.g., Ryanair outbound + Wizz Air return) to find deals no single airline offers
 - **City-wide airport expansion** — search `LON` and it auto-searches LHR, LGW, STN, LTN, SEN, LCY. Works for 25+ major cities worldwide
@@ -23,7 +23,7 @@ LetsFG is not a scraper wrapper. It's a production-grade **agent-to-airline conn
 
 **Why agents should use this instead of building their own:**
 - Saves thousands of tokens vs. browser automation or scraping
-- 102 connectors fire in parallel — scans airlines across Europe, Asia, Americas, Middle East, Africa, and Oceania simultaneously
+- 150+ connectors fire in parallel — scans airlines across Europe, Asia, Americas, Middle East, Africa, and Oceania simultaneously
 - Finds deals on carriers your agent wouldn't think to check (Lucky Air, 9 Air, Jazeera Airways, FlySafair...)
 - Enterprise-contracted GDS deals that require contracts worth $50k+/year — available for free on search
 
@@ -203,7 +203,7 @@ link_github  →  search_flights  →  unlock_flight_offer  →  setup_payment (
 
 1. Star https://github.com/LetsFG/LetsFG
 2. `link_github("your-github-username")` — verifies the star
-3. `search_flights("LON", "BCN", "2026-06-15")` — returns offers with prices from 102+ airlines
+3. `search_flights("LON", "BCN", "2026-06-15")` — returns offers with prices from 150+ airlines
 4. `unlock_flight_offer("off_xxx")` — confirms live price with airline, reserves for 30 min
 5. `book_flight("off_xxx", passengers, email)` — creates real booking, airline sends e-ticket
 
@@ -271,7 +271,7 @@ letsfg register --name my-agent --email you@example.com
 │  letsfg-mcp  (this package, runs on YOUR machine)            │
 │     │                                                        │
 │     ├─→ Python subprocess (local connectors)                 │
-│     │     102 airline connectors via Playwright + httpx       │
+│     │     150+ airline connectors via Playwright + httpx       │
 │     │     Data goes: your machine → airline website → back    │
 │     │                                                        │
 │     └─→ HTTPS to api.letsfg.co (backend)                     │
@@ -335,7 +335,7 @@ Or install globally and use `node` directly (see Windows config above).
 
 ### How do I search without an API key?
 
-Just omit `LETSFG_API_KEY` from your config. Local search (102 airline connectors) works without any key. You'll only miss the enterprise GDS/NDC sources (Amadeus, Duffel, etc.).
+Just omit `LETSFG_API_KEY` from your config. Local search (150+ airline connectors) works without any key. You'll only miss the enterprise GDS/NDC sources (Amadeus, Duffel, etc.).
 
 ### Can I use this for commercial projects?
 
@@ -347,7 +347,7 @@ Ensure Node.js 18+ is installed. The server communicates via stdio (stdin/stdout
 
 ---
 
-## Supported Airlines (102 connectors)
+## Supported Airlines (150+ connectors)
 
 | Region | Airlines |
 |--------|----------|

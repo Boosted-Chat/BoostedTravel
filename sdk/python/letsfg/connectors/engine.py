@@ -26,157 +26,152 @@ import httpx
 
 from connectors.combo_engine import build_combos
 from connectors.currency import fetch_rates, _fallback_convert
-from connectors.airline_routes import get_country, get_relevant_connectors, get_city_airports, AIRLINE_COUNTRIES
+from connectors.airline_routes import get_country, get_relevant_connectors, AIRLINE_COUNTRIES
+from connectors.browser import is_browser_available
 from connectors.ryanair import RyanairConnectorClient
 from connectors.wizzair import WizzairConnectorClient
 from connectors.kiwi import KiwiConnectorClient
 
-# ── Dynamic connector loading ──────────────────────────────────────────────────
-# Each connector is loaded inside try/except so that missing optional
-# dependencies (e.g. curl_cffi, nodriver, patchright) only disable that
-# specific connector rather than crashing the entire engine on import.
+# ── Direct airline website connectors (LCCs not in GDS) ────────────────────────
+from connectors.easyjet import EasyjetConnectorClient
+from connectors.southwest import SouthwestConnectorClient
+from connectors.airasia import AirAsiaConnectorClient
+from connectors.indigo import IndiGoConnectorClient
+from connectors.norwegian import NorwegianConnectorClient
+from connectors.vueling import VuelingConnectorClient
+from connectors.eurowings import EurowingsConnectorClient
+from connectors.transavia import TransaviaConnectorClient
+from connectors.pegasus import PegasusConnectorClient
+from connectors.flydubai import FlydubaiConnectorClient
+from connectors.spirit import SpiritConnectorClient
+from connectors.frontier import FrontierConnectorClient
+from connectors.volaris import VolarisConnectorClient
+from connectors.airarabia import AirArabiaConnectorClient
+from connectors.vietjet import VietJetConnectorClient
+from connectors.cebupacific import CebuPacificConnectorClient
+from connectors.scoot import ScootConnectorClient
+from connectors.jetsmart import JetSmartConnectorClient
+from connectors.jetstar import JetstarConnectorClient
+from connectors.jet2 import Jet2ConnectorClient
+from connectors.flynas import FlynasConnectorClient
+from connectors.gol import GolConnectorClient
+from connectors.azul import AzulConnectorClient
+from connectors.flysafair import FlySafairConnectorClient
+from connectors.vivaaerobus import VivaAerobusConnectorClient
+from connectors.allegiant import AllegiantConnectorClient
+from connectors.jetblue import JetBlueConnectorClient
+from connectors.flair import FlairConnectorClient
+from connectors.thai import ThaiConnectorClient
+from connectors.spicejet import SpiceJetConnectorClient
+from connectors.akasa import AkasaConnectorClient
+from connectors.spring import SpringConnectorClient
+from connectors.peach import PeachConnectorClient
+from connectors.zipair import ZipairConnectorClient
+from connectors.condor import CondorConnectorClient
+from connectors.play import PlayConnectorClient
+from connectors.sunexpress import SunExpressConnectorClient
+from connectors.volotea import VoloteaConnectorClient
+from connectors.smartwings import SmartwingsConnectorClient
+from connectors.flybondi import FlybondiConnectorClient
+from connectors.jejuair import JejuAirConnectorClient
+from connectors.twayair import TwayAirConnectorClient
+from connectors.porter import PorterConnectorClient
+from connectors.nokair import NokAirConnectorClient
+from connectors.airpeace import AirPeaceConnectorClient
+from connectors.airindiaexpress import AirIndiaExpressConnectorClient
+from connectors.batikair import BatikAirConnectorClient
+from connectors.luckyair import LuckyAirConnectorClient
+from connectors.nineair import NineAirConnectorClient
+from connectors.avelo import AveloConnectorClient
+from connectors.breeze import BreezeConnectorClient
+from connectors.salamair import SalamAirConnectorClient
+from connectors.usbangla import USBanglaConnectorClient
+from connectors.biman import BimanConnectorClient
+from connectors.etihad import EtihadConnectorClient
+from connectors.turkish import TurkishConnectorClient
+from connectors.emirates import EmiratesConnectorClient
+from connectors.malaysia import MalaysiaConnectorClient
+from connectors.suncountry import SunCountryConnectorClient
+from connectors.alaska import AlaskaConnectorClient
+from connectors.hawaiian import HawaiianConnectorClient
+from connectors.american import AmericanConnectorClient
+from connectors.united import UnitedConnectorClient
+from connectors.delta import DeltaConnectorClient
+from connectors.cathay import CathayConnectorClient
+from connectors.singapore import SingaporeConnectorClient
+from connectors.korean import KoreanConnectorClient
+from connectors.nh import ANAConnectorClient
+from connectors.qantas import QantasConnectorClient
+from connectors.virginaustralia import VirginAustraliaConnectorClient
+from connectors.bangkokairways import BangkokAirwaysConnectorClient
+from connectors.aegean import AegeanConnectorClient
+from connectors.aerlingus import AerLingusConnectorClient
+from connectors.airbaltic import AirbalticConnectorClient
+from connectors.aircanada import AirCanadaConnectorClient
+from connectors.airindia import AirIndiaConnectorClient
+from connectors.airnewzealand import AirNewZealandConnectorClient
+from connectors.aerolineas import AerolineasConnectorClient
+from connectors.arajet import ArajetConnectorClient
+from connectors.chinaairlines import ChinaAirlinesConnectorClient
+from connectors.egyptair import EgyptAirConnectorClient
+from connectors.ethiopian import EthiopianConnectorClient
+from connectors.finnair import FinnairConnectorClient
+from connectors.garuda import GarudaConnectorClient
+from connectors.icelandair import IcelandairConnectorClient
+from connectors.itaairways import ITAAirwaysConnectorClient
+from connectors.jal import JapanAirlinesConnectorClient
+from connectors.jazeera import JazeeraConnectorClient
+from connectors.kenyaairways import KenyaAirwaysConnectorClient
+from connectors.flyarystan import FlyArystanConnectorClient
+from connectors.olympicair_api import OlympicAirConnectorClient
+from connectors.philippineairlines import PhilippineAirlinesConnectorClient
+from connectors.royalairmaroc import RoyalAirMarocConnectorClient
+from connectors.saa import SouthAfricanAirwaysConnectorClient
+from connectors.sas import SASConnectorClient
+from connectors.skyairline import SkyAirlineConnectorClient
+from connectors.skyexpress import SkyExpressConnectorClient
+from connectors.tap import TapConnectorClient
+from connectors.wingo import WingoConnectorClient
+from connectors.klm import KlmConnectorClient
+from connectors.airfrance import AirfranceConnectorClient
+from connectors.iberia import IberiaConnectorClient
+from connectors.iberiaexpress import IberiaExpressConnectorClient
+from connectors.virginatlantic import VirginAtlanticConnectorClient
+from connectors.lufthansa import LufthansaConnectorClient
+from connectors.swiss import SwissConnectorClient
+from connectors.austrian import AustrianConnectorClient
+from connectors.brusselsairlines import BrusselsAirlinesConnectorClient
+from connectors.discover import DiscoverConnectorClient
+from connectors.elal import ElAlConnectorClient
+from connectors.saudia import SaudiaConnectorClient
+from connectors.omanair import OmanairConnectorClient
+from connectors.britishairways import BritishAirwaysConnectorClient
+from connectors.evaair import EvaAirConnectorClient
+from connectors.rex import RexConnectorClient
+from connectors.fijiairways import FijiAirwaysConnectorClient
+from connectors.airnorth import AirnorthConnectorClient
+from connectors.airchina import AirChinaConnectorClient
+from connectors.chinaeastern import ChinaEasternConnectorClient
+from connectors.chinasouthern import ChinaSouthernConnectorClient
+from connectors.vietnamairlines import VietnamAirlinesConnectorClient
+from connectors.asiana import AsianaConnectorClient
+from connectors.airtransat import AirTransatConnectorClient
+from connectors.airserbia import AirSerbiaConnectorClient
+from connectors.aireuropa import AirEuropaConnectorClient
+from connectors.mea import MEAConnectorClient
+from connectors.hainan import HainanConnectorClient
+from connectors.royaljordanian import RoyalJordanianConnectorClient
+from connectors.kuwaitairways import KuwaitAirwaysConnectorClient
+from connectors.level import LevelConnectorClient
+from connectors.iwantthatflight import IWantThatFlightConnectorClient
 
 from models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, FlightSearchResponse
 
 logger = logging.getLogger(__name__)
 
-
-def _safe_import(module: str, cls: str):
-    """Import *cls* from *module*, returning None on failure."""
-    try:
-        mod = __import__(module, fromlist=[cls])
-        return getattr(mod, cls)
-    except Exception as exc:
-        logger.debug("Connector %s.%s unavailable: %s", module, cls, exc)
-        return None
-
-
-# (source_name, module_path, class_name, timeout_seconds)
-_CONNECTOR_DEFS: list[tuple[str, str, str, float]] = [
-    ("easyjet_direct", "connectors.easyjet", "EasyjetConnectorClient", 25.0),
-    ("southwest_direct", "connectors.southwest", "SouthwestConnectorClient", 25.0),
-    ("airasia_direct", "connectors.airasia", "AirAsiaConnectorClient", 25.0),
-    ("indigo_direct", "connectors.indigo", "IndiGoConnectorClient", 25.0),
-    ("norwegian_direct", "connectors.norwegian", "NorwegianConnectorClient", 25.0),
-    ("vueling_direct", "connectors.vueling", "VuelingConnectorClient", 25.0),
-    ("eurowings_direct", "connectors.eurowings", "EurowingsConnectorClient", 25.0),
-    ("transavia_direct", "connectors.transavia", "TransaviaConnectorClient", 25.0),
-    ("pegasus_direct", "connectors.pegasus", "PegasusConnectorClient", 25.0),
-    ("flydubai_direct", "connectors.flydubai", "FlydubaiConnectorClient", 25.0),
-    # spirit — blocked: PX Enterprise detects all automation (#28)
-    ("frontier_direct", "connectors.frontier", "FrontierConnectorClient", 25.0),
-    ("volaris_direct", "connectors.volaris", "VolarisConnectorClient", 25.0),
-    ("airarabia_direct", "connectors.airarabia", "AirArabiaConnectorClient", 25.0),
-    ("vietjet_direct", "connectors.vietjet", "VietJetConnectorClient", 25.0),
-    ("cebupacific_direct", "connectors.cebupacific", "CebuPacificConnectorClient", 25.0),
-    ("scoot_direct", "connectors.scoot", "ScootConnectorClient", 25.0),
-    ("jetsmart_direct", "connectors.jetsmart", "JetSmartConnectorClient", 25.0),
-    ("jetstar_direct", "connectors.jetstar", "JetstarConnectorClient", 25.0),
-    ("jet2_direct", "connectors.jet2", "Jet2ConnectorClient", 25.0),
-    ("flynas_direct", "connectors.flynas", "FlynasConnectorClient", 25.0),
-    ("gol_direct", "connectors.gol", "GolConnectorClient", 25.0),
-    ("azul_direct", "connectors.azul", "AzulConnectorClient", 25.0),
-    ("flysafair_direct", "connectors.flysafair", "FlySafairConnectorClient", 25.0),
-    ("vivaaerobus_direct", "connectors.vivaaerobus", "VivaAerobusConnectorClient", 25.0),
-    ("allegiant_direct", "connectors.allegiant", "AllegiantConnectorClient", 25.0),
-    ("jetblue_direct", "connectors.jetblue", "JetBlueConnectorClient", 25.0),
-    ("flair_direct", "connectors.flair", "FlairConnectorClient", 25.0),
-    ("spicejet_direct", "connectors.spicejet", "SpiceJetConnectorClient", 25.0),
-    ("akasa_direct", "connectors.akasa", "AkasaConnectorClient", 25.0),
-    ("spring_direct", "connectors.spring", "SpringConnectorClient", 25.0),
-    ("peach_direct", "connectors.peach", "PeachConnectorClient", 25.0),
-    ("zipair_direct", "connectors.zipair", "ZipairConnectorClient", 25.0),
-    ("condor_direct", "connectors.condor", "CondorConnectorClient", 25.0),
-    # play — blocked: airline defunct, flyplay.com DNS offline
-    ("sunexpress_direct", "connectors.sunexpress", "SunExpressConnectorClient", 25.0),
-    ("volotea_direct", "connectors.volotea", "VoloteaConnectorClient", 25.0),
-    ("smartwings_direct", "connectors.smartwings", "SmartwingsConnectorClient", 25.0),
-    ("flybondi_direct", "connectors.flybondi", "FlybondiConnectorClient", 25.0),
-    ("jejuair_direct", "connectors.jejuair", "JejuAirConnectorClient", 25.0),
-    ("twayair_direct", "connectors.twayair", "TwayAirConnectorClient", 25.0),
-    ("porter_direct", "connectors.porter", "PorterConnectorClient", 25.0),
-    ("nokair_direct", "connectors.nokair", "NokAirConnectorClient", 25.0),
-    ("airpeace_direct", "connectors.airpeace", "AirPeaceConnectorClient", 25.0),
-    ("airindiaexpress_direct", "connectors.airindiaexpress", "AirIndiaExpressConnectorClient", 25.0),
-    ("batikair_direct", "connectors.batikair", "BatikAirConnectorClient", 25.0),
-    ("luckyair_direct", "connectors.luckyair", "LuckyAirConnectorClient", 30.0),
-    ("9air_direct", "connectors.nineair", "NineAirConnectorClient", 30.0),
-    ("avelo_direct", "connectors.avelo", "AveloConnectorClient", 45.0),
-    ("breeze_direct", "connectors.breeze", "BreezeConnectorClient", 45.0),
-    ("salamair_direct", "connectors.salamair", "SalamAirConnectorClient", 20.0),
-    ("usbangla_direct", "connectors.usbangla", "USBanglaConnectorClient", 45.0),
-    ("biman_direct", "connectors.biman", "BimanConnectorClient", 25.0),
-    ("etihad_direct", "connectors.etihad", "EtihadConnectorClient", 35.0),
-    ("turkish_direct", "connectors.turkish", "TurkishConnectorClient", 45.0),
-    ("emirates_direct", "connectors.emirates", "EmiratesConnectorClient", 60.0),
-    ("malaysia_direct", "connectors.malaysia", "MalaysiaConnectorClient", 25.0),
-    ("suncountry_direct", "connectors.suncountry", "SunCountryConnectorClient", 45.0),
-    ("alaska_direct", "connectors.alaska", "AlaskaConnectorClient", 45.0),
-    ("hawaiian_direct", "connectors.hawaiian", "HawaiianConnectorClient", 45.0),
-    ("american_direct", "connectors.american", "AmericanConnectorClient", 45.0),
-    ("united_direct", "connectors.united", "UnitedConnectorClient", 55.0),
-    ("delta_direct", "connectors.delta", "DeltaConnectorClient", 45.0),
-    ("cathay_direct", "connectors.cathay", "CathayConnectorClient", 25.0),
-    ("singapore_direct", "connectors.singapore", "SingaporeConnectorClient", 60.0),
-    ("thai_direct", "connectors.thai", "ThaiConnectorClient", 25.0),
-    ("korean_direct", "connectors.korean", "KoreanConnectorClient", 45.0),
-    ("nh_direct", "connectors.nh", "ANAConnectorClient", 60.0),
-    ("qatar_direct", "connectors.qatar", "QatarConnectorClient", 55.0),
-    ("westjet_direct", "connectors.westjet", "WestjetConnectorClient", 45.0),
-    ("latam_direct", "connectors.latam", "LatamConnectorClient", 50.0),
-    ("copa_direct", "connectors.copa", "CopaConnectorClient", 45.0),
-    ("avianca_direct", "connectors.avianca", "AviancaConnectorClient", 45.0),
-    ("lot_direct", "connectors.lot", "LotConnectorClient", 45.0),
-    # ── New airline connectors (coverage expansion) ──
-    ("aegean_direct", "connectors.aegean", "AegeanConnectorClient", 25.0),
-    ("icelandair_direct", "connectors.icelandair", "IcelandairConnectorClient", 25.0),
-    ("aircanada_direct", "connectors.aircanada", "AirCanadaConnectorClient", 25.0),
-    ("finnair_direct", "connectors.finnair", "FinnairConnectorClient", 25.0),
-    ("tap_direct", "connectors.tap", "TapConnectorClient", 25.0),
-    ("sas_direct", "connectors.sas", "SASConnectorClient", 25.0),
-    ("wingo_direct", "connectors.wingo", "WingoConnectorClient", 25.0),
-    ("skyairline_direct", "connectors.skyairline", "SkyAirlineConnectorClient", 25.0),
-    ("arajet_direct", "connectors.arajet", "ArajetConnectorClient", 25.0),
-    ("ethiopian_direct", "connectors.ethiopian", "EthiopianConnectorClient", 25.0),
-    ("kenyaairways_direct", "connectors.kenyaairways", "KenyaAirwaysConnectorClient", 25.0),
-    ("royalairmaroc_direct", "connectors.royalairmaroc", "RoyalAirMarocConnectorClient", 25.0),
-    ("philippineairlines_direct", "connectors.philippineairlines", "PhilippineAirlinesConnectorClient", 25.0),
-    ("airindia_direct", "connectors.airindia", "AirIndiaConnectorClient", 25.0),
-    ("qantas_direct", "connectors.qantas", "QantasConnectorClient", 25.0),
-    ("egyptair_direct", "connectors.egyptair", "EgyptAirConnectorClient", 25.0),
-    ("virginaustralia_direct", "connectors.virginaustralia", "VirginAustraliaConnectorClient", 25.0),
-    ("airnewzealand_direct", "connectors.airnewzealand", "AirNewZealandConnectorClient", 25.0),
-    ("jal_direct", "connectors.jal", "JapanAirlinesConnectorClient", 25.0),
-    ("garuda_direct", "connectors.garuda", "GarudaConnectorClient", 25.0),
-    ("bangkokairways_direct", "connectors.bangkokairways", "BangkokAirwaysConnectorClient", 45.0),
-    ("saa_direct", "connectors.saa", "SouthAfricanAirwaysConnectorClient", 25.0),
-    ("aerlingus_direct", "connectors.aerlingus", "AerLingusConnectorClient", 25.0),
-    ("itaairways_direct", "connectors.itaairways", "ITAAirwaysConnectorClient", 25.0),
-    # ── OTA / aggregator connectors ──
-    ("serpapi_google_ota", "connectors.serpapi_google", "SerpApiGoogleConnectorClient", 30.0),
-    ("traveloka_ota", "connectors.traveloka", "TravelokaConnectorClient", 25.0),
-    ("cleartrip_ota", "connectors.cleartrip", "CleartripConnectorClient", 25.0),
-    ("despegar_ota", "connectors.despegar", "DespegarConnectorClient", 25.0),
-    ("wego_ota", "connectors.wego", "WegoConnectorClient", 25.0),
-]
-
-# Build the registry dynamically — skip connectors whose deps are missing.
-_DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = []
-_skipped: list[str] = []
-for _name, _mod, _cls, _timeout in _CONNECTOR_DEFS:
-    _klass = _safe_import(_mod, _cls)
-    if _klass is not None:
-        _DIRECT_AIRLINE_connectorS.append((_name, _klass, _timeout))
-    else:
-        _skipped.append(_name)
-if _skipped:
-    logger.info("Skipped %d connectors (missing deps): %s", len(_skipped), ", ".join(_skipped))
-
-
-
-
 # Connectors that launch Chrome/Playwright browsers.
 # These are throttled by a semaphore to prevent 20+ Chrome processes at once.
+# In cloud/headless environments without Chrome, these are skipped entirely.
 _BROWSER_SOURCES: set[str] = {
     "airasia_direct", "allegiant_direct", "azul_direct", "batikair_direct",
     "cebupacific_direct", "condor_direct", "easyjet_direct", "eurowings_direct",
@@ -184,9 +179,9 @@ _BROWSER_SOURCES: set[str] = {
     "gol_direct", "indigo_direct", "jet2_direct", "jetsmart_direct",
     "jetstar_direct", "luckyair_direct", "9air_direct",
     "jetblue_direct", "avelo_direct", "breeze_direct",
-    "norwegian_direct", "peach_direct", "pegasus_direct",
+    "norwegian_direct", "peach_direct", "pegasus_direct", "play_direct",
     "porter_direct", "scoot_direct", "smartwings_direct", "southwest_direct",
-    "sunexpress_direct", "transavia_direct", "twayair_direct",
+    "spirit_direct", "sunexpress_direct", "transavia_direct", "twayair_direct",
     "vietjet_direct", "volaris_direct", "volotea_direct", "vueling_direct",
     "usbangla_direct",
     "etihad_direct",
@@ -203,14 +198,201 @@ _BROWSER_SOURCES: set[str] = {
     "singapore_direct",
     "korean_direct",
     "nh_direct",
-    "qatar_direct",
-    "westjet_direct",
-    "latam_direct",
-    "copa_direct",
-    "avianca_direct",
-    "lot_direct",
+    "bangkokairways_direct",
+    "aegean_direct", "aerlingus_direct", "aircanada_direct",
+    "airnewzealand_direct", "ethiopian_direct", "finnair_direct",
+    "kenyaairways_direct", "philippineairlines_direct", "qantas_direct",
+    "royalairmaroc_direct", "saa_direct", "sas_direct",
+    "skyairline_direct", "tap_direct", "wingo_direct", "flyarystan_direct",
+    "aerolineas_direct", "chinaairlines_direct",
+    "elal_direct", "saudia_direct",
+    "airchina_direct", "chinaeastern_direct", "chinasouthern_direct",
+    "vietnamairlines_direct", "asiana_direct", "airtransat_direct",
+    "airserbia_direct", "aireuropa_direct", "mea_direct",
+    "hainan_direct", "royaljordanian_direct", "kuwaitairways_direct",
+    "level_direct",
 }
 
+
+def _should_use_browsers() -> bool:
+    """Decide whether browser-based connectors should run.
+
+    Checks (in order):
+    1. LETSFG_BROWSERS env var — explicit override ("0" to disable, "1" to force)
+    2. LETSFG_BROWSER_WS env var — remote browser configured = browsers available
+    3. Whether a Chrome/Chromium binary is available on the system
+       (includes auto-discovery of Playwright's bundled Chromium)
+
+    In cloud/agent environments, Chrome is typically available via Playwright or
+    the agent platform. Xvfb is auto-started if needed (see browser.py).
+    """
+    override = os.environ.get("LETSFG_BROWSERS", "").strip().lower()
+    if override in ("0", "false", "no", "off"):
+        return False
+    if override in ("1", "true", "yes", "on"):
+        return True
+    # Remote browser configured → all browser connectors can run through it
+    if os.environ.get("LETSFG_BROWSER_WS", "").strip():
+        return True
+    return is_browser_available()
+
+
+# Cached at module load — checked once, not per-search
+_BROWSERS_AVAILABLE: bool = _should_use_browsers()
+
+if _BROWSERS_AVAILABLE:
+    _mode_detail = "remote browser (LETSFG_BROWSER_WS)" if os.environ.get("LETSFG_BROWSER_WS", "").strip() else "local Chrome/Chromium"
+    logger.info("Browser mode: %s — all connectors active", _mode_detail)
+else:
+    logger.info("API-only mode: no browser available — %d browser connectors skipped. "
+                "Using Kiwi aggregator + API-only direct connectors. "
+                "Install Chrome, set LETSFG_BROWSER_WS, or LETSFG_BROWSERS=1 to enable all.",
+                len(_BROWSER_SOURCES))
+
+# Registry of direct airline connectors: (source_name, connector_class, timeout)
+# All are zero-auth, always available, "free" tier.
+_DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
+    ("easyjet_direct", EasyjetConnectorClient, 25.0),
+    ("southwest_direct", SouthwestConnectorClient, 25.0),
+    ("airasia_direct", AirAsiaConnectorClient, 25.0),
+    ("indigo_direct", IndiGoConnectorClient, 25.0),
+    ("norwegian_direct", NorwegianConnectorClient, 25.0),
+    ("vueling_direct", VuelingConnectorClient, 25.0),
+    ("eurowings_direct", EurowingsConnectorClient, 25.0),
+    ("transavia_direct", TransaviaConnectorClient, 25.0),
+    ("pegasus_direct", PegasusConnectorClient, 25.0),
+    ("flydubai_direct", FlydubaiConnectorClient, 25.0),
+    ("spirit_direct", SpiritConnectorClient, 25.0),
+    ("frontier_direct", FrontierConnectorClient, 25.0),
+    ("volaris_direct", VolarisConnectorClient, 25.0),
+    ("airarabia_direct", AirArabiaConnectorClient, 25.0),
+    ("vietjet_direct", VietJetConnectorClient, 25.0),
+    ("cebupacific_direct", CebuPacificConnectorClient, 25.0),
+    ("scoot_direct", ScootConnectorClient, 25.0),
+    ("jetsmart_direct", JetSmartConnectorClient, 25.0),
+    ("jetstar_direct", JetstarConnectorClient, 25.0),
+    ("jet2_direct", Jet2ConnectorClient, 25.0),
+    ("flynas_direct", FlynasConnectorClient, 25.0),
+    ("gol_direct", GolConnectorClient, 25.0),
+    ("azul_direct", AzulConnectorClient, 25.0),
+    ("flysafair_direct", FlySafairConnectorClient, 25.0),
+    ("vivaaerobus_direct", VivaAerobusConnectorClient, 25.0),
+    ("allegiant_direct", AllegiantConnectorClient, 25.0),    ("jetblue_direct", JetBlueConnectorClient, 25.0),    ("flair_direct", FlairConnectorClient, 25.0),
+    ("spicejet_direct", SpiceJetConnectorClient, 25.0),
+    ("akasa_direct", AkasaConnectorClient, 25.0),
+    ("spring_direct", SpringConnectorClient, 25.0),
+    ("peach_direct", PeachConnectorClient, 25.0),
+    ("zipair_direct", ZipairConnectorClient, 25.0),
+    ("condor_direct", CondorConnectorClient, 25.0),
+    ("play_direct", PlayConnectorClient, 25.0),
+    ("sunexpress_direct", SunExpressConnectorClient, 25.0),
+    ("volotea_direct", VoloteaConnectorClient, 25.0),
+    ("smartwings_direct", SmartwingsConnectorClient, 25.0),
+    ("flybondi_direct", FlybondiConnectorClient, 25.0),
+    ("jejuair_direct", JejuAirConnectorClient, 25.0),
+    ("twayair_direct", TwayAirConnectorClient, 25.0),
+    ("porter_direct", PorterConnectorClient, 25.0),
+    ("nokair_direct", NokAirConnectorClient, 25.0),
+    ("airpeace_direct", AirPeaceConnectorClient, 25.0),
+    ("airindiaexpress_direct", AirIndiaExpressConnectorClient, 25.0),
+    ("batikair_direct", BatikAirConnectorClient, 25.0),
+    ("luckyair_direct", LuckyAirConnectorClient, 30.0),
+    ("9air_direct", NineAirConnectorClient, 30.0),
+    ("avelo_direct", AveloConnectorClient, 45.0),
+    ("breeze_direct", BreezeConnectorClient, 45.0),
+    ("salamair_direct", SalamAirConnectorClient, 20.0),
+    ("usbangla_direct", USBanglaConnectorClient, 45.0),
+    ("biman_direct", BimanConnectorClient, 25.0),
+    ("etihad_direct", EtihadConnectorClient, 35.0),
+    ("turkish_direct", TurkishConnectorClient, 45.0),
+    ("emirates_direct", EmiratesConnectorClient, 60.0),
+    ("malaysia_direct", MalaysiaConnectorClient, 25.0),
+    ("suncountry_direct", SunCountryConnectorClient, 45.0),
+    ("alaska_direct", AlaskaConnectorClient, 45.0),
+    ("hawaiian_direct", HawaiianConnectorClient, 45.0),
+    ("american_direct", AmericanConnectorClient, 45.0),
+    ("united_direct", UnitedConnectorClient, 55.0),
+    ("delta_direct", DeltaConnectorClient, 45.0),
+    ("cathay_direct", CathayConnectorClient, 25.0),
+    ("singapore_direct", SingaporeConnectorClient, 60.0),
+    ("thai_direct", ThaiConnectorClient, 25.0),
+    ("korean_direct", KoreanConnectorClient, 45.0),
+    ("nh_direct", ANAConnectorClient, 60.0),
+    ("qantas_direct", QantasConnectorClient, 25.0),
+    ("virginaustralia_direct", VirginAustraliaConnectorClient, 25.0),
+    ("bangkokairways_direct", BangkokAirwaysConnectorClient, 45.0),
+    # ── Wired 2026-03-20: existing connectors not previously registered ──
+    ("aegean_direct", AegeanConnectorClient, 45.0),
+    ("aerlingus_direct", AerLingusConnectorClient, 45.0),
+    ("airbaltic_direct", AirbalticConnectorClient, 15.0),
+    ("aircanada_direct", AirCanadaConnectorClient, 45.0),
+    ("airindia_direct", AirIndiaConnectorClient, 25.0),
+    ("airnewzealand_direct", AirNewZealandConnectorClient, 45.0),
+    ("arajet_direct", ArajetConnectorClient, 15.0),
+    ("egyptair_direct", EgyptAirConnectorClient, 20.0),
+    ("ethiopian_direct", EthiopianConnectorClient, 45.0),
+    ("finnair_direct", FinnairConnectorClient, 45.0),
+    ("garuda_direct", GarudaConnectorClient, 20.0),
+    ("icelandair_direct", IcelandairConnectorClient, 25.0),
+    ("itaairways_direct", ITAAirwaysConnectorClient, 20.0),
+    ("jal_direct", JapanAirlinesConnectorClient, 20.0),
+    ("jazeera_direct", JazeeraConnectorClient, 15.0),
+    ("kenyaairways_direct", KenyaAirwaysConnectorClient, 45.0),
+    ("olympicair_direct", OlympicAirConnectorClient, 20.0),
+    ("philippineairlines_direct", PhilippineAirlinesConnectorClient, 45.0),
+    ("royalairmaroc_direct", RoyalAirMarocConnectorClient, 45.0),
+    ("saa_direct", SouthAfricanAirwaysConnectorClient, 45.0),
+    ("sas_direct", SASConnectorClient, 25.0),
+    ("skyairline_direct", SkyAirlineConnectorClient, 45.0),
+    ("skyexpress_direct", SkyExpressConnectorClient, 20.0),
+    ("tap_direct", TapConnectorClient, 45.0),
+    ("flyarystan_direct", FlyArystanConnectorClient, 45.0),
+    ("aerolineas_direct", AerolineasConnectorClient, 45.0),
+    ("chinaairlines_direct", ChinaAirlinesConnectorClient, 35.0),
+    ("wingo_direct", WingoConnectorClient, 45.0),
+    ("klm_direct", KlmConnectorClient, 25.0),
+    ("airfrance_direct", AirfranceConnectorClient, 25.0),
+    ("iberia_direct", IberiaConnectorClient, 25.0),
+    ("iberiaexpress_direct", IberiaExpressConnectorClient, 25.0),
+    ("virginatlantic_direct", VirginAtlanticConnectorClient, 25.0),
+    # ── Lufthansa Group (curl_cffi JSON-LD extraction) ──
+    ("lufthansa_direct", LufthansaConnectorClient, 20.0),
+    ("swiss_direct", SwissConnectorClient, 20.0),
+    ("austrian_direct", AustrianConnectorClient, 20.0),
+    ("brusselsairlines_direct", BrusselsAirlinesConnectorClient, 20.0),
+    ("discover_direct", DiscoverConnectorClient, 20.0),
+    # ── Middle East Playwright connectors (CDP Chrome + form fill) ──
+    ("elal_direct", ElAlConnectorClient, 55.0),
+    ("saudia_direct", SaudiaConnectorClient, 55.0),
+    # ── Oman Air (EveryMundo sputnik API — no browser) ──
+    ("omanair_direct", OmanairConnectorClient, 25.0),
+    # ── British Airways (SOLR pricing feed via curl_cffi) ──
+    ("britishairways_direct", BritishAirwaysConnectorClient, 25.0),
+    # ── EVA Air (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("evaair_direct", EvaAirConnectorClient, 25.0),
+    # ── Rex Airlines (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("rex_direct", RexConnectorClient, 25.0),
+    # ── Fiji Airways (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("fijiairways_direct", FijiAirwaysConnectorClient, 25.0),
+    # ── Airnorth (.NET B2C form POST via curl_cffi) ──
+    ("airnorth_direct", AirnorthConnectorClient, 30.0),
+    # ── I Want That Flight (AU fare aggregator — HTML scraping) ──
+    ("iwantthatflight_direct", IWantThatFlightConnectorClient, 20.0),
+    # ── CDP Chrome browser connectors (Batch 5/6/7 — form fill + API intercept) ──
+    ("airchina_direct", AirChinaConnectorClient, 55.0),
+    ("chinaeastern_direct", ChinaEasternConnectorClient, 55.0),
+    ("chinasouthern_direct", ChinaSouthernConnectorClient, 55.0),
+    ("vietnamairlines_direct", VietnamAirlinesConnectorClient, 55.0),
+    ("asiana_direct", AsianaConnectorClient, 55.0),
+    ("airtransat_direct", AirTransatConnectorClient, 55.0),
+    ("airserbia_direct", AirSerbiaConnectorClient, 55.0),
+    ("aireuropa_direct", AirEuropaConnectorClient, 55.0),
+    ("mea_direct", MEAConnectorClient, 55.0),
+    ("hainan_direct", HainanConnectorClient, 55.0),
+    ("royaljordanian_direct", RoyalJordanianConnectorClient, 55.0),
+    ("kuwaitairways_direct", KuwaitAirwaysConnectorClient, 55.0),
+    ("level_direct", LevelConnectorClient, 55.0),
+]
 
 
 def _extract_legs_from_roundtrip(
@@ -283,8 +465,8 @@ def _extract_legs_from_roundtrip(
 class MultiProvider:
     """Searches ALL flight sources in parallel — local connectors + Cloud Run backend."""
 
-    _BACKEND_URL = os.environ.get("LETSFG_BASE_URL", "https://api.letsfg.co").rstrip("/")
-    _BACKEND_KEY = os.environ.get("LETSFG_API_KEY", "")
+    _BACKEND_URL = (os.environ.get("LETSFG_BASE_URL") or os.environ.get("BOOSTEDTRAVEL_BASE_URL") or "https://api.letsfg.co").rstrip("/")
+    _BACKEND_KEY = os.environ.get("LETSFG_API_KEY") or os.environ.get("BOOSTEDTRAVEL_API_KEY", "")
     _BACKEND_TIMEOUT = 30.0  # Backend queries paid APIs in parallel; 30s covers slowest GDS
 
     # ── Backend availability ─────────────────────────────────────────────
@@ -317,51 +499,26 @@ class MultiProvider:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
-        Search flights across ALL sources in parallel.
+        Search flights across ALL sources in parallel:
+        - 1 async HTTP call to Cloud Run backend (paid APIs: Duffel, Amadeus, Sabre, etc.)
+        - 46+ local connector tasks (LCC scrapers running on agent device)
+        - Ryanair, Wizzair, Kiwi connectors (special handling)
+        - Combo engine for cross-airline virtual interlining
 
-        Multi-airport city expansion: if origin or destination is in a
-        multi-airport city (e.g. STN → London), we also search sibling
-        airports (LHR, LGW, LTN, SEN) using the SAME connector instances
-        (Kiwi, Ryanair, Wizzair) — no extra browsers launched.  Full
-        browser-based connectors only fire for the originally-requested
-        airport pair.
+        Everything fires at once via asyncio.gather. Total wall-clock time =
+        max(backend_latency, slowest_local_connector) — typically 5-15s.
+
+        All browser instances launched by connectors are automatically
+        closed after results are collected.
         """
         try:
-            origin_airports = get_city_airports(req.origin)
-            dest_airports = get_city_airports(req.destination)
-
-            # Build sibling airport pairs (excluding the original)
-            sibling_pairs: list[tuple[str, str]] = []
-            seen = {(req.origin.upper(), req.destination.upper())}
-            for o in origin_airports:
-                for d in dest_airports:
-                    if o == d:
-                        continue
-                    key = (o, d)
-                    if key not in seen:
-                        seen.add(key)
-                        sibling_pairs.append(key)
-
-            if sibling_pairs:
-                logger.info("City expansion: %s->%s + %d sibling pairs: %s",
-                            req.origin, req.destination, len(sibling_pairs),
-                            ", ".join(f"{o}->{d}" for o, d in sibling_pairs))
-
-            return await self._search_flights_inner(req, sibling_pairs=sibling_pairs)
+            return await self._search_flights_inner(req)
         finally:
             await self._cleanup_connectors()
 
-    async def _search_flights_inner(
-        self, req: FlightSearchRequest, *, sibling_pairs: list[tuple[str, str]] | None = None,
-    ) -> FlightSearchResponse:
-        import time as _time
-        _t_start = _time.monotonic()
-        sibling_pairs = sibling_pairs or []
+    async def _search_flights_inner(self, req: FlightSearchRequest) -> FlightSearchResponse:
         tasks = []
         providers_used = []
-
-        # Build the full list of pairs this search covers
-        all_pairs = [(req.origin, req.destination)] + list(sibling_pairs)
 
         # ── Cloud Run backend (paid API providers: Duffel, Amadeus, Sabre, etc.) ──
         if self.backend_available:
@@ -370,62 +527,71 @@ class MultiProvider:
         else:
             logger.warning("No LETSFG_API_KEY — skipping Cloud Run backend (paid APIs)")
 
-        # ── Fast connectors: Ryanair, Wizzair, Kiwi ──────────────────────
-        # Created ONCE and reused for ALL airport pairs (original + siblings).
-        # This avoids re-launching browsers / HTTP clients per sibling pair.
+        # ── Local connectors: Ryanair, Wizzair, Kiwi (special handling) ──
         origin_country = get_country(req.origin)
         dest_country = get_country(req.destination)
 
-        ryanair_client = self._get_ryanair_connector()
-        wizzair_client = self._get_wizzair_connector()
-        kiwi_client = self._get_kiwi_connector()
-
-        # Track fast clients so we can close them once at the end
-        _fast_clients: list = []
+        ryanair_connector = self._get_ryanair_connector()
+        wizzair_connector = self._get_wizzair_connector()
+        kiwi_connector = self._get_kiwi_connector()
 
         ryanair_countries = AIRLINE_COUNTRIES.get("ryanair")
-        ryanair_ok = ryanair_client and (
-            not origin_country or not dest_country or not ryanair_countries
-            or origin_country in ryanair_countries or dest_country in ryanair_countries
-        )
-        if ryanair_ok:
-            _fast_clients.append(ryanair_client)
-            for o, d in all_pairs:
-                sub = req.model_copy(update={"origin": o, "destination": d}) if (o, d) != (req.origin, req.destination) else req
-                tasks.append(self._search_fast_one(ryanair_client, sub, "ryanair_direct"))
-                providers_used.append("ryanair_direct")
+        if ryanair_connector and (not origin_country or not dest_country or not ryanair_countries
+                or origin_country in ryanair_countries or dest_country in ryanair_countries):
+            tasks.append(self._search_ryanair_direct(ryanair_connector, req))
+            providers_used.append("ryanair_direct")
 
+        # Wizzair requires Chrome (CDP) — skip when browsers unavailable
         wizz_countries = AIRLINE_COUNTRIES.get("wizz")
-        wizzair_ok = wizzair_client and (
-            not origin_country or not dest_country or not wizz_countries
-            or origin_country in wizz_countries or dest_country in wizz_countries
-        )
-        if wizzair_ok:
-            _fast_clients.append(wizzair_client)
-            for o, d in all_pairs:
-                sub = req.model_copy(update={"origin": o, "destination": d}) if (o, d) != (req.origin, req.destination) else req
-                tasks.append(self._search_fast_one(wizzair_client, sub, "wizzair_direct"))
-                providers_used.append("wizzair_direct")
+        if _BROWSERS_AVAILABLE and wizzair_connector and (
+                not origin_country or not dest_country or not wizz_countries
+                or origin_country in wizz_countries or dest_country in wizz_countries):
+            tasks.append(self._search_wizzair_direct(wizzair_connector, req))
+            providers_used.append("wizzair_direct")
 
-        # Kiwi is a global aggregator — always query all pairs
-        if kiwi_client:
-            _fast_clients.append(kiwi_client)
-            for o, d in all_pairs:
-                sub = req.model_copy(update={"origin": o, "destination": d}) if (o, d) != (req.origin, req.destination) else req
-                tasks.append(self._search_fast_one(kiwi_client, sub, "kiwi_connector"))
-                providers_used.append("kiwi_connector")
+        # Kiwi is a global aggregator — always query it
+        if kiwi_connector:
+            tasks.append(self._search_kiwi_connector(kiwi_connector, req))
+            providers_used.append("kiwi_connector")
 
         # ── Direct airline website connectors (46 LCCs) — route-filtered ──
         filtered_connectors = get_relevant_connectors(req.origin, req.destination, _DIRECT_AIRLINE_connectorS)
+
+        # Skip browser-based connectors when Chrome is not available
+        # (cloud/agent environments). API-only connectors still run.
+        browser_skipped = 0
+        if not _BROWSERS_AVAILABLE:
+            before = len(filtered_connectors)
+            filtered_connectors = [
+                (src, cls, t) for src, cls, t in filtered_connectors
+                if src not in _BROWSER_SOURCES
+            ]
+            browser_skipped = before - len(filtered_connectors)
+            if browser_skipped:
+                logger.info("No browser available — skipped %d browser-based connectors "
+                            "(API-only connectors + Kiwi aggregator still active)",
+                            browser_skipped)
+
         skipped = len(_DIRECT_AIRLINE_connectorS) - len(filtered_connectors)
-        if skipped:
+        if skipped - browser_skipped > 0:
             logger.info("Route filter: %s->%s -- skipped %d/%d irrelevant connectors",
-                        req.origin, req.destination, skipped, len(_DIRECT_AIRLINE_connectorS))
+                        req.origin, req.destination, skipped - browser_skipped,
+                        len(_DIRECT_AIRLINE_connectorS))
+
+        # Smart ordering: API-only connectors first (instant, no Chrome needed),
+        # then browser connectors sorted by timeout ascending (fast scrapers get
+        # semaphore slots before slow ones). On weak VMs this means results start
+        # flowing while heavy browser connectors queue behind the semaphore.
+        api_connectors = [(s, c, t) for s, c, t in filtered_connectors if s not in _BROWSER_SOURCES]
+        browser_connectors = sorted(
+            ((s, c, t) for s, c, t in filtered_connectors if s in _BROWSER_SOURCES),
+            key=lambda x: x[2],  # sort by timeout (fastest first)
+        )
+        filtered_connectors = api_connectors + browser_connectors
+
         for source, connector_cls, timeout in filtered_connectors:
             connector = connector_cls(timeout=timeout)
-            tasks.append(self._search_connector_generic(
-                connector, req, source, timeout, sibling_pairs=sibling_pairs,
-            ))
+            tasks.append(self._search_connector_generic(connector, req, source))
             providers_used.append(source)
 
         # ── Combo engine: one-way legs for cross-airline virtual interlining ──
@@ -448,18 +614,20 @@ class MultiProvider:
             })
 
             # Fire one-way searches through direct connectors for combo engine.
-            # Reuse already-created fast clients — no extra instances needed.
             # SKIP Wizzair — its round-trip search already returns separate outbound/return
             # flights.  We extract those as one-way legs below to avoid extra API calls
             # that trigger rate limiting.
-            for label, client in [
-                ("ryanair_direct", ryanair_client if ryanair_ok else None),
-                ("kiwi_connector", kiwi_client),
+            for label, getter in [
+                ("ryanair_direct", self._get_ryanair_connector),
+                ("kiwi_connector", self._get_kiwi_connector),
             ]:
-                if client:
-                    combo_tasks.append(self._search_fast_one(client, outbound_req, label))
+                client_out = getter()
+                client_ret = getter()
+                if client_out:
+                    search_fn = self._combo_search_fn(label)
+                    combo_tasks.append(search_fn(client_out, outbound_req))
                     combo_labels.append(f"{label}_out")
-                    combo_tasks.append(self._search_fast_one(client, return_req, label))
+                    combo_tasks.append(search_fn(client_ret, return_req))
                     combo_labels.append(f"{label}_ret")
 
         if not tasks:
@@ -475,21 +643,7 @@ class MultiProvider:
 
         # Run all providers in parallel (normal + combo one-way searches)
         all_tasks = tasks + combo_tasks
-        logger.info("Launching %d provider tasks (%d normal + %d combo) for %s->%s",
-                     len(all_tasks), len(tasks), len(combo_tasks), req.origin, req.destination)
         results = await asyncio.gather(*all_tasks, return_exceptions=True)
-        _gather_elapsed = _time.monotonic() - _t_start
-        _n_ok = sum(1 for r in results if isinstance(r, FlightSearchResponse))
-        _n_err = sum(1 for r in results if isinstance(r, Exception))
-        logger.info("All %d tasks done in %.1fs — %d succeeded, %d failed",
-                     len(results), _gather_elapsed, _n_ok, _n_err)
-
-        # Close fast clients that were reused across pairs
-        for client in _fast_clients:
-            try:
-                await client.close()
-            except Exception:
-                pass
 
         # Split results: normal providers vs combo legs
         normal_results = results[:len(tasks)]
@@ -503,7 +657,7 @@ class MultiProvider:
         for i, result in enumerate(normal_results):
             provider = providers_used[i]
             if isinstance(result, Exception):
-                logger.warning("Provider %s failed: %s", provider, result)
+                logger.error("Provider %s failed: %s", provider, result)
                 continue
             if isinstance(result, FlightSearchResponse):
                 all_offers.extend(result.offers)
@@ -697,79 +851,63 @@ class MultiProvider:
 
     # ── Local connector search methods ───────────────────────────────────
 
-    async def _search_fast_one(
-        self, client, req: FlightSearchRequest, source: str,
+    async def _search_ryanair_direct(
+        self, client: RyanairConnectorClient, req: FlightSearchRequest
     ) -> FlightSearchResponse:
-        """Search a fast connector for ONE airport pair.  Does NOT close the
-        client — the caller reuses the same instance across multiple pairs
-        and closes it once at the end."""
-        result = await client.search_flights(req)
-        for offer in result.offers:
-            offer.source = source
-            offer.source_tier = "free"
-        return result
+        """Search Ryanair's website API directly — definitive LCC pricing."""
+        try:
+            result = await client.search_flights(req)
+            for offer in result.offers:
+                offer.source = "ryanair_direct"
+                offer.source_tier = "free"
+            return result
+        finally:
+            await client.close()
+
+    async def _search_wizzair_direct(
+        self, client: WizzairConnectorClient, req: FlightSearchRequest
+    ) -> FlightSearchResponse:
+        """Search Wizzair's website API directly — definitive LCC pricing."""
+        try:
+            result = await client.search_flights(req)
+            for offer in result.offers:
+                offer.source = "wizzair_direct"
+                offer.source_tier = "free"
+            return result
+        finally:
+            await client.close()
+
+    async def _search_kiwi_connector(
+        self, client: KiwiConnectorClient, req: FlightSearchRequest
+    ) -> FlightSearchResponse:
+        """Search Kiwi.com's public Skypicker API — LCCs + virtual interlining."""
+        try:
+            result = await client.search_flights(req)
+            for offer in result.offers:
+                offer.source = "kiwi_connector"
+                offer.source_tier = "free"
+            return result
+        finally:
+            await client.close()
 
     async def _search_connector_generic(
-        self, client, req: FlightSearchRequest, source: str, timeout: float = 30.0,
-        *, sibling_pairs: list[tuple[str, str]] | None = None,
+        self, client, req: FlightSearchRequest, source: str
     ) -> FlightSearchResponse:
         """Generic wrapper for direct airline connectors — tags source/tier, ensures cleanup.
 
-        Browser-based connectors are throttled by a semaphore so at most 8
+        Browser-based connectors are throttled by a semaphore so at most 4
         Chrome processes run simultaneously (prevents resource exhaustion).
-        An outer asyncio.wait_for enforces a hard deadline (timeout + 5s
-        grace), so a hung connector never stalls the entire search.
-
-        When *sibling_pairs* is provided AND the primary search returns
-        results, the same browser instance is reused to sequentially search
-        each sibling pair — no extra Chrome launches.  If the primary
-        search returns 0 offers, siblings are skipped (the airline likely
-        doesn't serve this origin/destination).
         """
-        import time as _time
-        t0 = _time.monotonic()
         uses_browser = source in _BROWSER_SOURCES
         if uses_browser:
             from connectors.browser import acquire_browser_slot
             await acquire_browser_slot()
         try:
-            result = await asyncio.wait_for(
-                client.search_flights(req),
-                timeout=timeout + 5.0,   # hard deadline = connector timeout + 5s grace
-            )
+            result = await client.search_flights(req)
             for offer in result.offers:
                 offer.source = source
                 offer.source_tier = "free"
-            all_offers = list(result.offers)
-
-            # Only search siblings when the primary pair returned results —
-            # avoids burning 30s × N sequential browser navigations on
-            # connectors that don't serve this route at all.
-            if sibling_pairs and all_offers:
-                for sib_o, sib_d in sibling_pairs:
-                    sub_req = req.model_copy(update={"origin": sib_o, "destination": sib_d})
-                    try:
-                        sub_result = await asyncio.wait_for(
-                            client.search_flights(sub_req),
-                            timeout=timeout + 5.0,
-                        )
-                        for offer in sub_result.offers:
-                            offer.source = source
-                            offer.source_tier = "free"
-                        all_offers.extend(sub_result.offers)
-                        logger.info("%s sibling %s->%s: %d offers", source, sib_o, sib_d, len(sub_result.offers))
-                    except Exception as exc:
-                        logger.debug("%s sibling %s->%s failed: %s", source, sib_o, sib_d, exc)
-
-            elapsed = _time.monotonic() - t0
-            logger.info("%s: %d offers in %.1fs", source, len(all_offers), elapsed)
-            result.offers = all_offers
-            result.total_results = len(all_offers)
             return result
-        except asyncio.TimeoutError:
-            elapsed = _time.monotonic() - t0
-            logger.warning("%s: hard timeout after %.1fs", source, elapsed)
-            raise
         finally:
             await client.close()
             if uses_browser:
@@ -778,6 +916,15 @@ class MultiProvider:
                 await self._cleanup_single_connector(client)
                 from connectors.browser import release_browser_slot
                 release_browser_slot()
+
+    def _combo_search_fn(self, label: str):
+        """Return the appropriate search method for combo one-way legs."""
+        mapping = {
+            "ryanair_direct": self._search_ryanair_direct,
+            "wizzair_direct": self._search_wizzair_direct,
+            "kiwi_connector": self._search_kiwi_connector,
+        }
+        return mapping[label]
 
     def _deduplicate(self, offers: list[FlightOffer]) -> list[FlightOffer]:
         """
