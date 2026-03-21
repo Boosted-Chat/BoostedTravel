@@ -727,6 +727,26 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "SG", "HK", "JP",
         "TO", "WS", "VU", "SB", "KI", "TV", "NR",
     },
+    # ── Air Niugini (EveryMundo __NEXT_DATA__ — PNG flag carrier) ──
+    "airniugini": {
+        "PG", "AU", "SG", "HK", "PH", "JP", "ID", "SB", "FJ",
+    },
+    # ── Aircalin (EveryMundo __NEXT_DATA__ — New Caledonia flag carrier) ──
+    "aircalin": {
+        "NC", "AU", "NZ", "JP", "FJ", "VU", "WF", "PF",
+    },
+    # ── Solomon Airlines (EveryMundo __NEXT_DATA__ — Solomon Islands flag carrier) ──
+    "solomonairlines": {
+        "SB", "AU", "FJ", "VU", "PG",
+    },
+    # ── Air Vanuatu (EveryMundo __NEXT_DATA__ — Vanuatu flag carrier) ──
+    "airvanuatu": {
+        "VU", "AU", "NZ", "FJ", "NC", "SB",
+    },
+    # ── Air Tahiti Nui (EveryMundo __NEXT_DATA__ — French Polynesia flag carrier) ──
+    "airtahitinui": {
+        "PF", "US", "NZ", "JP", "FR", "CK",
+    },
     # ── Airnorth (.NET B2C — northern Australia + Dili) ──
     "airnorth": {"AU", "TL"},
     # ── I Want That Flight (AU aggregator — domestic + international from AU) ──

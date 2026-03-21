@@ -149,6 +149,11 @@ from connectors.britishairways import BritishAirwaysConnectorClient
 from connectors.evaair import EvaAirConnectorClient
 from connectors.rex import RexConnectorClient
 from connectors.fijiairways import FijiAirwaysConnectorClient
+from connectors.airniugini import AirNiuginiConnectorClient
+from connectors.aircalin import AircalinConnectorClient
+from connectors.solomonairlines import SolomonAirlinesConnectorClient
+from connectors.airvanuatu import AirVanuatuConnectorClient
+from connectors.airtahitinui import AirTahitiNuiConnectorClient
 from connectors.airnorth import AirnorthConnectorClient
 from connectors.airchina import AirChinaConnectorClient
 from connectors.chinaeastern import ChinaEasternConnectorClient
@@ -374,6 +379,16 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("rex_direct", RexConnectorClient, 25.0),
     # ── Fiji Airways (EveryMundo __NEXT_DATA__ via curl_cffi) ──
     ("fijiairways_direct", FijiAirwaysConnectorClient, 25.0),
+    # ── Air Niugini (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("airniugini_direct", AirNiuginiConnectorClient, 25.0),
+    # ── Aircalin (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("aircalin_direct", AircalinConnectorClient, 25.0),
+    # ── Solomon Airlines (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("solomonairlines_direct", SolomonAirlinesConnectorClient, 25.0),
+    # ── Air Vanuatu (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("airvanuatu_direct", AirVanuatuConnectorClient, 25.0),
+    # ── Air Tahiti Nui (EveryMundo __NEXT_DATA__ via curl_cffi) ──
+    ("airtahitinui_direct", AirTahitiNuiConnectorClient, 25.0),
     # ── Airnorth (.NET B2C form POST via curl_cffi) ──
     ("airnorth_direct", AirnorthConnectorClient, 30.0),
     # ── I Want That Flight (AU fare aggregator — HTML scraping) ──
