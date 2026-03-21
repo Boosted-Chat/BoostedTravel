@@ -36,7 +36,7 @@ const API_KEY = process.env.LETSFG_API_KEY || process.env.BOOSTEDTRAVEL_API_KEY 
 const PYTHON = process.env.LETSFG_PYTHON || process.env.BOOSTEDTRAVEL_PYTHON || 'python3';
 const SEARCH_MODE = (process.env.LETSFG_SEARCH_MODE || 'cloud').toLowerCase(); // 'cloud' or 'local'
 const CLOUD_SEARCH_URL = (process.env.LETSFG_CLOUD_SEARCH_URL || 'https://workflow-engine-876385716101.us-central1.run.app').replace(/\/$/, '');
-const VERSION = '1.0.3';
+const VERSION = '1.0.4';
 
 // ── Cloud Search ────────────────────────────────────────────────────────
 
