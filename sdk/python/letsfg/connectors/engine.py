@@ -163,9 +163,16 @@ from .hainan import HainanConnectorClient
 from .royaljordanian import RoyalJordanianConnectorClient
 from .kuwaitairways import KuwaitAirwaysConnectorClient
 from .level import LevelConnectorClient
+from .qatar import QatarConnectorClient
+from .aircalin import AircalinConnectorClient
+from .traveloka import TravelokaConnectorClient
+from .wego import WegoConnectorClient
+from .webjet import WebjetConnectorClient
+from .tiket import TiketConnectorClient
 from .iwantthatflight import IWantThatFlightConnectorClient
 from .airniugini import AirNiuginiConnectorClient
 from .linkairways import LinkAirwaysConnectorClient
+from .pngair import PNGAirConnectorClient
 
 from ..models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, FlightSearchResponse
 
@@ -213,6 +220,11 @@ _BROWSER_SOURCES: set[str] = {
     "airserbia_direct", "aireuropa_direct", "mea_direct",
     "hainan_direct", "royaljordanian_direct", "kuwaitairways_direct",
     "level_direct",
+    "qatar_direct",
+    "traveloka_ota",
+    "wego_meta",
+    "webjet_ota",
+    "tiket_ota",
 }
 
 
@@ -384,6 +396,8 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("airniugini_direct", AirNiuginiConnectorClient, 25.0),
     # ── Link Airways (Playwright ASP.NET WebForms) ──
     ("linkairways_direct", LinkAirwaysConnectorClient, 35.0),
+    # ── PNG Air (VARS PSS AJAX via curl_cffi) ──
+    ("pngair_direct", PNGAirConnectorClient, 35.0),
     # ── CDP Chrome browser connectors (Batch 5/6/7 — form fill + API intercept) ──
     ("airchina_direct", AirChinaConnectorClient, 55.0),
     ("chinaeastern_direct", ChinaEasternConnectorClient, 55.0),
@@ -398,6 +412,12 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("royaljordanian_direct", RoyalJordanianConnectorClient, 55.0),
     ("kuwaitairways_direct", KuwaitAirwaysConnectorClient, 55.0),
     ("level_direct", LevelConnectorClient, 55.0),
+    ("qatar_direct", QatarConnectorClient, 55.0),
+    ("aircalin_direct", AircalinConnectorClient, 25.0),
+    ("traveloka_ota", TravelokaConnectorClient, 55.0),
+    ("wego_meta", WegoConnectorClient, 55.0),
+    ("webjet_ota", WebjetConnectorClient, 55.0),
+    ("tiket_ota", TiketConnectorClient, 55.0),
 ]
 
 

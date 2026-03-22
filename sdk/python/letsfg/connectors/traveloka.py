@@ -1,24 +1,31 @@
 """
-Traveloka connector — Southeast Asia's largest OTA.
+Traveloka connector — CDP Chrome + API response interception.
 
-Traveloka covers 100+ airlines across SE Asia, with exclusive fares
-from AirAsia, Lion Group, Garuda, Cebu Pacific, VietJet, etc.
-Often has OTA-exclusive promotional pricing not available on airline sites.
+Traveloka is Southeast Asia's #1 OTA, covering 100+ airlines including
+Lion Air, Garuda, Citilink, Batik Air, AirAsia, Cebu Pacific, VietJet, etc.
+Hub coverage: Indonesia (CGK, DPS, SUB, UPG), Singapore, Thailand, Malaysia,
+Vietnam, Philippines, Australia (from Bali/Jakarta).
 
-Strategy:
-  Traveloka has a public flight search API at their API gateway.
-  No auth required for initial search.
+Strategy (CDP Chrome — AWS WAF protection):
+1.  Launch real Chrome via CDP (--remote-debugging-port).
+2.  Navigate to Traveloka search results page (fullsearch URL).
+3.  Intercept XHR responses for /api/v2/flight/search endpoints.
+4.  Parse the Traveloka flight search response into FlightOffers.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import logging
+import os
+import re
+import shutil
+import subprocess
 import time
-from datetime import datetime
-from typing import Optional
-
-import httpx
+from datetime import datetime, date as date_type
+from typing import Any, Optional
 
 from ..models.flights import (
     FlightOffer,
@@ -27,136 +34,493 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.traveloka.com"
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Content-Type": "application/json",
-    "Origin": "https://www.traveloka.com",
-    "Referer": "https://www.traveloka.com/en-id/flight",
-}
+_CDP_PORT = 9480
+_USER_DATA = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".traveloka_chrome_data"
+)
+
+_browser = None
+_context = None
+_pw_instance = None
+_chrome_proc = None
+_lock: Optional[asyncio.Lock] = None
+
+
+def _get_lock() -> asyncio.Lock:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    return _lock
+
+
+async def _get_context():
+    global _browser, _context, _pw_instance, _chrome_proc
+    lock = _get_lock()
+    async with lock:
+        if _browser:
+            try:
+                if _browser.is_connected():
+                    if _context:
+                        try:
+                            _ = _context.pages
+                            return _context
+                        except Exception:
+                            pass
+                    contexts = _browser.contexts
+                    if contexts:
+                        _context = contexts[0]
+                        return _context
+            except Exception:
+                pass
+
+        from playwright.async_api import async_playwright
+
+        pw = None
+        try:
+            pw = await async_playwright().start()
+            _browser = await pw.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{_CDP_PORT}"
+            )
+            _pw_instance = pw
+            logger.info("TVLK: connected to existing Chrome on port %d", _CDP_PORT)
+        except Exception:
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+
+            chrome = find_chrome()
+            os.makedirs(_USER_DATA, exist_ok=True)
+            args = [
+                chrome,
+                f"--remote-debugging-port={_CDP_PORT}",
+                f"--user-data-dir={_USER_DATA}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-blink-features=AutomationControlled",
+                "--window-position=-2400,-2400",
+                "--window-size=1366,768",
+                "--lang=en-US",
+                "about:blank",
+            ]
+            _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
+            _launched_procs.append(_chrome_proc)
+            await asyncio.sleep(2.5)
+
+            pw = await async_playwright().start()
+            _pw_instance = pw
+            _browser = await pw.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{_CDP_PORT}"
+            )
+            logger.info("TVLK: Chrome launched CDP port %d pid %d", _CDP_PORT, _chrome_proc.pid)
+
+        contexts = _browser.contexts
+        _context = contexts[0] if contexts else await _browser.new_context()
+        return _context
+
+
+async def _reset_profile():
+    global _browser, _context, _pw_instance, _chrome_proc
+    try:
+        if _browser:
+            await _browser.close()
+    except Exception:
+        pass
+    try:
+        if _pw_instance:
+            await _pw_instance.stop()
+    except Exception:
+        pass
+    if _chrome_proc:
+        try:
+            _chrome_proc.terminate()
+        except Exception:
+            pass
+    _browser = _context = _pw_instance = _chrome_proc = None
+    if os.path.isdir(_USER_DATA):
+        try:
+            shutil.rmtree(_USER_DATA)
+        except Exception:
+            pass
+
+
+def _to_datetime(val) -> datetime:
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, date_type):
+        return datetime(val.year, val.month, val.day)
+    return datetime.strptime(str(val), "%Y-%m-%d")
+
+
+def _parse_dt(s: Any) -> datetime:
+    if not s:
+        return datetime(2000, 1, 1)
+    s = str(s)
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        pass
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(s[:len(fmt) + 2], fmt)
+        except (ValueError, IndexError):
+            continue
+    return datetime(2000, 1, 1)
 
 
 class TravelokaConnectorClient:
-    """Traveloka — SE Asia's largest OTA flight search."""
+    """Traveloka — SE Asia's largest OTA, CDP Chrome + API interception."""
 
-    def __init__(self, timeout: float = 25.0):
+    def __init__(self, timeout: float = 55.0):
         self.timeout = timeout
-        self._http: Optional[httpx.AsyncClient] = None
-
-    async def _client(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True
-            )
-        return self._http
 
     async def close(self):
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
+        pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        client = await self._client()
-        date_str = req.date_from.strftime("%Y-%m-%d")
+        dt = _to_datetime(req.date_from)
+        date_str = dt.strftime("%d-%m-%Y")
 
+        adults = req.adults or 1
+        children = req.children or 0
+        infants = req.infants or 0
+
+        cabin_map = {"economy": "ECONOMY", "premium_economy": "PREMIUM_ECONOMY",
+                     "business": "BUSINESS", "first": "FIRST"}
+        cabin = cabin_map.get(
+            getattr(req, "cabin_class", "economy") or "economy", "ECONOMY"
+        )
+
+        search_url = (
+            f"https://www.traveloka.com/en-id/flight/fullsearch"
+            f"?ap={req.origin}.{req.destination}"
+            f"&dt={date_str}.NA"
+            f"&ps={adults}.{children}.{infants}"
+            f"&sc={cabin}"
+        )
+
+        for attempt in range(2):
+            try:
+                offers = await self._do_search(search_url, req, dt)
+                if offers is not None:
+                    offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
+                    elapsed = time.monotonic() - t0
+                    logger.info(
+                        "TVLK %s→%s: %d offers in %.1fs",
+                        req.origin, req.destination, len(offers), elapsed,
+                    )
+                    h = hashlib.md5(
+                        f"tvlk{req.origin}{req.destination}{req.date_from}".encode()
+                    ).hexdigest()[:12]
+                    return FlightSearchResponse(
+                        search_id=f"fs_{h}",
+                        origin=req.origin,
+                        destination=req.destination,
+                        currency=offers[0].currency if offers else "IDR",
+                        offers=offers,
+                        total_results=len(offers),
+                    )
+            except Exception as e:
+                logger.warning("TVLK attempt %d failed: %s", attempt, e)
+                if attempt == 0:
+                    await _reset_profile()
+
+        return self._empty(req)
+
+    async def _do_search(
+        self, search_url: str, req: FlightSearchRequest, dt: datetime,
+    ) -> list[FlightOffer] | None:
+        context = await _get_context()
+        page = await context.new_page()
+
+        captured_data: list[dict] = []
+
+        async def on_response(response):
+            url = response.url
+            if "traveloka.com/api/v2/flight/search/initial" in url:
+                try:
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct and response.status == 200:
+                        body = await response.text()
+                        data = json.loads(body)
+                        if "data" in data:
+                            captured_data.append(data["data"])
+                            logger.debug("TVLK: captured search/initial (%d bytes)", len(body))
+                except Exception:
+                    pass
+
+        page.on("response", on_response)
+
+        try:
+            logger.info("TVLK: navigating to %s", search_url)
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+
+            # Wait for flight results to load
+            deadline = time.monotonic() + 35
+            while not captured_data and time.monotonic() < deadline:
+                await asyncio.sleep(2)
+
+            # Extra wait for more results
+            if captured_data:
+                await asyncio.sleep(3)
+
+            if not captured_data:
+                logger.warning("TVLK: no API responses intercepted, trying DOM")
+                offers = await self._extract_from_dom(page, req, dt)
+                return offers
+
+            # Parse all captured API responses
+            offers = []
+            seen: set[str] = set()
+            for data in captured_data:
+                parsed = self._parse_response(data, req, dt, seen)
+                offers.extend(parsed)
+
+            return offers
+
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_datetime(date_d: dict | None, time_d: dict | None) -> datetime | None:
+        """Build datetime from Traveloka's {year,month,day} + {hour,minute} dicts."""
+        if not date_d:
+            return None
+        try:
+            y = int(date_d.get("year", 0))
+            m = int(date_d.get("month", 1))
+            d = int(date_d.get("day", 1))
+            h = int((time_d or {}).get("hour", 0))
+            mi = int((time_d or {}).get("minute", 0))
+            return datetime(y, m, d, h, mi)
+        except (ValueError, TypeError):
+            return None
+
+    def _parse_response(
+        self, data: dict, req: FlightSearchRequest, dt: datetime, seen: set,
+    ) -> list[FlightOffer]:
+        """Parse Traveloka flight search/initial response.
+
+        Structure:
+          data.searchResults[]  — each has fare, flightMetadata, connectingFlightRoutes
+          data.airlineDataMap   — airline code → {name, shortName, iataCode}
+        """
         offers: list[FlightOffer] = []
 
-        # Try Traveloka's flight search endpoints
-        endpoints = [
-            f"{_BASE}/api/v2/flight/search",
-            f"{_BASE}/api/flight/search",
-        ]
+        airline_map: dict[str, str] = {}
+        for code, info in (data.get("airlineDataMap") or {}).items():
+            if isinstance(info, dict):
+                airline_map[code] = info.get("name") or info.get("shortName") or code
 
-        payload = {
-            "journeys": [{
-                "origin": req.origin,
-                "destination": req.destination,
-                "departureDate": date_str,
-            }],
-            "passengers": {
-                "adults": req.adults or 1,
-                "children": req.children or 0,
-                "infants": req.infants or 0,
-            },
-            "cabinClass": "ECONOMY",
-            "currency": "USD",
-        }
+        flights = data.get("searchResults") or []
 
-        for endpoint in endpoints:
+        for f in flights:
             try:
-                resp = await client.post(endpoint, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    offers = self._parse(data, req, date_str)
-                    if offers:
-                        break
+                offer = self._parse_flight(f, req, dt, seen, airline_map)
+                if offer:
+                    offers.append(offer)
             except Exception as e:
-                logger.debug("Traveloka endpoint %s error: %s", endpoint, e)
+                logger.debug("TVLK: parse flight error: %s", e)
 
-        offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
-        elapsed = time.monotonic() - t0
-        logger.info("Traveloka %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
-
-        sh = hashlib.md5(f"traveloka{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{sh}", origin=req.origin, destination=req.destination,
-            currency=offers[0].currency if offers else "USD",
-            offers=offers, total_results=len(offers),
-        )
-
-    def _parse(self, data: dict, req: FlightSearchRequest, target_date: str) -> list[FlightOffer]:
-        offers = []
-        results = (
-            data.get("flights") or data.get("data", {}).get("flights")
-            or data.get("results") or data.get("itineraries") or []
-        )
-        for flight in results:
-            price = (
-                flight.get("price") or flight.get("totalPrice")
-                or flight.get("fare", {}).get("total") or 0
-            )
-            currency = flight.get("currency") or "USD"
-            if float(price) <= 0:
-                continue
-
-            airline_name = flight.get("airline") or flight.get("carrierName") or "Unknown"
-            airline_code = flight.get("airlineCode") or flight.get("carrierCode") or ""
-            flight_no = flight.get("flightNumber") or flight.get("flightNo") or airline_code
-
-            dep_str = flight.get("departureTime") or flight.get("departure") or ""
-            arr_str = flight.get("arrivalTime") or flight.get("arrival") or ""
-
-            try:
-                dep_dt = datetime.fromisoformat(dep_str.replace("Z", "+00:00")) if dep_str else datetime.combine(req.date_from, datetime.min.time().replace(hour=8))
-                arr_dt = datetime.fromisoformat(arr_str.replace("Z", "+00:00")) if arr_str else dep_dt
-            except (ValueError, TypeError):
-                dep_dt = datetime.combine(req.date_from, datetime.min.time().replace(hour=8))
-                arr_dt = dep_dt
-
-            duration = flight.get("duration") or flight.get("durationMinutes") or 0
-            duration_secs = int(duration) * 60 if duration else 0
-
-            seg = FlightSegment(
-                airline=airline_name, flight_no=flight_no,
-                origin=req.origin, destination=req.destination,
-                departure=dep_dt, arrival=arr_dt, duration_seconds=duration_secs,
-            )
-            route = FlightRoute(segments=[seg], total_duration_seconds=duration_secs, stopovers=0)
-            oid = hashlib.md5(f"tvlk_{req.origin}{req.destination}{target_date}{price}{flight_no}".encode()).hexdigest()[:12]
-            offers.append(FlightOffer(
-                id=f"tvlk_{oid}", price=round(float(price), 2), currency=currency,
-                price_formatted=f"{float(price):.2f} {currency}",
-                outbound=route, inbound=None,
-                airlines=[airline_name], owner_airline=airline_code,
-                booking_url=f"https://www.traveloka.com/en-id/flight/fullsearch?ap={req.origin}.{req.destination}&dt={target_date}&ps={req.adults or 1}.0.0&sc=ECONOMY",
-                is_locked=False, source="traveloka_ota", source_tier="free",
-            ))
         return offers
+
+    def _parse_flight(
+        self, f: dict, req: FlightSearchRequest, dt: datetime, seen: set,
+        airline_map: dict,
+    ) -> FlightOffer | None:
+        # Price: fare.display.currencyValue.{amount, currency}
+        fare = f.get("fare") or {}
+        display = fare.get("display") or fare.get("adult") or {}
+        cv = display.get("currencyValue") or {}
+        price_raw = cv.get("amount") or "0"
+        currency = cv.get("currency") or "IDR"
+
+        try:
+            price_f = round(float(price_raw), 2)
+        except (ValueError, TypeError):
+            return None
+        if price_f <= 0:
+            return None
+
+        meta = f.get("flightMetadata") or {}
+        airline_ids = meta.get("airlineIds") or []
+        trip_dur_min = int(meta.get("tripDuration") or 0)
+        total_stops = int(meta.get("totalNumStop") or 0)
+
+        # Segments from connectingFlightRoutes[].segments[]
+        routes = f.get("connectingFlightRoutes") or []
+        segments: list[FlightSegment] = []
+
+        for route in routes:
+            for sd in route.get("segments") or []:
+                acode = sd.get("airlineCode") or sd.get("operatingAirlineCode") or ""
+                aname = airline_map.get(acode, acode)
+                fno = sd.get("flightNumber") or ""
+
+                dep_dt = self._build_datetime(sd.get("departureDate"), sd.get("departureTime"))
+                arr_dt = self._build_datetime(sd.get("arrivalDate"), sd.get("arrivalTime"))
+                seg_dur = int(sd.get("durationMinutes") or 0) * 60
+
+                segments.append(FlightSegment(
+                    airline=acode,
+                    airline_name=aname,
+                    flight_no=fno,
+                    origin=sd.get("departureAirport") or req.origin,
+                    destination=sd.get("arrivalAirport") or req.destination,
+                    departure=dep_dt or dt,
+                    arrival=arr_dt or dt,
+                    duration_seconds=seg_dur,
+                    cabin_class=sd.get("seatClass", "ECONOMY").lower(),
+                ))
+
+        if not segments:
+            return None
+
+        total_dur = trip_dur_min * 60
+
+        fno_key = "_".join(s.flight_no for s in segments)
+        dedup = f"{req.origin}_{req.destination}_{dt:%Y%m%d}_{price_f}_{fno_key}"
+        if dedup in seen:
+            return None
+        seen.add(dedup)
+
+        names_set = list(dict.fromkeys(
+            airline_map.get(a, a) for a in airline_ids if a
+        ))
+        codes_set = list(dict.fromkeys(a for a in airline_ids if a))
+
+        route_obj = FlightRoute(
+            segments=segments,
+            total_duration_seconds=total_dur,
+            stopovers=total_stops,
+        )
+
+        fid = hashlib.md5(dedup.encode()).hexdigest()[:12]
+        return FlightOffer(
+            id=f"tvlk_{fid}",
+            price=price_f,
+            currency=currency,
+            price_formatted=f"{price_f:.2f} {currency}",
+            outbound=route_obj,
+            inbound=None,
+            airlines=names_set or codes_set,
+            owner_airline=codes_set[0] if codes_set else "",
+            booking_url=(
+                f"https://www.traveloka.com/en-id/flight/fullsearch"
+                f"?ap={req.origin}.{req.destination}"
+                f"&dt={dt:%d-%m-%Y}.NA"
+                f"&ps={req.adults or 1}.{req.children or 0}.{req.infants or 0}"
+                f"&sc=ECONOMY"
+            ),
+            is_locked=False,
+            source="traveloka_ota",
+            source_tier="free",
+        )
+
+    # ------------------------------------------------------------------
+    # DOM fallback
+    # ------------------------------------------------------------------
+
+    async def _extract_from_dom(
+        self, page, req: FlightSearchRequest, dt: datetime,
+    ) -> list[FlightOffer]:
+        """Fallback: scrape visible flight cards from the search page DOM."""
+        try:
+            data = await page.evaluate("""() => {
+                const sel = '[data-testid*="flight"], [class*="FlightCard"], '
+                          + '[class*="flight-card"], [class*="ResultCard"]';
+                const cards = document.querySelectorAll(sel);
+                const out = [];
+                cards.forEach(c => {
+                    const p = c.querySelector(
+                        '[class*="price"], [class*="Price"], [data-testid*="price"]'
+                    );
+                    const a = c.querySelector(
+                        '[class*="airline"], [class*="Airline"], [data-testid*="airline"]'
+                    );
+                    const ts = c.querySelectorAll('[class*="time"], [class*="Time"]');
+                    if (p) out.push({
+                        price: p.textContent.trim(),
+                        airline: a ? a.textContent.trim() : '',
+                        times: Array.from(ts).map(e => e.textContent.trim()),
+                    });
+                });
+                return out;
+            }""")
+
+            offers: list[FlightOffer] = []
+            seen: set[str] = set()
+            for item in data or []:
+                nums = re.findall(r"[\d]+", item.get("price", "").replace(",", ""))
+                if not nums:
+                    continue
+                try:
+                    price_f = round(float(nums[-1]), 2)
+                except (ValueError, IndexError):
+                    continue
+                if price_f <= 0:
+                    continue
+
+                airline = item.get("airline") or "Unknown"
+                dedup = f"{req.origin}_{req.destination}_{price_f}_{airline}"
+                if dedup in seen:
+                    continue
+                seen.add(dedup)
+
+                seg = FlightSegment(
+                    airline=airline, flight_no="",
+                    origin=req.origin, destination=req.destination,
+                    departure=dt, arrival=dt, duration_seconds=0,
+                )
+                route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
+                fid = hashlib.md5(dedup.encode()).hexdigest()[:12]
+                offers.append(FlightOffer(
+                    id=f"tvlk_{fid}",
+                    price=price_f,
+                    currency="IDR",
+                    price_formatted=f"{price_f:.2f} IDR",
+                    outbound=route,
+                    inbound=None,
+                    airlines=[airline],
+                    owner_airline="",
+                    booking_url=(
+                        f"https://www.traveloka.com/en-id/flight/fullsearch"
+                        f"?ap={req.origin}.{req.destination}"
+                        f"&dt={dt:%d-%m-%Y}.NA"
+                        f"&ps={req.adults or 1}.0.0&sc=ECONOMY"
+                    ),
+                    is_locked=False,
+                    source="traveloka_ota",
+                    source_tier="free",
+                ))
+            return offers
+        except Exception as e:
+            logger.debug("TVLK: DOM extraction failed: %s", e)
+            return []
+
+    @staticmethod
+    def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
+        h = hashlib.md5(
+            f"tvlk{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
+        return FlightSearchResponse(
+            search_id=f"fs_{h}",
+            origin=req.origin,
+            destination=req.destination,
+            currency="IDR",
+            offers=[],
+            total_results=0,
+        )

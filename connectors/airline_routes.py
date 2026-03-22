@@ -850,8 +850,6 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "AR", "CL", "BR",
     },
     "linkairways": {"AU"},
-    "transnusa": {"ID", "AU", "MY", "CN", "SG"},
-    "superairjet": {"ID"},
     "qatar": {
         "QA", "AE", "SA", "KW", "BH", "OM", "JO", "LB", "IQ", "IR",
         "GB", "FR", "DE", "IT", "ES", "NL", "BE", "CH", "AT", "SE",
@@ -866,7 +864,6 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "BR", "AR",
         "MV",
     },
-    "citilink": {"ID", "MY", "SG", "TH", "SA"},
     "samoaairways": {"WS", "AS"},
 }
 

@@ -1,14 +1,14 @@
 """
-Wego connector — CDP Chrome + API response interception.
+Webjet connector — CDP Chrome + API response interception.
 
-Wego is a major metasearch engine popular in Middle East, South Asia,
-and SE Asia.  Aggregates results from 700+ airlines and OTAs (Almosafer,
-ClearTrip, Traveloka, etc.).
+Webjet is Australia's #1 OTA, covering all AU/NZ domestic and international
+routes. Aggregates fares from Qantas, Virgin Australia, Jetstar, Rex, Air NZ,
+Fiji Airways, LATAM, Singapore Airlines, etc.
 
-Strategy (CDP Chrome — Cloudflare protection):
+Strategy (CDP Chrome):
 1.  Launch real Chrome via CDP (--remote-debugging-port).
-2.  Navigate to Wego search results page.
-3.  Intercept XHR responses containing aggregated flight results.
+2.  Navigate to Webjet search results page.
+3.  Intercept XHR responses for flight search API calls.
 4.  Parse into FlightOffers.
 """
 
@@ -37,9 +37,9 @@ from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
 
 logger = logging.getLogger(__name__)
 
-_CDP_PORT = 9481
+_CDP_PORT = 9482
 _USER_DATA = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".wego_chrome_data"
+    os.path.dirname(os.path.abspath(__file__)), ".webjet_chrome_data"
 )
 
 _browser = None
@@ -85,7 +85,7 @@ async def _get_context():
                 f"http://127.0.0.1:{_CDP_PORT}"
             )
             _pw_instance = pw
-            logger.info("WEGO: connected to existing Chrome on port %d", _CDP_PORT)
+            logger.info("WBJT: connected to existing Chrome on port %d", _CDP_PORT)
         except Exception:
             if pw:
                 try:
@@ -116,7 +116,7 @@ async def _get_context():
             _browser = await pw.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{_CDP_PORT}"
             )
-            logger.info("WEGO: Chrome launched CDP port %d pid %d", _CDP_PORT, _chrome_proc.pid)
+            logger.info("WBJT: Chrome launched CDP port %d pid %d", _CDP_PORT, _chrome_proc.pid)
 
         contexts = _browser.contexts
         _context = contexts[0] if contexts else await _browser.new_context()
@@ -172,8 +172,8 @@ def _parse_dt(s: Any) -> datetime:
     return datetime(2000, 1, 1)
 
 
-class WegoConnectorClient:
-    """Wego — ME/Asia metasearch, CDP Chrome + API interception."""
+class WebjetConnectorClient:
+    """Webjet — Australia's #1 OTA, CDP Chrome + API interception."""
 
     def __init__(self, timeout: float = 55.0):
         self.timeout = timeout
@@ -184,24 +184,21 @@ class WegoConnectorClient:
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
         dt = _to_datetime(req.date_from)
-        date_str = dt.strftime("%Y-%m-%d")
+        date_compact = dt.strftime("%Y%m%d")
 
         adults = req.adults or 1
         children = req.children or 0
         infants = req.infants or 0
 
-        cabin_map = {"economy": "economy", "premium_economy": "premium_economy",
-                     "business": "business", "first": "first"}
-        cabin = cabin_map.get(
-            getattr(req, "cabin_class", "economy") or "economy", "economy",
-        )
+        origin = req.origin.upper()
+        dest = req.destination.upper()
 
-        # Wego URL format: /flights/{origin}/{dest}/{date}
         search_url = (
-            f"https://www.wego.com/flights/{req.origin}/{req.destination}"
-            f"/{date_str}"
-            f"?adults={adults}&children={children}&infants={infants}"
-            f"&cabin={cabin}&sort=price"
+            f"https://services.webjet.com.au/web/flights/matrix/"
+            f"?Adults={adults}&Children={children}&Infants={infants}"
+            f"&TravelClass=Economy&TripType=Oneway"
+            f"&OneWay={origin}-{origin}-{dest}ALL-{dest}ALL-{date_compact}"
+            f"&CityCodeFrom={origin}&CityCodeTo={dest}"
         )
 
         for attempt in range(2):
@@ -211,22 +208,22 @@ class WegoConnectorClient:
                     offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
                     elapsed = time.monotonic() - t0
                     logger.info(
-                        "WEGO %s→%s: %d offers in %.1fs",
+                        "WBJT %s→%s: %d offers in %.1fs",
                         req.origin, req.destination, len(offers), elapsed,
                     )
                     h = hashlib.md5(
-                        f"wego{req.origin}{req.destination}{req.date_from}".encode()
+                        f"wbjt{req.origin}{req.destination}{req.date_from}".encode()
                     ).hexdigest()[:12]
                     return FlightSearchResponse(
                         search_id=f"fs_{h}",
                         origin=req.origin,
                         destination=req.destination,
-                        currency=offers[0].currency if offers else "USD",
+                        currency=offers[0].currency if offers else "AUD",
                         offers=offers,
                         total_results=len(offers),
                     )
             except Exception as e:
-                logger.warning("WEGO attempt %d failed: %s", attempt, e)
+                logger.warning("WBJT attempt %d failed: %s", attempt, e)
                 if attempt == 0:
                     await _reset_profile()
 
@@ -242,32 +239,26 @@ class WegoConnectorClient:
 
         async def on_response(response):
             url = response.url
-            # Wego makes API calls to srv.wego.com and/or internal APIs
-            interesting = (
-                ("srv.wego.com" in url and ("search" in url or "result" in url or "fares" in url))
-                or ("wego.com/api" in url and "flight" in url)
-                or ("wego.com" in url and "graphql" in url)
-            )
-            if not interesting:
+            if "flightssearchservice/matrix" not in url:
                 return
             try:
                 ct = response.headers.get("content-type", "")
-                if ("json" in ct or "graphql" in url) and response.status == 200:
+                if "json" in ct and response.status == 200:
                     body = await response.text()
                     data = json.loads(body)
-                    if isinstance(data, dict):
+                    if isinstance(data, dict) and data.get("data") and "outbound" in data["data"]:
                         captured_data.append(data)
-                        logger.debug("WEGO: captured response from %s (%d bytes)", url, len(body))
+                        logger.debug("WBJT: captured matrix (%d bytes)", len(body))
             except Exception:
                 pass
 
         page.on("response", on_response)
 
         try:
-            logger.info("WEGO: navigating to %s", search_url)
+            logger.info("WBJT: navigating to %s", search_url)
             await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
 
-            # Wego is a metasearch — results trickle in over time
+            # Wait for results to load
             deadline = time.monotonic() + 40
             last_count = 0
             stable_ticks = 0
@@ -279,10 +270,10 @@ class WegoConnectorClient:
                 else:
                     stable_ticks += 1
                     if stable_ticks >= 3 and captured_data:
-                        break  # no new data for ~9s
+                        break
 
             if not captured_data:
-                logger.warning("WEGO: no API responses intercepted, trying DOM")
+                logger.warning("WBJT: no API responses intercepted, trying DOM")
                 return await self._extract_from_dom(page, req, dt)
 
             offers: list[FlightOffer] = []
@@ -306,131 +297,88 @@ class WegoConnectorClient:
     def _parse_response(
         self, data: dict, req: FlightSearchRequest, dt: datetime, seen: set,
     ) -> list[FlightOffer]:
-        """Parse Wego metasearch API response data."""
         offers: list[FlightOffer] = []
 
-        # Wego responses can nest results under various keys
-        fares = (
-            data.get("fares") or data.get("trips") or data.get("results")
-            or data.get("itineraries") or data.get("flights") or []
-        )
+        inner = data.get("data") or {}
+        airlines_map = inner.get("airlines") or {}
+        outbound = inner.get("outbound") or {}
+        flight_groups = outbound.get("flightGroups") or []
 
-        # GraphQL responses
-        if "data" in data and isinstance(data["data"], dict):
-            gql = data["data"]
-            fares = fares or (
-                gql.get("flightSearch", {}).get("fares")
-                or gql.get("flightSearch", {}).get("results")
-                or gql.get("flights", {}).get("results")
-                or []
-            )
-
-        # Lookup tables (Wego often sends airlines/airports separately)
-        airlines_map = {}
-        for a in data.get("airlines", []):
-            if isinstance(a, dict):
-                code = a.get("code") or a.get("iata") or ""
-                airlines_map[code] = a.get("name") or code
-
-        for fare in fares:
+        for fg in flight_groups:
             try:
-                offer = self._parse_fare(fare, req, dt, seen, airlines_map)
+                offer = self._parse_flight_group(fg, airlines_map, req, dt, seen)
                 if offer:
                     offers.append(offer)
             except Exception as e:
-                logger.debug("WEGO: parse fare error: %s", e)
+                logger.debug("WBJT: parse flight group error: %s", e)
 
         return offers
 
-    def _parse_fare(
-        self, fare: dict, req: FlightSearchRequest, dt: datetime,
-        seen: set, airlines_map: dict,
+    def _parse_flight_group(
+        self, fg: dict, airlines_map: dict,
+        req: FlightSearchRequest, dt: datetime, seen: set,
     ) -> FlightOffer | None:
-        # Price
-        price_obj = fare.get("price") or fare
-        if isinstance(price_obj, dict):
-            price = (
-                price_obj.get("amount") or price_obj.get("totalAmount")
-                or price_obj.get("price") or 0
-            )
-            currency = (
-                price_obj.get("currencyCode") or price_obj.get("currency") or "USD"
-            )
-        else:
-            try:
-                price = float(price_obj)
-            except (ValueError, TypeError):
-                return None
-            currency = "USD"
-
-        try:
-            price_f = round(float(price), 2)
-        except (ValueError, TypeError):
-            return None
-        if price_f <= 0:
+        seg_data = fg.get("flights") or []
+        if not seg_data:
             return None
 
-        # Segments / legs
-        legs = fare.get("legs") or fare.get("segments") or fare.get("slices") or []
-        if not legs:
-            # Flat fare structure
-            legs = [fare]
+        # Find cheapest fare across all segments
+        cheapest_price = float("inf")
+        cheapest_currency = "AUD"
+        for sd in seg_data:
+            for fare in sd.get("fares") or []:
+                p = fare.get("price", 0)
+                if isinstance(p, (int, float)) and 0 < p < cheapest_price:
+                    cheapest_price = p
+
+        if cheapest_price == float("inf"):
+            return None
+
+        price_f = round(float(cheapest_price), 2)
 
         segments: list[FlightSegment] = []
-        for leg in legs:
-            seg_items = leg.get("segments") or [leg]
-            for sd in seg_items:
-                airline_code = (
-                    sd.get("airlineCode") or sd.get("operatingCarrier")
-                    or sd.get("marketingCarrier") or sd.get("airline") or ""
-                )
-                airline_name = (
-                    sd.get("airlineName") or airlines_map.get(airline_code, "")
-                    or airline_code
-                )
-                fno = sd.get("flightNumber") or sd.get("flightNo") or ""
-                if airline_code and fno and not fno.startswith(airline_code):
-                    fno = f"{airline_code}{fno}"
+        for sd in seg_data:
+            carrier = sd.get("carrier") or ""
+            op_carrier = sd.get("operatingCarrier") or carrier
+            fno_raw = sd.get("flightNumber") or ""
+            fno = f"{carrier}{fno_raw}" if carrier and fno_raw and not fno_raw.startswith(carrier) else fno_raw
 
-                dep_time = (
-                    sd.get("departureTime") or sd.get("departure")
-                    or sd.get("departureDateTime") or ""
-                )
-                arr_time = (
-                    sd.get("arrivalTime") or sd.get("arrival")
-                    or sd.get("arrivalDateTime") or ""
-                )
-                dep_apt = (
-                    sd.get("departureAirportCode") or sd.get("departureCode")
-                    or sd.get("origin") or req.origin
-                )
-                arr_apt = (
-                    sd.get("arrivalAirportCode") or sd.get("arrivalCode")
-                    or sd.get("destination") or req.destination
-                )
-                dur = sd.get("durationMinutes") or sd.get("duration") or 0
-                dur_s = int(dur) * 60 if isinstance(dur, (int, float)) and dur > 0 else 0
+            dep_code = sd.get("departureCityCode") or req.origin
+            arr_code = sd.get("arrivalCityCode") or req.destination
+            dep_time = _parse_dt(sd.get("departureTime"))
+            arr_time = _parse_dt(sd.get("arrivalTime"))
 
-                segments.append(FlightSegment(
-                    airline=airline_code or airline_name,
-                    airline_name=airline_name,
-                    flight_no=fno,
-                    origin=dep_apt,
-                    destination=arr_apt,
-                    departure=_parse_dt(dep_time) if dep_time else dt,
-                    arrival=_parse_dt(arr_time) if arr_time else dt,
-                    duration_seconds=dur_s,
-                    cabin_class="economy",
-                ))
+            dur_str = sd.get("duration") or ""
+            dur_s = 0
+            if dur_str:
+                parts = dur_str.split(":")
+                if len(parts) >= 2:
+                    try:
+                        dur_s = int(parts[0]) * 3600 + int(parts[1]) * 60
+                    except (ValueError, IndexError):
+                        pass
+
+            airline_info = airlines_map.get(carrier) or {}
+            airline_name = airline_info.get("name") or carrier
+
+            segments.append(FlightSegment(
+                airline=carrier,
+                airline_name=airline_name,
+                flight_no=fno,
+                origin=dep_code,
+                destination=arr_code,
+                departure=dep_time,
+                arrival=arr_time,
+                duration_seconds=dur_s,
+                cabin_class="economy",
+            ))
 
         if not segments:
             return None
 
-        total_dur = sum(s.duration_seconds for s in segments)
-        if not total_dur and segments[0].departure != segments[-1].arrival:
-            diff = (segments[-1].arrival - segments[0].departure).total_seconds()
-            if 0 < diff < 86400 * 3:
-                total_dur = int(diff)
+        total_dur = fg.get("totalDuration") or fg.get("totalFlightDuration") or 0
+        total_dur_s = int(float(total_dur) * 60) if total_dur else sum(s.duration_seconds for s in segments)
+        stops = fg.get("stops") or max(0, len(segments) - 1)
 
         fno_key = "_".join(s.flight_no for s in segments)
         dedup = f"{req.origin}_{req.destination}_{dt:%Y%m%d}_{price_f}_{fno_key}"
@@ -439,32 +387,29 @@ class WegoConnectorClient:
         seen.add(dedup)
 
         airlines_set = list(dict.fromkeys(s.airline for s in segments if s.airline))
-        names_set = list(dict.fromkeys(
-            s.airline_name for s in segments if s.airline_name
-        ))
+        names_set = list(dict.fromkeys(s.airline_name for s in segments if s.airline_name))
 
         route = FlightRoute(
             segments=segments,
-            total_duration_seconds=total_dur,
-            stopovers=max(0, len(segments) - 1),
+            total_duration_seconds=total_dur_s,
+            stopovers=stops,
         )
 
         fid = hashlib.md5(dedup.encode()).hexdigest()[:12]
         return FlightOffer(
-            id=f"wego_{fid}",
+            id=f"wbjt_{fid}",
             price=price_f,
-            currency=currency,
-            price_formatted=f"{price_f:.2f} {currency}",
+            currency=cheapest_currency,
+            price_formatted=f"{price_f:.2f} {cheapest_currency}",
             outbound=route,
             inbound=None,
             airlines=names_set or airlines_set,
             owner_airline=airlines_set[0] if airlines_set else "",
             booking_url=(
-                f"https://www.wego.com/flights/{req.origin}/{req.destination}"
-                f"/{dt:%Y-%m-%d}?adults={req.adults or 1}"
+                f"https://www.webjet.com.au/flights/"
             ),
             is_locked=False,
-            source="wego_meta",
+            source="webjet_ota",
             source_tier="free",
         )
 
@@ -475,13 +420,13 @@ class WegoConnectorClient:
     async def _extract_from_dom(
         self, page, req: FlightSearchRequest, dt: datetime,
     ) -> list[FlightOffer]:
-        """Fallback: scrape visible fare cards from the Wego results page."""
+        """Fallback: scrape flight cards from Webjet search results DOM."""
         try:
             data = await page.evaluate("""() => {
                 const cards = document.querySelectorAll(
-                    '[class*="FareCard"], [class*="fare-card"], '
-                  + '[class*="ResultCard"], [class*="result-card"], '
-                  + '[data-testid*="fare"], [data-testid*="result"]'
+                    '[class*="flight-result"], [class*="FlightResult"], '
+                  + '[class*="result-card"], [class*="ResultCard"], '
+                  + '[data-testid*="flight"], [data-testid*="result"]'
                 );
                 const out = [];
                 cards.forEach(c => {
@@ -489,19 +434,15 @@ class WegoConnectorClient:
                         '[class*="price"], [class*="Price"], [data-testid*="price"]'
                     );
                     const a = c.querySelector(
-                        '[class*="airline"], [class*="Airline"], [data-testid*="airline"]'
+                        '[class*="airline"], [class*="Airline"], [class*="carrier"]'
                     );
                     const d = c.querySelector(
                         '[class*="duration"], [class*="Duration"]'
-                    );
-                    const stops = c.querySelector(
-                        '[class*="stop"], [class*="Stop"]'
                     );
                     if (p) out.push({
                         price: p.textContent.trim(),
                         airline: a ? a.textContent.trim() : '',
                         duration: d ? d.textContent.trim() : '',
-                        stops: stops ? stops.textContent.trim() : '',
                     });
                 });
                 return out;
@@ -534,37 +475,36 @@ class WegoConnectorClient:
                 route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
                 fid = hashlib.md5(dedup.encode()).hexdigest()[:12]
                 offers.append(FlightOffer(
-                    id=f"wego_{fid}",
+                    id=f"wbjt_{fid}",
                     price=price_f,
-                    currency="USD",
-                    price_formatted=f"{price_f:.2f} USD",
+                    currency="AUD",
+                    price_formatted=f"{price_f:.2f} AUD",
                     outbound=route,
                     inbound=None,
                     airlines=[airline],
                     owner_airline="",
                     booking_url=(
-                        f"https://www.wego.com/flights/{req.origin}"
-                        f"/{req.destination}/{dt:%Y-%m-%d}"
+                        f"https://www.webjet.com.au/flights/"
                     ),
                     is_locked=False,
-                    source="wego_meta",
+                    source="webjet_ota",
                     source_tier="free",
                 ))
             return offers
         except Exception as e:
-            logger.debug("WEGO: DOM extraction failed: %s", e)
+            logger.debug("WBJT: DOM extraction failed: %s", e)
             return []
 
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"wego{req.origin}{req.destination}{req.date_from}".encode()
+            f"wbjt{req.origin}{req.destination}{req.date_from}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,
             destination=req.destination,
-            currency="USD",
+            currency="AUD",
             offers=[],
             total_results=0,
         )

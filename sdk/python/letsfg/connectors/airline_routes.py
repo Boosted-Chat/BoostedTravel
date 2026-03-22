@@ -735,6 +735,8 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
     },
     # ── Link Airways (Playwright ASP.NET — Australian regional) ──
     "linkairways": {"AU"},
+    # ── PNG Air (VARS PSS — PNG domestic) ──
+    "pngair": {"PG"},
     # ── I Want That Flight (AU aggregator — domestic + international from AU) ──
     "iwantthatflight": {
         "AU", "NZ", "FJ", "NC", "PF", "PG", "VU", "WS", "TO",
@@ -834,6 +836,39 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "FR", "IT", "PT", "DE", "GB", "NL", "AT", "GR",
         "US",
         "AR", "CL", "BR",
+    },
+    "qatar": {
+        "QA",
+        "AE", "BH", "KW", "OM", "SA", "EG", "JO", "LB", "IQ",
+        "GB", "FR", "DE", "IT", "ES", "CH", "NL", "GR", "TR",
+        "US", "CA",
+        "IN", "PK", "BD", "LK", "TH", "MY", "SG", "ID", "PH",
+        "CN", "JP", "KR", "AU", "NZ",
+        "KE", "TZ", "ZA", "NG", "ET",
+        "BR", "MV", "SC", "KZ", "HK",
+    },
+    "aircalin": {
+        "NC",
+        "AU", "NZ", "JP", "FJ", "VU", "WF", "PF",
+    },
+    "traveloka": {
+        "ID", "SG", "TH", "MY", "VN", "PH", "AU", "JP", "KR", "IN",
+        "HK", "TW", "CN", "MM", "KH", "LA", "BN",
+    },
+    "wego": {
+        "AE", "SA", "QA", "KW", "BH", "OM", "JO", "EG", "LB",
+        "IN", "PK", "BD", "LK", "ID", "SG", "TH", "MY", "VN", "PH",
+        "AU", "NZ", "JP", "KR", "HK", "TW", "CN",
+        "KE", "NG", "ZA", "TR", "GB", "DE", "FR",
+    },
+    "webjet": {
+        "AU", "NZ", "FJ", "NC", "VU", "PG", "WS", "TO",
+        "SG", "TH", "ID", "MY", "PH", "VN", "JP", "KR", "IN",
+        "US", "GB", "AE", "ZA", "HK", "CN", "TW",
+    },
+    "tiket": {
+        "ID", "SG", "TH", "MY", "VN", "PH", "AU",
+        "JP", "KR", "IN", "HK", "TW", "CN",
     },
 }
 
