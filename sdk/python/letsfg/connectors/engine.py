@@ -172,6 +172,10 @@ from .tiket import TiketConnectorClient
 from .tripcom import TripcomConnectorClient
 from .cleartrip import CleartripConnectorClient
 from .edreams import EdreamsConnectorClient
+from .serpapi_google import SerpApiGoogleConnectorClient
+from .despegar import DespegarConnectorClient
+from .opodo import OpodoConnectorClient
+from .momondo import MomondoConnectorClient
 from .iwantthatflight import IWantThatFlightConnectorClient
 from .airniugini import AirNiuginiConnectorClient
 from .linkairways import LinkAirwaysConnectorClient
@@ -230,6 +234,8 @@ _BROWSER_SOURCES: set[str] = {
     "tiket_ota",
     "edreams_ota",
     "tripcom_ota",
+    "opodo_ota",
+    "momondo_meta",
 }
 
 
@@ -426,6 +432,10 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("tripcom_ota", TripcomConnectorClient, 55.0),
     ("cleartrip_ota", CleartripConnectorClient, 55.0),
     ("edreams_ota", EdreamsConnectorClient, 55.0),
+    ("despegar_ota", DespegarConnectorClient, 25.0),
+    ("opodo_ota", OpodoConnectorClient, 55.0),
+    ("momondo_meta", MomondoConnectorClient, 55.0),
+    ("serpapi_google", SerpApiGoogleConnectorClient, 30.0),
 ]
 
 
