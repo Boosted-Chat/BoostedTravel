@@ -6,7 +6,7 @@ LetsFG is available as a Python SDK, JavaScript SDK, MCP server, and remote MCP 
 
 | Package | Install | What it is | API Key Required? |
 |---------|---------|------------|-------------------|
-| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 140 local airline connectors | No (local search). Yes (cloud search, unlock, book) |
+| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 180 local airline connectors | No (local search). Yes (cloud search, unlock, book) |
 | **JS/TS SDK + CLI** | `npm install -g letsfg` | SDK + `letsfg` CLI command | Yes |
 | **MCP Server** | `npx letsfg-mcp` | Model Context Protocol for AI agents | No (local search). Yes (cloud search, unlock, book) |
 | **Remote MCP** | `https://api.letsfg.co/mcp` | Streamable HTTP — no install needed | Yes |
@@ -23,7 +23,7 @@ pip install letsfg
 Provides:
 
 - `LetsFG` client class with `search()`, `unlock()`, `book()`, `me()`, `resolve_location()`, `setup_payment()`
-- **140 local airline connectors** — run directly on your machine (Ryanair, Wizz Air, EasyJet, Norwegian, AirAsia, IndiGo, Qatar Airways, LATAM, Finnair, and 130+ more)
+- **180 local airline connectors** — run directly on your machine (Ryanair, Wizz Air, EasyJet, Norwegian, AirAsia, IndiGo, Qatar Airways, LATAM, Finnair, and 170+ more)
 - `search_local()` — free local-only search, no API key needed
 - `get_system_profile()` — detect system RAM/CPU and recommended concurrency
 - `configure_max_browsers(n)` — set max concurrent browser instances (1–32)

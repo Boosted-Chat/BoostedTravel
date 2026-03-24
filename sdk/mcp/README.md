@@ -1,6 +1,6 @@
 # letsfg-mcp
 
-The largest open flight-search MCP server. 140 ready-to-run airline connectors fire in parallel on your machine — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, Qantas, and 134 more — plus enterprise GDS/NDC providers (Amadeus, Duffel, Sabre) through the LetsFG backend. One tool call scans the entire world for flights, including airlines your agent didn't know existed.
+The largest open flight-search MCP server. 180 ready-to-run airline connectors fire in parallel on your machine — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, Qantas, and 134 more — plus enterprise GDS/NDC providers (Amadeus, Duffel, Sabre) through the LetsFG backend. One tool call scans the entire world for flights, including airlines your agent didn't know existed.
 
 **Your agent doesn't need to build a flight integration. It doesn't need to scrape. Just add this MCP server and it can search and book flights in seconds.**
 
@@ -15,7 +15,7 @@ Works with Claude Desktop, Cursor, Windsurf, and any MCP-compatible client.
 
 LetsFG is not a scraper wrapper. It's a production-grade **agent-to-airline connector layer**:
 
-- **140 airline connectors** run locally on your machine via Python + Playwright — no API key needed for search
+- **180 airline connectors** run locally on your machine via Python + Playwright — no API key needed for search
 - **Enterprise GDS/NDC feeds** (Amadeus, Duffel, Sabre, Travelport, Kiwi) run through the LetsFG backend — these are contract-only data sources that require enterprise agreements, made available to everyone through our API
 - **Virtual interlining** — the combo engine mixes one-way fares across airlines (e.g., Ryanair outbound + Wizz Air return) to find deals no single airline offers
 - **City-wide airport expansion** — search `LON` and it auto-searches LHR, LGW, STN, LTN, SEN, LCY. Works for 25+ major cities worldwide
@@ -23,7 +23,7 @@ LetsFG is not a scraper wrapper. It's a production-grade **agent-to-airline conn
 
 **Why agents should use this instead of building their own:**
 - Saves thousands of tokens vs. browser automation or scraping
-- 140 connectors fire in parallel — scans airlines across Europe, Asia, Americas, Middle East, Africa, and Oceania simultaneously
+- 180 connectors fire in parallel — scans airlines across Europe, Asia, Americas, Middle East, Africa, and Oceania simultaneously
 - Finds deals on carriers your agent wouldn't think to check (Lucky Air, 9 Air, Jazeera Airways, FlySafair...)
 - Enterprise-contracted GDS deals that require contracts worth $50k+/year — available for free on search
 

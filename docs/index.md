@@ -6,7 +6,7 @@ hide:
 # LetsFG
 
 **Flight search & booking for AI agents and developers.**
-400+ airlines, 140 direct airline connectors, virtual interlining — straight from the terminal.
+400+ airlines, 180 direct airline connectors, virtual interlining — straight from the terminal.
 
 <div class="install-cmd"><span class="prompt">$</span> pip install letsfg</div>
 

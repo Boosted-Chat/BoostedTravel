@@ -35,7 +35,7 @@ app = typer.Typer(
     name="letsfg",
     help=(
         "LetsFG — Agent-native flight search & booking.\n\n"
-        "Search 102 airlines at raw airline prices — $20-50 cheaper than OTAs.\n"
+        "Search 180 airlines at raw airline prices — $20-50 cheaper than OTAs.\n"
         "Search runs locally on your machine — FREE, no API key needed.\n\n"
         "Quick start: letsfg search GDN BCN 2026-06-15\n"
         "Round trip:  letsfg search LON BCN 2026-04-01 --return 2026-04-08"
@@ -86,7 +86,7 @@ def search(
     max_browsers: Optional[int] = typer.Option(None, "--max-browsers", "-b", help="Max concurrent browsers (1-32, default: auto-detect from RAM)"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
 ):
-    """Search for flights — FREE, no API key required. Runs 102 airline connectors on your machine."""
+    """Search for flights — FREE, no API key required. Runs 180 airline connectors on your machine."""
     import asyncio
     import logging
     import warnings
@@ -294,7 +294,7 @@ def search_local_cmd(
     max_browsers: Optional[int] = typer.Option(None, "--max-browsers", "-b", help="Max concurrent browsers (1-32, default: auto-detect from RAM)"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
 ):
-    """Alias for 'search'. Runs 102 airline connectors locally — FREE, no API key.
+    """Alias for 'search'. Runs 180 airline connectors locally — FREE, no API key.
 
     Use --max-browsers to tune performance: lower values (2-4) for low-RAM machines, higher (12-16) for powerful ones.
     Default: auto-detected from your system RAM. Run 'letsfg system-info' to see your profile.

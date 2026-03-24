@@ -73,7 +73,7 @@ letsfg search-local LON BCN 2026-04-01 --cabin M --json
 letsfg search-local LHR BCN 2026-04-15 --max-browsers 4
 ```
 
-Local search queries 140 airline websites directly. No API key needed — install and search immediately.
+Local search queries 180 airline websites directly. No API key needed — install and search immediately.
 
 ### Basic Search
 

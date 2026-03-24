@@ -192,7 +192,7 @@ for (const offer of result.offers) {
 
 ### Searching Multiple Sources in Parallel
 
-LetsFG's backend already queries all GDS/NDC sources in parallel (Amadeus, Duffel, Sabre, Kiwi, and 140 airline connectors). A single `search()` call covers all sources. However, you can parallelize **multiple searches** at the application level:
+LetsFG's backend already queries all GDS/NDC sources in parallel (Amadeus, Duffel, Sabre, Kiwi, and 180 airline connectors). A single `search()` call covers all sources. However, you can parallelize **multiple searches** at the application level:
 
 ```typescript
 import LetsFG from "letsfg";
@@ -235,7 +235,7 @@ LetsFG aggregates from multiple distribution channels:
 |------------|------------|-----------------|
 | **GDS** (Global Distribution System) | Traditional airline inventory systems | Most legacy carriers (BA, Lufthansa, Delta, United) |
 | **NDC** (New Distribution Capability) | Modern direct-connect API standard | Airlines with NDC feeds (Vueling, Condor, Air Canada) |
-| **LCC Direct** | LetsFG's own airline connectors | 140 airline connectors (Ryanair, EasyJet, Spirit, Southwest, Qatar, LATAM) |
+| **LCC Direct** | LetsFG's own airline connectors | 180 airline connectors (Ryanair, EasyJet, Spirit, Southwest, Qatar, LATAM) |
 | **Aggregators** | Meta-search APIs | Kiwi.com (covers 800+ airlines) |
 
 A single `search()` call queries **all available sources** and returns merged, deduplicated results. You don't need to specify which source to query.
