@@ -708,6 +708,39 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "EG", "JO", "TZ", "KE", "ET",
         "CN",
     },
+    # ── Azerbaijan Airlines (EveryMundo sputnik — AZAL, BAK hub) ──
+    "azerbaijanairlines": {
+        "AZ", "GE", "TR", "RU",
+        "AE", "IL", "KZ", "UZ",
+        "IN", "PK",
+        "GB", "FR",
+        "ME",
+    },
+    # ── SriLankan Airlines (EveryMundo sputnik — CMB hub) ──
+    "srilankan": {
+        "LK",
+        "IN", "BD", "PK", "MV",
+        "AE", "BH", "KW", "SA", "QA", "OM",
+        "SG", "MY", "TH", "ID", "CN", "JP", "KR",
+        "GB", "FR", "DE", "IT",
+        "AU",
+        "US",
+    },
+    # ── flyadeal (EveryMundo sputnik — Saudi LCC, JED/RUH hubs) ──
+    "flyadeal": {
+        "SA",
+        "AE", "BH", "KW", "JO", "EG",
+        "TR",
+        "PK", "IN", "BD",
+    },
+    # ── Air Mauritius (EveryMundo sputnik — MRU hub) ──
+    "airmauritius": {
+        "MU",
+        "ZA", "KE", "MG", "RE",
+        "IN", "LK",
+        "SG", "MY", "AU",
+        "GB", "FR", "DE", "CH",
+    },
     # ── EVA Air (EveryMundo __NEXT_DATA__ — Star Alliance, TPE hub) ──
     "evaair": {
         "TW", "JP", "KR", "CN", "HK", "MO",

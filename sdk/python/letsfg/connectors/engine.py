@@ -134,6 +134,8 @@ from .tap import TapConnectorClient
 from .wingo import WingoConnectorClient
 from .klm import KlmConnectorClient
 from .airfrance import AirfranceConnectorClient
+from .azerbaijanairlines import AzerbaijanairlinesConnectorClient
+from .srilankan import SrilankanConnectorClient
 from .iberia import IberiaConnectorClient
 from .iberiaexpress import IberiaExpressConnectorClient
 from .virginatlantic import VirginAtlanticConnectorClient
@@ -145,6 +147,8 @@ from .discover import DiscoverConnectorClient
 from .elal import ElAlConnectorClient
 from .saudia import SaudiaConnectorClient
 from .omanair import OmanairConnectorClient
+from .flyadeal import FlyadealConnectorClient
+from .airmauritius import AirmauritiusConnectorClient
 from .britishairways import BritishAirwaysConnectorClient
 from .evaair import EvaAirConnectorClient
 from .rex import RexConnectorClient
@@ -416,6 +420,14 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("saudia_direct", SaudiaConnectorClient, 55.0),
     # ── Oman Air (EveryMundo sputnik API — no browser) ──
     ("omanair_direct", OmanairConnectorClient, 25.0),
+    # ── Azerbaijan Airlines (EveryMundo sputnik API — no browser) ──
+    ("azerbaijanairlines_direct", AzerbaijanairlinesConnectorClient, 25.0),
+    # ── SriLankan Airlines (EveryMundo sputnik API — no browser) ──
+    ("srilankan_direct", SrilankanConnectorClient, 25.0),
+    # ── flyadeal (EveryMundo sputnik API — no browser) ──
+    ("flyadeal_direct", FlyadealConnectorClient, 25.0),
+    # ── Air Mauritius (EveryMundo sputnik API — no browser) ──
+    ("airmauritius_direct", AirmauritiusConnectorClient, 25.0),
     # ── British Airways (SOLR pricing feed via curl_cffi) ──
     ("britishairways_direct", BritishAirwaysConnectorClient, 25.0),
     # ── EVA Air (EveryMundo __NEXT_DATA__ via curl_cffi) ──
