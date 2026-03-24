@@ -3,10 +3,10 @@
  * LetsFG MCP Server — Model Context Protocol integration.
  *
  * Two search modes:
- *   1. Cloud search (default) — queries the LetsFG Cloud Run backend which runs 75+
- *      airline connectors on scalable infrastructure. No local Python needed.
- *   2. Local search (LETSFG_SEARCH_MODE=local) — spawns Python subprocess on your
- *      machine. Requires: pip install letsfg && playwright install chromium
+ *   1. Local search (default) — spawns Python subprocess on your machine to run
+ *      140+ airline connectors locally. Requires: pip install letsfg && playwright install chromium
+ *   2. Cloud search (LETSFG_SEARCH_MODE=cloud) — queries the LetsFG backend instead of running
+ *      connectors locally. Useful if Python/Playwright is unavailable. Requires API key.
  *
  * Uses backend API for unlock/book/payment operations.
  *
@@ -34,9 +34,9 @@ import { spawn } from 'child_process';
 const BASE_URL = (process.env.LETSFG_BASE_URL || process.env.BOOSTEDTRAVEL_BASE_URL || 'https://api.letsfg.co').replace(/\/$/, '');
 const API_KEY = process.env.LETSFG_API_KEY || process.env.BOOSTEDTRAVEL_API_KEY || '';
 const PYTHON = process.env.LETSFG_PYTHON || process.env.BOOSTEDTRAVEL_PYTHON || 'python3';
-const SEARCH_MODE = (process.env.LETSFG_SEARCH_MODE || 'cloud').toLowerCase(); // 'cloud' or 'local'
+const SEARCH_MODE = (process.env.LETSFG_SEARCH_MODE || 'local').toLowerCase(); // 'local' or 'cloud'
 const CLOUD_SEARCH_URL = (process.env.LETSFG_CLOUD_SEARCH_URL || 'https://workflow-engine-876385716101.us-central1.run.app').replace(/\/$/, '');
-const VERSION = '1.0.4';
+const VERSION = '1.2.1';
 
 // ── Cloud Search ────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ async function searchCloud(params: Record<string, unknown>): Promise<Record<stri
   }
 }
 
-// ── Local Python Search (fallback) ──────────────────────────────────────
+// ── Local Python Search (default) ───────────────────────────────────────
 
 function searchLocal(params: Record<string, unknown>): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
@@ -359,10 +359,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       if (args.cabin_class) params.cabin_class = args.cabin_class;
       if (args.max_browsers) params.max_browsers = args.max_browsers;
 
-      // Cloud search (default) or local search (fallback)
-      const result = SEARCH_MODE === 'local'
-        ? await searchLocal(params) as Record<string, unknown>
-        : await searchCloud(params) as Record<string, unknown>;
+      // Local search (default) or cloud search (opt-in)
+      const result = SEARCH_MODE === 'cloud'
+        ? await searchCloud(params) as Record<string, unknown>
+        : await searchLocal(params) as Record<string, unknown>;
 
       if (result.error) return JSON.stringify(result, null, 2);
 
@@ -370,7 +370,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       const rateLimitInfo = result.rate_limit as Record<string, unknown> | undefined;
       const summary: Record<string, unknown> = {
         total_offers: offers.length,
-        source: SEARCH_MODE === 'local' ? 'local (75 airline connectors)' : 'cloud (75+ airline connectors + GDS/NDC)',
+        source: SEARCH_MODE === 'cloud' ? 'cloud (75+ airline connectors + GDS/NDC)' : 'local (140+ airline connectors on your machine)',
         offers: offers.map(o => {
           // Handle both compact DM format and rich MCP format
           const hasRichFormat = o.outbound !== undefined;
