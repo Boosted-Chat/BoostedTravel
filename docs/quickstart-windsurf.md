@@ -74,7 +74,7 @@ No API key needed for search. Works immediately.
 
 > Find flights from Paris to Barcelona for Easter.
 
-No API key needed. Searches 75+ airline connectors via cloud backend. Rate limited to 10 searches/min.
+No API key needed. Searches 195+ airline connectors via cloud backend. Rate limited to 10 searches/min.
 
 ### 4. (Optional) Add API key for unlock/book
 

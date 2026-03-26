@@ -4,7 +4,7 @@
  *
  * Two search modes:
  *   1. Local search (default) — spawns Python subprocess on your machine to run
- *      180+ airline connectors locally. Requires: pip install letsfg && playwright install chromium
+ *      195 airline connectors locally. Requires: pip install letsfg && playwright install chromium
  *   2. Cloud search (LETSFG_SEARCH_MODE=cloud) — queries the LetsFG backend instead of running
  *      connectors locally. Useful if Python/Playwright is unavailable. Requires API key.
  *
@@ -129,8 +129,8 @@ const TOOLS = [
     name: 'search_flights',
     description:
       'Search live flight availability and prices across 400+ airlines worldwide. ' +
-      'Queries 180+ airline connectors (Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, ' +
-      'Norwegian, Spring Airlines, Lucky Air, and 170+ more) plus enterprise GDS/NDC sources ' +
+      'Queries 195 airline connectors (Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, ' +
+      'Norwegian, Spring Airlines, Lucky Air, and 185+ more) plus enterprise GDS/NDC sources ' +
       '(Amadeus, Duffel, Sabre, Travelport) — completely FREE.\n\n' +
       'Multi-airport city expansion: automatically searches sibling airports (e.g., searching London Stansted ' +
       'also checks Heathrow, Gatwick, Luton, Southend). Works for 25+ major cities worldwide.\n\n' +
@@ -370,7 +370,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       const rateLimitInfo = result.rate_limit as Record<string, unknown> | undefined;
       const summary: Record<string, unknown> = {
         total_offers: offers.length,
-        source: SEARCH_MODE === 'cloud' ? 'cloud (75+ airline connectors + GDS/NDC)' : 'local (180+ airline connectors on your machine)',
+        source: SEARCH_MODE === 'cloud' ? 'cloud (195 airline connectors + GDS/NDC)' : 'local (195 airline connectors on your machine)',
         offers: offers.map(o => {
           // Handle both compact DM format and rich MCP format
           const hasRichFormat = o.outbound !== undefined;

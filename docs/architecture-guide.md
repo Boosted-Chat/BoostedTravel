@@ -13,7 +13,7 @@ When you call `search_local()` or `bt.search()`, LetsFG fires **all** relevant d
 ├──────────────────────────────────────────────────────────────────────┤
 │                      MultiProvider Engine                            │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐  │
-│  │ Cloud Backend │  │ Fast Connectors│ │  180 airline connectors   │  │
+│  │ Cloud Backend │  │ Fast Connectors│ │  195 airline connectors   │  │
 │  │ (Amadeus,     │  │ (Ryanair,     │  │  (EasyJet, Spirit,       │  │
 │  │  Duffel,      │  │  Wizzair,     │  │   Southwest, IndiGo,     │  │
 │  │  Sabre, etc.) │  │  Kiwi.com)    │  │   Delta, American, ...)  │  │
@@ -68,7 +68,7 @@ for i, result in enumerate(results):
         all_offers.extend(result.offers)
 ```
 
-**This means:** If 10 out of 150+ connectors fail (timeouts, bot detection, API errors), you still get results from the other 92. The search never fails completely unless *every* source fails.
+**This means:** If 10 out of 195 connectors fail (timeouts, bot detection, API errors), you still get results from the other 92. The search never fails completely unless *every* source fails.
 
 ### Route-Based Filtering
 
@@ -80,7 +80,7 @@ filtered = get_relevant_connectors(origin, destination, all_connectors)
 # BOM → DEL: runs ~8 India connectors, skips EU/US airlines
 ```
 
-Each connector declares which countries it serves. The engine checks origin/destination countries against this registry and only runs connectors that could possibly have flights for the requested route. This typically reduces the number of active connectors from 150+ to 5-20, saving significant system resources.
+Each connector declares which countries it serves. The engine checks origin/destination countries against this registry and only runs connectors that could possibly have flights for the requested route. This typically reduces the number of active connectors from 195 to 5-20, saving significant system resources.
 
 If the engine can't determine the country for an airport code (unknown IATA), it falls back to running **all** connectors as a safety measure.
 
@@ -587,7 +587,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # You'll see output like:
-# INFO: Route filter: LHR->BCN -- skipped 120/150 irrelevant connectors
+# INFO: Route filter: LHR->BCN -- skipped 170/195 irrelevant connectors
 # INFO: Launching 23 provider tasks (20 normal + 3 combo) for LHR->BCN
 # INFO: ryanair_direct: 8 offers in 0.9s
 # WARNING: Provider easyjet_direct failed: TimeoutError

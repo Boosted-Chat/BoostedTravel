@@ -78,7 +78,7 @@ Create `.cursor/mcp.json` in your project root:
 
 > Find cheap flights from London to NYC next month.
 
-No API key needed. Searches 75+ airline connectors via cloud backend. Rate limited to 10 searches/min.
+No API key needed. Searches 195+ airline connectors via cloud backend. Rate limited to 10 searches/min.
 
 ### 4. (Optional) Add API key for unlock/book
 

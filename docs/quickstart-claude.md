@@ -87,7 +87,7 @@ Open `Settings → Developer → Edit Config`:
 
 > Find flights from London to Barcelona next Friday
 
-No API key needed. Searches 75+ airline connectors via cloud backend. Rate limited to 10 searches/min.
+No API key needed. Searches 195+ airline connectors via cloud backend. Rate limited to 10 searches/min.
 
 ### 4. (Optional) Add API key for unlock/book
 

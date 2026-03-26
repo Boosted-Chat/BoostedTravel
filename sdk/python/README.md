@@ -2,14 +2,14 @@
 
 <!-- mcp-name: io.github.Efistoffeles/letsfg -->
 
-Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 180 direct airline connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents — works with OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible client.
+Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 195 direct airline connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents — works with OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible client.
 
 > 🎥 **[Watch the demo](https://github.com/LetsFG/LetsFG)** — side-by-side comparison of default agent search vs LetsFG CLI.
 
 ## Install
 
 ```bash
-pip install letsfg           # SDK + 180 airline connectors
+pip install letsfg           # SDK + 195 airline connectors
 pip install letsfg[cli]      # SDK + CLI (adds typer, rich)
 ```
 

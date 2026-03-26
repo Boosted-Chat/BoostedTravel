@@ -74,7 +74,7 @@ letsfg book off_xxx -p '{"id":"pas_xxx","given_name":"John",...}' -e john@exampl
 
 ### `searchLocal(origin, destination, dateFrom, options?)`
 
-Search 150+ airline connectors locally (no API key needed). Requires Python + `letsfg` installed.
+Search 195 airline connectors locally (no API key needed). Requires Python + `letsfg` installed.
 
 ```typescript
 import { searchLocal } from 'letsfg';

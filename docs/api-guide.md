@@ -6,12 +6,12 @@ LetsFG offers two search modes:
 
 | Mode | Command / Method | API Key | Coverage | Cost |
 |------|-----------------|---------|----------|------|
-| **Local search** | `search-local` / `search_local()` | **Not needed** | 180 airline connectors | Free |
+| **Local search** | `search-local` / `search_local()` | **Not needed** | 195 airline connectors | Free |
 | **Full search** | `search` / `bt.search()` | Required | 400+ airlines (GDS/NDC) | Free (star repo) |
 
 ### Local Search (No API Key)
 
-Search 180 airline websites directly — completely free, no registration required:
+Search 195 airline websites directly — completely free, no registration required:
 
 ```python
 from letsfg.local import search_local
