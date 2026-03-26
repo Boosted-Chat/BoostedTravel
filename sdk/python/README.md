@@ -1,19 +1,29 @@
-# LetsFG — Agent-Native Flight Search & Booking
+# LetsFG — Your AI agent just learned to book flights.
 
 <!-- mcp-name: io.github.Efistoffeles/letsfg -->
 
-Search 400+ airlines at raw airline prices — **$20-50 cheaper** than Booking.com, Kayak, and other OTAs. 195 direct airline connectors run locally, plus GDS/NDC providers via cloud API. Built for autonomous AI agents — works with OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible client.
+**195 airlines. Real prices. One function call.** Search 400+ airlines at raw airline prices — **$20–$50 cheaper** than Booking.com, Kayak, and other OTAs. 195 direct airline connectors run locally, plus enterprise GDS/NDC providers via cloud API.
 
-> 🎥 **[Watch the demo](https://github.com/LetsFG/LetsFG)** — side-by-side comparison of default agent search vs LetsFG CLI.
+> **Don't want to install anything?** [**Try it on Messenger**](https://m.me/61579557368989) — search flights instantly, no setup needed.
+
+[![GitHub stars](https://img.shields.io/github/stars/LetsFG/LetsFG?style=social)](https://github.com/LetsFG/LetsFG)
+[![PyPI](https://img.shields.io/pypi/v/letsfg)](https://pypi.org/project/letsfg/)
 
 ## Install
 
 ```bash
-pip install letsfg           # SDK + 195 airline connectors
-pip install letsfg[cli]      # SDK + CLI (adds typer, rich)
+pip install letsfg
 ```
 
-**Dependencies:** `pydantic`, `httpx`, `playwright`, `beautifulsoup4`, `lxml`. The SDK client itself uses stdlib `urllib` for API calls (zero deps), while the local connectors need the above for browser automation.
+Search flights immediately — no account, no API key:
+
+```bash
+letsfg search-local LHR BCN 2026-06-15
+```
+
+That fires 195 airline connectors on your machine. **Free. Unlimited. Zero setup.**
+
+> ⭐ **[Star the repo](https://github.com/LetsFG/LetsFG) → register → unlimited access forever.** First 1,000 stars only.
 
 ## Authentication
 
@@ -274,9 +284,9 @@ if best:
     booking = bt.book(offer_id=unlocked.offer_id, passengers=[...], contact_email="...")
 ```
 
-## Local LCC Search (No API Key)
+## Local Search (No API Key)
 
-The SDK includes 75 connectors for airlines that run directly on your machine. No API key, no backend, completely free:
+The SDK includes 195 connectors for airlines that run directly on your machine. No API key, no backend, completely free:
 
 ```python
 from letsfg.local import search_local
@@ -290,10 +300,6 @@ result = await search_local("GDN", "BCN", "2026-06-15", max_browsers=4)
 ```
 
 The full search (`bt.search()`) runs both local connectors and cloud providers simultaneously and merges results.
-
-### Supported Airlines (75)
-
-Ryanair, Wizz Air, EasyJet, Norwegian, Vueling, Eurowings, Transavia, Pegasus, Turkish Airlines, Southwest, AirAsia, IndiGo, SpiceJet, Akasa Air, Air India Express, VietJet, Cebu Pacific, Scoot, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, flydubai, Air Arabia, flynas, Salam Air, Emirates, Etihad, Qatar Airways, Condor, SunExpress, Volotea, Smartwings, Jet2, LOT Polish Airlines, Frontier, Volaris, VivaAerobus, Allegiant, JetBlue, Flair, GOL, Azul, JetSmart, Flybondi, Porter, WestJet, LATAM, Copa, Avianca, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR, Air Peace, FlySafair, Avelo, Breeze, Sun Country, Alaska Airlines, Hawaiian Airlines, American Airlines, United Airlines, Delta Air Lines, Singapore Airlines, Cathay Pacific, Malaysian Airlines, Thai Airways, Korean Air, ANA, US-Bangla, Biman Bangladesh, Kiwi.com
 
 ## Quick Start (CLI)
 
@@ -346,7 +352,7 @@ letsfg locations "Berlin"
 | `locations` | Resolve city name to IATA codes | FREE |
 | `unlock` | Unlock offer (confirms price, reserves 30min) | FREE |
 | `book` | Book flight (creates real airline PNR) | Ticket price |
-| `search-local` | Search 73 local airline connectors | FREE |
+| `search-local` | Search 195 local airline connectors | FREE |
 | `system-info` | Show system resources & concurrency tier | FREE |
 | `register` | Register new agent, get API key | FREE |
 | `setup-payment` | Attach payment card (payment token) | FREE |
@@ -410,18 +416,17 @@ Priority: env var > explicit config/flag > auto-detect.
 
 Prices are cheaper because we connect directly to airlines — no OTA markup.
 
-### City-Wide Airport Expansion
+---
 
-Search a city code and all airports in that city are searched automatically. `LON` → LHR, LGW, STN, LTN, SEN, LCY. `NYC` → JFK, EWR, LGA. Works for 25+ major cities.
+## Also Available As
 
-## For Agents
+- **MCP Server**: `npx letsfg-mcp` — [npm](https://www.npmjs.com/package/letsfg-mcp)
+- **JS/TS SDK**: `npm install letsfg` — [npm](https://www.npmjs.com/package/letsfg)
+- **Try without installing**: [Message us on Messenger](https://m.me/61579557368989)
+- **GitHub**: [LetsFG/LetsFG](https://github.com/LetsFG/LetsFG)
 
-The SDK client uses **only Python stdlib** (`urllib`) for API calls — safe for sandboxed environments. The local LCC connectors additionally require `playwright`, `httpx`, and `beautifulsoup4` for browser automation.
+> ⭐ **[Star the repo](https://github.com/LetsFG/LetsFG)** to unlock free access. First 1,000 stars only.
 
-The `--json` flag on every CLI command outputs structured JSON for easy parsing by agents.
-### Virtual Interlining
-
-The combo engine builds cross-airline round-trips by combining one-way fares from different carriers. A Ryanair outbound + Wizz Air return can save 30-50% vs booking a round-trip on either airline alone.
 ## License
 
 MIT

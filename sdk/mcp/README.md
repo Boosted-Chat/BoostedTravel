@@ -1,13 +1,16 @@
-# letsfg-mcp
+# letsfg-mcp — Your AI agent just learned to book flights.
 
-The largest open flight-search MCP server. 180 ready-to-run airline connectors fire in parallel on your machine — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, Qantas, and 134 more — plus enterprise GDS/NDC providers (Amadeus, Duffel, Sabre) through the LetsFG backend. One tool call scans the entire world for flights, including airlines your agent didn't know existed.
+**195 airlines. Real prices. One tool call.** The largest open flight-search MCP server. 195 ready-to-run airline connectors fire in parallel on your machine — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, Qantas, and 189 more — plus enterprise GDS/NDC providers (Amadeus, Duffel, Sabre) through the LetsFG backend.
 
-**Your agent doesn't need to build a flight integration. It doesn't need to scrape. Just add this MCP server and it can search and book flights in seconds.**
+**Your agent doesn't need to build a flight integration. Just add this MCP server.**
 
-Works with Claude Desktop, Cursor, Windsurf, and any MCP-compatible client.
+> **Don't want to install anything?** [**Try it on Messenger**](https://m.me/61579557368989) — search flights instantly, no setup needed.
 
 [![npm](https://img.shields.io/npm/v/letsfg-mcp)](https://www.npmjs.com/package/letsfg-mcp)
+[![GitHub stars](https://img.shields.io/github/stars/LetsFG/LetsFG?style=social)](https://github.com/LetsFG/LetsFG)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+
+> ⭐ **[Star the repo](https://github.com/LetsFG/LetsFG) → register → unlimited access forever.** First 1,000 stars only.
 
 ---
 
@@ -347,7 +350,8 @@ Ensure Node.js 18+ is installed. The server communicates via stdio (stdin/stdout
 
 ---
 
-## Supported Airlines (150+ connectors)
+<details>
+<summary><strong>195 airline connectors — full list</strong></summary>
 
 | Region | Airlines |
 |--------|----------|
@@ -357,13 +361,18 @@ Ensure Node.js 18+ is installed. The server communicates via stdio (stdin/stdout
 | **Americas** | American Airlines, Delta, United, Southwest, JetBlue, Alaska Airlines, Hawaiian Airlines, Sun Country, Frontier, Volaris, VivaAerobus, Allegiant, Avelo, Breeze, Flair, GOL, Azul, JetSmart, Flybondi, Porter, WestJet, LATAM, Copa, Avianca, Air Canada, Arajet, Wingo, Sky Airline |
 | **Aggregator** | Kiwi.com (virtual interlining + LCC fallback) |
 
+</details>
+
 ---
 
 ## Also Available As
 
 - **JavaScript/TypeScript SDK + CLI**: `npm install letsfg` — [npm](https://www.npmjs.com/package/letsfg)
 - **Python SDK + CLI**: `pip install letsfg` — [PyPI](https://pypi.org/project/letsfg/)
+- **Try without installing**: [Message us on Messenger](https://m.me/61579557368989)
 - **GitHub**: [LetsFG/LetsFG](https://github.com/LetsFG/LetsFG)
+
+> ⭐ **[Star the repo](https://github.com/LetsFG/LetsFG)** to unlock free access. First 1,000 stars only.
 
 ## License
 

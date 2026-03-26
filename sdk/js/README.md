@@ -1,6 +1,13 @@
-# LetsFG — Agent-Native Flight Search & Booking (Node.js)
+# LetsFG — Your AI agent just learned to book flights. (Node.js)
 
-Search 400+ airlines at raw airline prices — **$50 cheaper** than Booking.com, Kayak, and other OTAs. Zero dependencies. Built for autonomous AI agents — works with Claude, Cursor, Windsurf, and any MCP-compatible client.
+**195 airlines. Real prices. One function call.** Search 400+ airlines at raw airline prices — **$20–$50 cheaper** than Booking.com, Kayak, and other OTAs. Zero dependencies. Built for AI agents.
+
+> **Don't want to install anything?** [**Try it on Messenger**](https://m.me/61579557368989) — search flights instantly, no setup needed.
+
+[![GitHub stars](https://img.shields.io/github/stars/LetsFG/LetsFG?style=social)](https://github.com/LetsFG/LetsFG)
+[![npm](https://img.shields.io/npm/v/letsfg)](https://www.npmjs.com/package/letsfg)
+
+> ⭐ **[Star the repo](https://github.com/LetsFG/LetsFG) → register → unlimited access forever.** First 1,000 stars only.
 
 ## Install
 
@@ -118,7 +125,10 @@ Or set the `LETSFG_MAX_BROWSERS` environment variable globally.
 
 - **MCP Server**: `npx letsfg-mcp` — [npm](https://www.npmjs.com/package/letsfg-mcp)
 - **Python SDK + CLI**: `pip install letsfg` — [PyPI](https://pypi.org/project/letsfg/)
+- **Try without installing**: [Message us on Messenger](https://m.me/61579557368989)
 - **GitHub**: [LetsFG/LetsFG](https://github.com/LetsFG/LetsFG)
+
+> ⭐ **[Star the repo](https://github.com/LetsFG/LetsFG)** to unlock free access. First 1,000 stars only.
 
 ## License
 
