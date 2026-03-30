@@ -31,6 +31,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,8 @@ class JejuAirConnectorClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout,
+                proxy=get_httpx_proxy_url(),) as client:
                 resp = await client.post(
                     _LOWFARE_URL, headers=_HEADERS, json=payload,
                 )

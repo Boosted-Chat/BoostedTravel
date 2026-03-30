@@ -53,6 +53,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, get_or_launch_cdp
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +137,11 @@ class VietJetConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             route_key = f"{req.origin}-{req.destination}"
             target_date = req.date_from.strftime("%Y-%m-%d")

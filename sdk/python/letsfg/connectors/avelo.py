@@ -38,6 +38,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +190,11 @@ class AveloConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             date_str = req.date_from.strftime("%Y-%m-%d")
             url = _DEEPLINK_TPL.format(

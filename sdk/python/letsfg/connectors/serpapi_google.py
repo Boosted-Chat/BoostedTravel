@@ -32,6 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,8 @@ class SerpApiGoogleConnectorClient:
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+            self._http = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True,
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -67,7 +69,7 @@ class SerpApiGoogleConnectorClient:
             "departure_id": req.origin,
             "arrival_id": req.destination,
             "outbound_date": req.date_from.strftime("%Y-%m-%d"),
-            "type": "2",  # one-way
+            "type": "1",  # 1=one-way, 2=round-trip
             "adults": str(req.adults or 1),
             "children": str(req.children or 0),
             "infants_in_seat": str(req.infants or 0),

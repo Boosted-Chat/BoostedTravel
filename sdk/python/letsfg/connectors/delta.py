@@ -52,6 +52,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, find_chrome, proxy_chrome_args
+from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,7 @@ _CHROME_FLAGS = [
     "--force-color-profile=srgb",
     "--metrics-recording-only",
     "--no-first-run",
+    *proxy_chrome_args(),
     "--password-store=basic",
     "--no-service-autorun",
     "--disable-search-engine-choice-screen",
@@ -163,7 +166,7 @@ async def _get_browser():
             pass
 
         # Launch real Chrome subprocess
-        from connectors.browser import find_chrome
+        from .browser import find_chrome
         chrome = find_chrome()
         os.makedirs(_USER_DATA_DIR, exist_ok=True)
 
@@ -241,6 +244,27 @@ class DeltaConnectorClient:
     async def search_flights(
         self, req: FlightSearchRequest
     ) -> FlightSearchResponse:
+        # Expand city codes (LON → LHR) — Delta form needs airport codes
+        origins = get_city_airports(req.origin)
+        if len(origins) > 1:
+            # Use first major airport (LHR for LON, JFK for NYC, etc.)
+            req = FlightSearchRequest(
+                origin=origins[0], destination=req.destination,
+                date_from=req.date_from, return_from=req.return_from,
+                adults=req.adults, children=req.children, infants=req.infants,
+                cabin_class=req.cabin_class, currency=req.currency,
+                max_stopovers=req.max_stopovers,
+            )
+        dests = get_city_airports(req.destination)
+        if len(dests) > 1:
+            req = FlightSearchRequest(
+                origin=req.origin, destination=dests[0],
+                date_from=req.date_from, return_from=req.return_from,
+                adults=req.adults, children=req.children, infants=req.infants,
+                cabin_class=req.cabin_class, currency=req.currency,
+                max_stopovers=req.max_stopovers,
+            )
+
         t0 = time.monotonic()
 
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -266,6 +290,7 @@ class DeltaConnectorClient:
         browser = await _get_browser()
         ctx = browser.contexts[0]
         page = await ctx.new_page()
+        await auto_block_if_proxied(page)
 
         # Block OneTrust / cookie consent resources
         async def _abort_route(route):

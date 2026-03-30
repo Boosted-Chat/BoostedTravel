@@ -40,7 +40,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,7 @@ async def _get_browser():
                 f"--remote-debugging-port={_CDP_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-http2",
@@ -189,6 +190,7 @@ class SmartwingsConnectorClient:
             # ── Step 1: Load homepage & pass Cloudflare ──
             logger.info("Smartwings: loading homepage for %s->%s on %s",
                         req.origin, req.destination, req.date_from)
+            await auto_block_if_proxied(page)
             await page.goto(
                 "https://www.smartwings.com/en",
                 wait_until="domcontentloaded",
@@ -315,7 +317,13 @@ class SmartwingsConnectorClient:
             return self._empty(req)
 
         finally:
-            pass  # Keep default context alive for cookie persistence
+            # Keep default context alive for cookie persistence,
+            # but navigate to blank to free page memory.
+            if page:
+                try:
+                    await page.goto("about:blank", wait_until="commit", timeout=5000)
+                except Exception:
+                    pass
 
     # ── Airport selection via data-iata click ──────────────────────────
 

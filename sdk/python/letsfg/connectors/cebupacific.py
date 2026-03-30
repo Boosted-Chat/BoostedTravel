@@ -33,6 +33,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import find_chrome, proxy_chrome_args
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ _CHROME_FLAGS = [
     "--force-color-profile=srgb",
     "--metrics-recording-only",
     "--no-first-run",
+    *proxy_chrome_args(),
     "--password-store=basic",
     "--no-service-autorun",
     "--disable-search-engine-choice-screen",

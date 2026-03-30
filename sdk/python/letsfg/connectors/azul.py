@@ -37,6 +37,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ class AzulConnectorClient:
 
         # Fresh page per search
         page = await ctx.new_page()
+        await auto_block_if_proxied(page)
 
         # Route interception: rewrite empty criteria with correct payload
         async def intercept_avail(route):

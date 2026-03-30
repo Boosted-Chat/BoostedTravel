@@ -770,3 +770,277 @@ async def cleanup_all_browsers():
         logger.info("browser.py cleanup: terminated %d browser resources", closed)
 
     return closed
+
+
+# ── Proxy helpers ───────────────────────────────────────────────────────────────
+#
+# Reads from environment:
+#   LETSFG_PROXY               — Global residential proxy URL for all connectors.
+#                                 Format: http://user:pass@host:port
+#   LETSFG_PROXY_PORT_RANGE    — Optional port range for round-robin rotation.
+#                                 Format: "10001-10100" (rotates on each request)
+
+from urllib.parse import urlparse, urlunparse
+from itertools import cycle
+
+_port_cycle: Optional[cycle] = None
+_port_cycle_lock: Optional[asyncio.Lock] = None
+
+
+def _get_port_cycle_lock() -> asyncio.Lock:
+    global _port_cycle_lock
+    if _port_cycle_lock is None:
+        _port_cycle_lock = asyncio.Lock()
+    return _port_cycle_lock
+
+
+def _parse_proxy_url(raw: str) -> Optional[dict]:
+    """Parse proxy URL into dict suitable for Playwright context."""
+    if not raw:
+        return None
+    p = urlparse(raw)
+    proxy = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+    if p.username:
+        proxy["username"] = p.username
+    if p.password:
+        proxy["password"] = p.password
+    return proxy
+
+
+def _port_range_cycle() -> Optional[cycle]:
+    """Lazily build a round-robin port iterator from LETSFG_PROXY_PORT_RANGE."""
+    global _port_cycle
+    if _port_cycle is not None:
+        return _port_cycle
+    raw = os.environ.get("LETSFG_PROXY_PORT_RANGE", "").strip()
+    if not raw:
+        return None
+    try:
+        start, end = raw.split("-")
+        ports = list(range(int(start), int(end) + 1))
+        _port_cycle = cycle(ports)
+        return _port_cycle
+    except Exception:
+        logger.warning("Invalid LETSFG_PROXY_PORT_RANGE=%r — ignoring", raw)
+        return None
+
+
+def _rotating_proxy_url() -> str:
+    """Return LETSFG_PROXY with port rotated if LETSFG_PROXY_PORT_RANGE is set."""
+    base = os.environ.get("LETSFG_PROXY", "").strip()
+    if not base:
+        return ""
+    port_cycle = _port_range_cycle()
+    if not port_cycle:
+        return base
+    p = urlparse(base)
+    port = next(port_cycle)
+    rotated = p._replace(netloc=f"{p.username}:{p.password}@{p.hostname}:{port}" if p.username else f"{p.hostname}:{port}")
+    return urlunparse(rotated)
+
+
+def get_default_proxy() -> Optional[dict]:
+    """Return the global Playwright proxy dict from ``LETSFG_PROXY``, or None."""
+    return _parse_proxy_url(_rotating_proxy_url())
+
+
+def get_default_proxy_url() -> str:
+    """Return the raw ``LETSFG_PROXY`` URL string, or empty string."""
+    return _rotating_proxy_url()
+
+
+def get_httpx_proxy_url() -> Optional[str]:
+    """Return proxy URL for httpx clients, or None."""
+    url = _rotating_proxy_url()
+    return url or None
+
+
+def get_curl_cffi_proxies() -> Optional[dict]:
+    """Return proxy dict for curl_cffi sessions, or None."""
+    url = _rotating_proxy_url()
+    if not url:
+        return None
+    return {"http": url, "https": url}
+
+
+def proxy_chrome_args() -> list[str]:
+    """Return Chrome CLI args to route traffic through the global proxy."""
+    raw = _rotating_proxy_url()
+    if not raw:
+        return []
+    p = urlparse(raw)
+    server = f"{p.scheme}://{p.hostname}:{p.port}"
+    return [f"--proxy-server={server}"]
+
+
+def proxy_is_configured() -> bool:
+    """Return True when a global proxy (``LETSFG_PROXY``) is set."""
+    return bool(os.environ.get("LETSFG_PROXY", "").strip())
+
+
+# ── Resource blocking — saves bandwidth when routing through residential proxy ──
+
+# Resource types to always block (saves ~80% bandwidth)
+_BLOCKED_RESOURCE_TYPES = frozenset({
+    "image",       # jpgs, pngs, webp, svg, etc. - huge bandwidth hog
+    "media",       # videos, audio files
+    "font",        # web fonts (woff2, ttf, etc.)
+    "websocket",   # usually telemetry/tracking sockets
+    "manifest",    # PWA manifests - not needed for scraping
+})
+
+# URL patterns to block (analytics, tracking, ads, social widgets)
+_BLOCKED_URL_PATTERNS = (
+    # Google
+    "*google-analytics.com*",
+    "*googletagmanager.com*",
+    "*googlesyndication.com*",
+    "*googleadservices.com*",
+    "*doubleclick.net*",
+    "*google.com/pagead*",
+    # Facebook
+    "*facebook.com/tr*",
+    "*facebook.net/en_US/fbevents*",
+    "*connect.facebook.net*",
+    # Other analytics
+    "*hotjar.com*",
+    "*clarity.ms*",
+    "*fullstory.com*",
+    "*mixpanel.com*",
+    "*segment.com*",
+    "*amplitude.com*",
+    "*heapanalytics.com*",
+    "*intercom.io*",
+    "*zendesk.com/embeddable*",
+    "*appsflyer.com*",
+    "*branch.io*",
+    # Ads
+    "*adsrvr.org*",
+    "*adnxs.com*",
+    "*criteo.com*",
+    "*taboola.com*",
+    "*outbrain.com*",
+    "*amazon-adsystem.com*",
+    "*ads.linkedin.com*",
+    "*ads.twitter.com*",
+    # Tracking pixels & beacons
+    "*pixel.wp.com*",
+    "*bat.bing.com*",
+    "*tr.snapchat.com*",
+    "*tiktok.com/i18n*",
+    "*cdn.mxpnl.com*",
+    # Social widgets
+    "*platform.twitter.com/widgets*",
+    "*buttons.github.io*",
+    "*addthis.com*",
+    "*sharethis.com*",
+    # Error tracking (not needed for scraping)
+    "*sentry.io*",
+    "*bugsnag.com*",
+    "*rollbar.com*",
+    # Chat widgets
+    "*drift.com*",
+    "*crisp.chat*",
+    "*tawk.to*",
+    "*livechatinc.com*",
+)
+
+
+async def _block_handler(route):
+    """Abort blocked resource types, continue others."""
+    req = route.request
+    if req.resource_type in _BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+    else:
+        await route.continue_()
+
+
+async def _aggressive_block_handler(route):
+    """Block by resource type AND URL pattern for maximum bandwidth savings."""
+    req = route.request
+    url = req.url.lower()
+    
+    # Block by resource type
+    if req.resource_type in _BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+        return
+    
+    # Block by URL pattern (analytics, tracking, ads)
+    for pattern in _BLOCKED_URL_PATTERNS:
+        check = pattern.replace("*", "")
+        if check in url:
+            await route.abort()
+            return
+    
+    await route.continue_()
+
+
+async def block_heavy_resources(page) -> None:
+    """Block images, video, and fonts to save proxy bandwidth."""
+    await page.route("**/*", _block_handler)
+
+
+async def block_all_heavy_resources(page) -> None:
+    """Aggressively block images, video, fonts, AND tracking/analytics."""
+    await page.route("**/*", _aggressive_block_handler)
+
+
+async def auto_block_if_proxied(page) -> None:
+    """Aggressively block heavy resources when a global proxy is configured.
+    
+    No-op when ``LETSFG_PROXY`` is not set (local mode — bandwidth is free).
+    """
+    if proxy_is_configured():
+        await page.route("**/*", _aggressive_block_handler)
+
+
+# ── Anti-bot stealth injection ──────────────────────────────────────────────────
+
+_STEALTH_INIT_SCRIPT = """\
+// Hide navigator.webdriver (set by CDP/Playwright)
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+
+// Ensure window.chrome exists (missing in headless/automation)
+if (!window.chrome) {
+  window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+}
+
+// Fake plugins array (headless has empty plugins)
+Object.defineProperty(navigator, 'plugins', {
+  get: () => {
+    const arr = [
+      {name:'Chrome PDF Plugin', filename:'internal-pdf-viewer'},
+      {name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
+      {name:'Native Client', filename:'internal-nacl-plugin'},
+    ];
+    arr.item = i => arr[i];
+    arr.namedItem = n => arr.find(p => p.name === n);
+    arr.refresh = () => {};
+    return arr;
+  }
+});
+
+// Fix languages
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+
+// Remove Playwright/CDP tell-tales from Error stack traces
+const _Error = Error;
+Object.defineProperty(globalThis, 'Error', {value: _Error, configurable: true, writable: true});
+
+// Mask permissions query (Notification permission check used by PX/Akamai)
+const origQuery = window.navigator.permissions?.query;
+if (origQuery) {
+  window.navigator.permissions.query = (params) =>
+    params.name === 'notifications'
+      ? Promise.resolve({state: Notification.permission})
+      : origQuery.call(window.navigator.permissions, params);
+}
+"""
+
+
+async def inject_stealth_js(page) -> None:
+    """Inject anti-detection JavaScript into a page.
+    
+    Must be called BEFORE any navigation (``page.goto(...)``).
+    """
+    await page.add_init_script(_STEALTH_INIT_SCRIPT)

@@ -30,7 +30,7 @@ import time
 from datetime import timedelta
 from typing import Optional
 
-from .browser import launch_headed_browser
+from .browser import launch_headed_browser, auto_block_if_proxied
 
 try:
     from connectors.browser import acquire_browser_slot, release_browser_slot
@@ -190,6 +190,7 @@ class USBanglaConnectorClient:
         )
         await context.add_init_script(_STEALTH_INIT)
         page = await context.new_page()
+        await auto_block_if_proxied(page)
 
         target_date = req.date_from.strftime("%Y-%m-%d")
         return_date = (req.date_from + timedelta(days=1)).strftime("%Y-%m-%d")

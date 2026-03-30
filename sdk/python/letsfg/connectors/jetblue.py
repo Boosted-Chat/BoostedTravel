@@ -45,6 +45,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -258,9 +259,11 @@ class JetBlueConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             captured: dict = {}
             api_event = asyncio.Event()

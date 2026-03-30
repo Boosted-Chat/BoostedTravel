@@ -32,6 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ _CHROME_FLAGS = [
     "--force-color-profile=srgb",
     "--metrics-recording-only",
     "--no-first-run",
+    *proxy_chrome_args(),
     "--password-store=basic",
     "--no-service-autorun",
     "--disable-search-engine-choice-screen",
@@ -96,7 +98,7 @@ async def _get_browser():
         if _browser and _browser.is_connected():
             return _browser
 
-        from connectors.browser import find_chrome
+        from .browser import find_chrome
 
         chrome = find_chrome()
         user_data = os.path.join(
@@ -172,6 +174,7 @@ class PorterConnectorClient:
                 req.origin, req.destination, req.date_from.strftime("%Y-%m-%d"),
             )
 
+            await auto_block_if_proxied(page)
             try:
                 await page.goto(results_url, wait_until="commit", timeout=15000)
             except Exception:

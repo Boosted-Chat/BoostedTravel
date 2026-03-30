@@ -167,10 +167,12 @@ class KiwiConnectorClient:
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
+            from .browser import get_httpx_proxy_url
             self._http = httpx.AsyncClient(
                 timeout=self.timeout,
                 headers=_HEADERS,
                 follow_redirects=True,
+                proxy=get_httpx_proxy_url(),
             )
         return self._http
 

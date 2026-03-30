@@ -25,6 +25,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .airline_routes import get_city_airports
+from .browser import auto_block_if_proxied, get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ class RyanairConnectorClient:
                 timeout=self.timeout,
                 headers=_HEADERS,
                 follow_redirects=True,
+                proxy=get_httpx_proxy_url(),
             )
         return self._http
 
@@ -64,7 +67,56 @@ class RyanairConnectorClient:
 
         GET /booking/v4/en-gb/availability
         Returns real-time fares directly from Ryanair — no middleman.
+
+        Ryanair requires station codes (STN, LTN, LGW), not city codes
+        (LON). When a city code is passed, we fan out to all constituent
+        airports and merge results.
         """
+        origins = get_city_airports(req.origin)
+        destinations = get_city_airports(req.destination)
+
+        # If city expansion produced multiple airports, fan out
+        if len(origins) > 1 or len(destinations) > 1:
+            import asyncio as _aio
+            tasks = []
+            for o in origins:
+                for d in destinations:
+                    if o == d:
+                        continue
+                    sub_req = FlightSearchRequest(
+                        origin=o,
+                        destination=d,
+                        date_from=req.date_from,
+                        return_from=req.return_from,
+                        adults=req.adults,
+                        children=req.children,
+                        infants=req.infants,
+                        cabin_class=req.cabin_class,
+                        currency=req.currency,
+                        max_stopovers=req.max_stopovers,
+                    )
+                    tasks.append(self._search_single(sub_req))
+            results = await _aio.gather(*tasks, return_exceptions=True)
+            all_offers = []
+            for r in results:
+                if isinstance(r, FlightSearchResponse):
+                    all_offers.extend(r.offers)
+            all_offers.sort(key=lambda o: o.price)
+            search_hash = hashlib.md5(
+                f"ryanair{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+            return FlightSearchResponse(
+                search_id=f"fs_{search_hash}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=req.currency,
+                offers=all_offers,
+                total_results=len(all_offers),
+            )
+        return await self._search_single(req)
+
+    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """Search a single origin→destination pair (airport-level codes)."""
         client = await self._client()
 
         params: dict[str, Any] = {
@@ -97,17 +149,18 @@ class RyanairConnectorClient:
                 params=params,
             )
         except httpx.TimeoutException:
-            logger.warning("Ryanair API timed out")
+            logger.warning("Ryanair API timed out (%s→%s)", req.origin, req.destination)
             return self._empty(req)
         except Exception as e:
-            logger.error("Ryanair API error: %s", e)
+            logger.error("Ryanair API error (%s→%s): %s", req.origin, req.destination, e)
             return self._empty(req)
 
         elapsed = time.monotonic() - t0
 
         if resp.status_code != 200:
             logger.warning(
-                "Ryanair API returned %d: %s",
+                "Ryanair API %s→%s returned %d: %s",
+                req.origin, req.destination,
                 resp.status_code,
                 resp.text[:300],
             )
@@ -413,9 +466,11 @@ class RyanairBookableConnector:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             step = "started"
             pax = passengers[0] if passengers else {}

@@ -15,6 +15,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
+from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,7 @@ class ChinaAirlinesConnectorClient:
                 timeout=self.timeout,
                 headers=_HEADERS,
                 follow_redirects=True,
-            )
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -206,9 +208,11 @@ class ChinaAirlinesConnectorClient:
         outbound_date = _as_date(req.date_from)
         inbound_date = _as_date(req.return_from) if req.return_from else None
         offers: list[FlightOffer] = []
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
 
         for card in cards:
-            if card["origin"] != req.origin or card["destination"] != req.destination:
+            if card["origin"] not in valid_origins or card["destination"] not in valid_dests:
                 continue
             if card["price"] <= 0:
                 continue

@@ -31,6 +31,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -219,8 +220,13 @@ class VirginAtlanticConnectorClient:
 
         try:
             async with httpx.AsyncClient(
+<<<<<<< Updated upstream
                 timeout=self.timeout, headers=_SPUTNIK_HEADERS
             ) as client:
+=======
+                timeout=self.timeout, headers=_SPUTNIK_HEADERS,
+                proxy=get_httpx_proxy_url(),) as client:
+>>>>>>> Stashed changes
                 r = await client.post(_SPUTNIK_URL, json=payload)
                 if r.status_code != 200:
                     logger.info("VS Sputnik: HTTP %d", r.status_code)

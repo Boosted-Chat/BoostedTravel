@@ -38,11 +38,11 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
-_DEBUG_PORT = 9457
+_DEBUG_PORT = 9487
 _USER_DATA_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".cm_chrome_data"
 )
@@ -105,6 +105,7 @@ async def _get_context():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-http2",
@@ -198,6 +199,7 @@ class CopaConnectorClient:
         t0 = time.monotonic()
         context = await _get_context()
         page = await context.new_page()
+        await auto_block_if_proxied(page)
 
         avail_data: dict = {}
         blocked = False

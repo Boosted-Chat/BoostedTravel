@@ -43,6 +43,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied
 logger = logging.getLogger(__name__)
 
 _VIEWPORTS = [
@@ -256,6 +257,7 @@ async def _ensure_warm_ctx(proxy: dict):
         # Warm up: load homepage to establish Cloudflare cookies in context
         logger.info("Allegiant: warming up Cloudflare cookies...")
         page = await _warm_ctx.new_page()
+        await auto_block_if_proxied(page)
         try:
             from playwright_stealth import stealth_async
             await stealth_async(page)
@@ -335,6 +337,7 @@ class AllegiantConnectorClient:
 
         # Fresh page per search — avoids Next.js SPA routing / Apollo cache issues
         page = await ctx.new_page()
+        await auto_block_if_proxied(page)
         try:
             from playwright_stealth import stealth_async
             await stealth_async(page)

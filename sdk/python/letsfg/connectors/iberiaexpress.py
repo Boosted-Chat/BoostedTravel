@@ -48,6 +48,8 @@ _I2_DESTINATIONS = {
     # EU short-haul (I2 operates some of these)
     "ATH", "BER", "DUB", "MIL", "ROM", "LIS", "OPO", "NAP",
     "BLQ", "FLR", "VCE", "CPH", "PRG", "BUD",
+    # UK (I2 flies MAD→LGW)
+    "LON", "LHR", "LGW", "STN",
     # Also serve MAD as destination from other origins
     "MAD",
 }

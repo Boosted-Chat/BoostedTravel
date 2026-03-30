@@ -34,7 +34,11 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+<<<<<<< Updated upstream
 from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+=======
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
+>>>>>>> Stashed changes
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +105,10 @@ async def _get_context():
                 f"--remote-debugging-port={_CDP_PORT}",
                 f"--user-data-dir={_USER_DATA}",
                 "--no-first-run",
+<<<<<<< Updated upstream
+=======
+                *proxy_chrome_args(),
+>>>>>>> Stashed changes
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
@@ -238,6 +246,10 @@ class TravelokaConnectorClient:
     ) -> list[FlightOffer] | None:
         context = await _get_context()
         page = await context.new_page()
+<<<<<<< Updated upstream
+=======
+        await auto_block_if_proxied(page)
+>>>>>>> Stashed changes
 
         captured_data: list[dict] = []
 

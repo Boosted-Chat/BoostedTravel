@@ -44,6 +44,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, get_curl_cffi_proxies, get_default_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ async def _get_context():
             _USER_DATA_DIR,
             channel="chrome",
             headless=False,
+            proxy=get_default_proxy(),
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
@@ -197,6 +199,7 @@ async def _ensure_warm_page():
             _warm_page = ctx.pages[0]
         else:
             _warm_page = await ctx.new_page()
+            await auto_block_if_proxied(_warm_page)
 
         logger.info("Flynas: loading booking page (Akamai warm-up)...")
         await _warm_page.goto(
@@ -258,7 +261,7 @@ class FlynasConnectorClient:
         Uses a shorter timeout than in-browser path since this is the fast path —
         we want to fail quickly and fall back to the browser if needed.
         """
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
         # Load all Akamai cookies into session
         for c in _akamai_cookies:

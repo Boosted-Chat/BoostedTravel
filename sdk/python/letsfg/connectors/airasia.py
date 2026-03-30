@@ -28,6 +28,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, get_default_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ async def _get_browser():
         _browser = await _pw_instance.chromium.launch(
             headless=False,
             channel="chrome",
+            proxy=get_default_proxy(),
             args=[
                 "--window-position=-2400,-2400",
                 "--window-size=800,600",
@@ -103,9 +105,11 @@ class AirAsiaConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             captured_data: dict = {}
             api_event = asyncio.Event()

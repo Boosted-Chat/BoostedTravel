@@ -44,6 +44,8 @@ _HEADERS = {
 
 # IATA → city slug mapping for Air Niugini routes
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "TYO": "tokyo",
     # PNG domestic
     "POM": "port-moresby",
     "LAE": "lae",

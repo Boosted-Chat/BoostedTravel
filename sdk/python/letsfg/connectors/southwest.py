@@ -48,6 +48,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ class SouthwestConnectorClient:
     @staticmethod
     def _bootstrap_session_sync() -> list[dict]:
         """Synchronous: visit southwest.com homepage to capture session cookies."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
         proxies = _get_curl_proxies()
         try:
             r = sess.get(
@@ -286,9 +287,11 @@ class SouthwestConnectorClient:
                 try:
                     from playwright_stealth import stealth_async
                     page = await context.new_page()
+                    await auto_block_if_proxied(page)
                     await stealth_async(page)
                 except ImportError:
                     page = await context.new_page()
+                    await auto_block_if_proxied(page)
 
                 logger.info("Southwest: farming cookies via Playwright homepage visit")
                 await page.goto(
@@ -353,7 +356,7 @@ class SouthwestConnectorClient:
         self, req: FlightSearchRequest, cookies: list[dict],
     ) -> Optional[dict]:
         """Synchronous curl_cffi search -- tries primary then mobile endpoint."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
         # Load cookies into session
         for c in cookies:
@@ -445,9 +448,11 @@ class SouthwestConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             try:
                 cdp = await context.new_cdp_session(page)

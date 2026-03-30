@@ -39,7 +39,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_args
+from .browser import stealth_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -196,9 +196,11 @@ class FrontierConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             logger.info("Frontier: loading %s", url[:100])
             await page.goto(

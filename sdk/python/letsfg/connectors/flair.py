@@ -1,12 +1,12 @@
 """
-Flair Airlines httpx scraper -- fetches fare data from flights.flyflair.com
-(EveryMundo airTRFX platform).
+Flair Airlines connector -- fetches fare data from flights.flyflair.com
+(EveryMundo airTRFX platform) via curl_cffi.
 
 Flair Airlines (IATA: F8) is a Canadian ultra-low-cost carrier based in
 Edmonton, Alberta. Operates domestic Canadian, transborder US, and
 Mexico/Caribbean routes. Default currency CAD.
 
-Strategy:
+Strategy (curl_cffi required — Cloudflare blocks httpx Python TLS fingerprint):
 1. Map IATA codes to city slugs used by flights.flyflair.com
 2. Fetch route page: flights.flyflair.com/en-ca/flights-from-{origin}-to-{dest}
 3. Extract __NEXT_DATA__ JSON from page
@@ -15,6 +15,7 @@ Strategy:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-import httpx
+from curl_cffi import requests as creq
 
 from ..models.flights import (
     FlightOffer,
@@ -32,11 +33,14 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
 # IATA code -> URL slug mapping for flights.flyflair.com route pages
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "YTO": "toronto", "YMQ": "montreal",
     # Canada
     "YXX": "abbotsford",
     "YYC": "calgary",
@@ -103,18 +107,13 @@ class FlairConnectorClient:
         logger.info("Flair: fetching %s", url)
 
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True,
-                headers=_HEADERS,
-            ) as client:
-                resp = await client.get(url)
-
-            if resp.status_code != 200:
-                logger.warning("Flair: %s returned %d", url, resp.status_code)
+            html = await asyncio.get_event_loop().run_in_executor(
+                None, self._fetch_sync, url
+            )
+            if not html:
                 return self._empty(req)
 
-            fares = self._extract_fares(resp.text)
+            fares = self._extract_fares(html)
             if not fares:
                 logger.warning("Flair: no fares found in page")
                 return self._empty(req)
@@ -126,7 +125,7 @@ class FlairConnectorClient:
 
             offers.sort(key=lambda o: o.price)
             logger.info(
-                "Flair %s->%s returned %d offers in %.1fs (httpx)",
+                "Flair %s->%s returned %d offers in %.1fs",
                 req.origin, req.destination, len(offers), elapsed,
             )
 
@@ -143,8 +142,20 @@ class FlairConnectorClient:
             )
 
         except Exception as e:
-            logger.error("Flair httpx error: %s", e)
+            logger.error("Flair error: %s", e)
             return self._empty(req)
+
+    def _fetch_sync(self, url: str) -> str | None:
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
+        try:
+            r = sess.get(url, headers=_HEADERS, timeout=int(self.timeout))
+            if r.status_code != 200:
+                logger.warning("Flair: %s returned %d", url, r.status_code)
+                return None
+            return r.text
+        except Exception as e:
+            logger.warning("Flair curl_cffi error: %s", e)
+            return None
 
     @staticmethod
     def _extract_fares(html: str) -> list[dict]:

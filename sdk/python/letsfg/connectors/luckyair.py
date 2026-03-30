@@ -43,6 +43,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, launch_headed_browser
 logger = logging.getLogger(__name__)
 
 # ── Module-level browser state (cleaned up by engine.py) ───────────────────
@@ -97,6 +98,7 @@ class LuckyAirConnectorClient:
 
             try:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 offers = await self._search_via_calendar(page, req, t0)
 
                 elapsed = time.monotonic() - t0

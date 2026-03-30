@@ -49,11 +49,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import (
-    _launched_pw_instances,
-    acquire_browser_slot,
-    release_browser_slot,
-)
+from .browser import _launched_pw_instances, acquire_browser_slot, auto_block_if_proxied, release_browser_slot
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +155,7 @@ async def _refresh_session():
 
     # Visit booking page to pass Incapsula challenge
     page = await ctx.new_page()
+    await auto_block_if_proxied(page)
     await page.add_init_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
     )
@@ -183,6 +180,7 @@ async def _refresh_session():
 
         # Open a clean page on the API domain (shares cookies)
         _api_page = await ctx.new_page()
+        await auto_block_if_proxied(_api_page)
         await _api_page.goto(
             f"{_API_BASE}/", wait_until="commit", timeout=15000
         )

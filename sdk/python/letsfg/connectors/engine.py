@@ -511,7 +511,7 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("tripcom_ota", TripcomConnectorClient, 55.0),
     ("cleartrip_ota", CleartripConnectorClient, 55.0),
     ("edreams_ota", EdreamsConnectorClient, 55.0),
-    ("despegar_ota", DespegarConnectorClient, 25.0),
+    ("despegar_ota", DespegarConnectorClient, 55.0),
     ("opodo_ota", OpodoConnectorClient, 55.0),
     ("momondo_meta", MomondoConnectorClient, 55.0),
     ("kayak_meta", KayakConnectorClient, 55.0),
@@ -700,6 +700,18 @@ class MultiProvider:
     async def _search_flights_inner(self, req: FlightSearchRequest) -> FlightSearchResponse:
         tasks = []
         providers_used = []
+
+        # ── Log proxy status ──
+        from .browser import proxy_is_configured, get_default_proxy_url
+        if proxy_is_configured():
+            # Mask credentials in log
+            raw = get_default_proxy_url()
+            from urllib.parse import urlparse
+            p = urlparse(raw)
+            masked = f"{p.scheme}://{p.hostname}:{p.port}"
+            logger.info("LETSFG_PROXY active: %s — all connectors routing through proxy", masked)
+        else:
+            logger.debug("No LETSFG_PROXY set — connectors using direct connections")
 
         # ── Cloud Run backend (paid API providers: Duffel, Amadeus, Sabre, etc.) ──
         if self.backend_available:
@@ -1183,33 +1195,46 @@ class MultiProvider:
     ) -> FlightSearchResponse:
         """Generic wrapper for direct airline connectors — tags source/tier, ensures cleanup.
 
-        Browser-based connectors are throttled by a semaphore so at most 4
+        Browser-based connectors are throttled by a semaphore so at most N
         Chrome processes run simultaneously (prevents resource exhaustion).
+
+        Slot acquisition has a separate generous timeout (5 min) so connectors
+        aren't starved, then the search itself gets its own hard timeout.
 
         Catches ALL exceptions (including CancelledError) so no single
         connector can crash the entire search.
         """
         uses_browser = source in _BROWSER_SOURCES
-        if uses_browser:
-            from connectors.browser import acquire_browser_slot
-            await acquire_browser_slot()
         _empty = FlightSearchResponse(
             search_id="", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,
         )
-        # Hard timeout per connector — prevents hangs (e.g. Playwright evaluate
-        # that blocks forever) from stalling the entire search.
-        _timeout = 90 if uses_browser else 45
+        _search_timeout = 90 if uses_browser else 45
+        _slot_timeout = 300  # 5 min max to wait for a browser slot
+        slot_acquired = False
         try:
+            # Phase 1: acquire browser slot (generous timeout, separate from search)
+            if uses_browser:
+                from connectors.browser import acquire_browser_slot
+                logger.warning("%s waiting for browser slot…", source)
+                try:
+                    await asyncio.wait_for(acquire_browser_slot(), timeout=_slot_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("%s gave up waiting for browser slot after %ds", source, _slot_timeout)
+                    return _empty
+                slot_acquired = True
+                logger.warning("%s got browser slot, starting search", source)
+
+            # Phase 2: run the actual search (hard timeout)
             result = await asyncio.wait_for(
-                client.search_flights(req), timeout=_timeout,
+                client.search_flights(req), timeout=_search_timeout,
             )
             for offer in result.offers:
                 offer.source = source
                 offer.source_tier = "free"
             return result
         except asyncio.TimeoutError:
-            logger.warning("%s timed out after %ds", source, _timeout)
+            logger.warning("%s timed out after %ds", source, _search_timeout)
             return _empty
         except BaseException as exc:
             # Catch CancelledError / KeyboardInterrupt / any crash —
@@ -1224,7 +1249,7 @@ class MultiProvider:
                 await client.close()
             except Exception:
                 pass
-            if uses_browser:
+            if uses_browser and slot_acquired:
                 # Close module-level browser globals immediately so Chrome
                 # doesn't linger until the full search completes.
                 try:
@@ -1285,8 +1310,22 @@ class MultiProvider:
     _CITY_CODE_AWARE: set[str] = {
         "kiwi_connector",
         "britishairways_direct",
-        "virginatlantic_direct",  # we added LON→london
+        "virginatlantic_direct",
         "omanair_direct",
+        # Connectors with internal get_city_airports() expansion
+        "easyjet_direct",
+        "jet2_direct",
+        "level_direct",
+        "airfrance_direct",
+        "american_direct",
+        "delta_direct",
+        "eurowings_direct",
+        "norwegian_direct",
+        "pegasus_direct",
+        "aerlingus_direct",
+        "tap_direct",
+        # Meta-search engines that natively support city codes in URLs
+        "skyscanner_meta",
     }
 
     @classmethod

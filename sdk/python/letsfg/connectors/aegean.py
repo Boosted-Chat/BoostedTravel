@@ -32,6 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,10 @@ _IATA_TO_SLUG: dict[str, str] = {
     "JMK": "mykonos", "JTR": "santorini", "KGS": "kos",
     "ZTH": "zakynthos", "EFL": "kefalonia", "JSI": "skiathos",
     "AXD": "alexandroupolis",
-    # Europe
-    "LHR": "london", "LGW": "london", "STN": "london",
-    "CDG": "paris", "ORY": "paris",
-    "FCO": "rome", "MXP": "milan",
+    # Europe — city codes + airport codes
+    "LON": "london", "LHR": "london", "LGW": "london", "STN": "london",
+    "PAR": "paris", "CDG": "paris", "ORY": "paris",
+    "ROM": "rome", "FCO": "rome", "MXP": "milan",
     "FRA": "frankfurt", "MUC": "munich", "BER": "berlin",
     "DUS": "dusseldorf", "STR": "stuttgart",
     "AMS": "amsterdam", "BRU": "brussels",
@@ -93,8 +94,8 @@ class AegeanConnectorClient:
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True
-            )
+                timeout=self.timeout, headers=_HEADERS, follow_redirects=True,
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -105,25 +106,37 @@ class AegeanConnectorClient:
         t0 = time.monotonic()
         client = await self._client()
 
-        origin_slug = _IATA_TO_SLUG.get(req.origin)
-        dest_slug = _IATA_TO_SLUG.get(req.destination)
+        from .airline_routes import resolve_slug
+        origin_slug = resolve_slug(req.origin, _IATA_TO_SLUG)
+        dest_slug = resolve_slug(req.destination, _IATA_TO_SLUG)
         if not origin_slug or not dest_slug:
-            logger.warning("Aegean: unmapped IATA %s or %s", req.origin, req.destination)
-            return self._empty(req)
-
-        url = f"{_BASE}/en/flights-from-{origin_slug}-to-{dest_slug}"
-        logger.info("Aegean: fetching %s", url)
-
-        try:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                logger.warning("Aegean: %s returned %d", url, resp.status_code)
+            # Still try origin-only page even if dest slug unknown
+            if not origin_slug:
+                logger.warning("Aegean: unmapped origin IATA %s", req.origin)
                 return self._empty(req)
-        except Exception as e:
-            logger.error("Aegean fetch error: %s", e)
-            return self._empty(req)
+            # dest_slug may be None — we'll use origin-only page below
 
-        fares = self._extract_fares(resp.text)
+        # Try route-specific page first, then fallback to origin page
+        urls_to_try = []
+        if dest_slug:
+            urls_to_try.append(f"{_BASE}/en/flights-from-{origin_slug}-to-{dest_slug}")
+        urls_to_try.append(f"{_BASE}/en/flights-from-{origin_slug}")
+
+        fares = []
+        for url in urls_to_try:
+            logger.info("Aegean: fetching %s", url)
+            try:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    logger.info("Aegean: %s returned %d", url, resp.status_code)
+                    continue
+            except Exception as e:
+                logger.error("Aegean fetch error: %s", e)
+                continue
+
+            fares = self._extract_fares(resp.text)
+            if fares:
+                break
         if not fares:
             logger.info("Aegean: no fares on page %s", url)
             return self._empty(req)
@@ -185,9 +198,17 @@ class AegeanConnectorClient:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
 
-        # Aegean uses city codes like LON, PAR in fares
+        # Aegean uses city codes like LON, PAR in fares — expand for matching
         origin_codes = {req.origin, _IATA_TO_CITY.get(req.origin, req.origin)}
         dest_codes = {req.destination, _IATA_TO_CITY.get(req.destination, req.destination)}
+        # Also include all airport codes in the city group
+        from .airline_routes import city_match_set
+        origin_codes |= set(city_match_set(req.origin))
+        dest_codes |= set(city_match_set(req.destination))
+
+        # First pass: collect exact-date fares and route-matching fares
+        exact_date_fares = []
+        nearby_fares = []
 
         for fare in fares:
             orig = fare.get("originAirportCode", "")
@@ -195,13 +216,25 @@ class AegeanConnectorClient:
             if orig not in origin_codes or dest not in dest_codes:
                 continue
 
-            dep_date = fare.get("departureDate", "")
-            if dep_date[:10] != target_date:
-                continue
-
             price = fare.get("totalPrice")
             if not price or float(price) <= 0:
                 continue
+
+            dep_date = fare.get("departureDate", "")
+            if dep_date[:10] == target_date:
+                exact_date_fares.append(fare)
+            else:
+                nearby_fares.append(fare)
+
+        # Use exact-date fares if available, otherwise use all route-matching fares
+        # (EveryMundo pages show cheapest fares which may not include the exact date)
+        use_fares = exact_date_fares if exact_date_fares else nearby_fares
+
+        for fare in use_fares:
+            price = fare.get("totalPrice")
+            if not price or float(price) <= 0:
+                continue
+            dep_date = fare.get("departureDate", "")
 
             currency = fare.get("currencyCode") or "EUR"
             price_f = round(float(price), 2)

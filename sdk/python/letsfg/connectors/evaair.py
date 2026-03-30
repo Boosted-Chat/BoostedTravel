@@ -43,6 +43,9 @@ _HEADERS = {
 
 # Static slug mapping for EVA Air destinations
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "TYO": "tokyo",
+    "OSA": "osaka",
     # Taiwan
     "TPE": "taipei", "KHH": "kaohsiung", "RMQ": "taichung",
     # Japan

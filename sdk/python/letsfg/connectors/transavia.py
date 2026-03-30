@@ -56,7 +56,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, get_curl_cffi_proxies, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +155,7 @@ async def _get_browser():
                 f"--remote-debugging-port={_CDP_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-http2",
@@ -274,9 +275,11 @@ class TransaviaConnectorClient:
                 try:
                     from playwright_stealth import stealth_async
                     page = await context.new_page()
+                    await auto_block_if_proxied(page)
                     await stealth_async(page)
                 except ImportError:
                     page = await context.new_page()
+                    await auto_block_if_proxied(page)
 
                 logger.info("Transavia: farming cookies via homepage load")
                 await page.goto(
@@ -341,7 +344,7 @@ class TransaviaConnectorClient:
         self, req: FlightSearchRequest, cookies: list[dict],
     ) -> Optional[dict]:
         """Synchronous curl_cffi: load booking page then fetch availability API."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
         # Load farmed cookies into session
         for c in cookies:
@@ -423,6 +426,7 @@ class TransaviaConnectorClient:
 
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             # Set up response interception for flight-availability API
             captured_data: dict = {}

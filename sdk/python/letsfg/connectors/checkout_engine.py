@@ -2032,21 +2032,16 @@ class GenericCheckoutEngine:
                 "--window-size=1440,900",
             ]
 
-            # Proxy support (Decodo / residential proxy for anti-bot bypass)
+            # Residential proxy support for anti-bot bypass
             launch_kwargs: dict = {"headless": headless, "args": launch_args}
             if config.use_chrome_channel:
                 launch_kwargs["channel"] = "chrome"
             if config.use_proxy:
-                proxy_server = os.environ.get("DECODO_PROXY_SERVER", "")
-                proxy_user = os.environ.get("DECODO_PROXY_USER", "")
-                proxy_pass = os.environ.get("DECODO_PROXY_PASS", "")
-                if proxy_server:
-                    launch_kwargs["proxy"] = {
-                        "server": proxy_server,
-                        "username": proxy_user,
-                        "password": proxy_pass,
-                    }
-                    logger.info("%s checkout: using proxy %s", config.airline_name, proxy_server)
+                from letsfg.connectors.browser import get_default_proxy
+                proxy_dict = get_default_proxy()
+                if proxy_dict:
+                    launch_kwargs["proxy"] = proxy_dict
+                    logger.info("%s checkout: using proxy %s", config.airline_name, proxy_dict.get("server", ""))
 
             browser = await pw.chromium.launch(**launch_kwargs)
 

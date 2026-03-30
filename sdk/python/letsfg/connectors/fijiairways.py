@@ -43,6 +43,8 @@ _HEADERS = {
 
 # Static slug mapping for Fiji Airways destinations
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "TYO": "tokyo", "OSA": "osaka",
     # Fiji
     "NAN": "nadi", "SUV": "suva",
     # Australia

@@ -44,6 +44,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ class AkasaConnectorClient:
 
     def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
-        self._sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        self._sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
     async def close(self):
         pass

@@ -42,6 +42,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class FlyArystanConnectorClient:
                 timeout=self.timeout,
                 follow_redirects=True,
                 headers=_HEADERS,
-            ) as client:
+                proxy=get_httpx_proxy_url(),) as client:
                 resp = await client.get(_AVAIL_URL, params=params)
                 resp.raise_for_status()
                 html = resp.text

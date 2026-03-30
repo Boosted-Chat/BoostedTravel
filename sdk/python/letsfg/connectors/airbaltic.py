@@ -1,11 +1,11 @@
 """
-airBaltic httpx scraper -- calendar fare data from airbaltic.com public API.
+airBaltic connector -- calendar fare data from airbaltic.com public API via curl_cffi.
 
 airBaltic (IATA: BT) is a Latvian flag carrier based in Riga, operating
 short/medium-haul flights across Europe, the Middle East, and Central Asia.
 Default currency EUR.
 
-Strategy:
+Strategy (curl_cffi required — WAF blocks httpx Python TLS fingerprint):
 1. Call /api/fsf/outbound with origin, destination, month -> daily prices
 2. Each day entry has price + isDirect flag
 3. Build one FlightOffer per day with the cheapest calendar price
@@ -13,13 +13,14 @@ Strategy:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
 from datetime import datetime
 from typing import Optional
 
-import httpx
+from curl_cffi import requests as creq
 
 from ..models.flights import (
     FlightOffer,
@@ -28,6 +29,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -71,42 +73,10 @@ class AirbalticConnectorClient:
             else:
                 current = current.replace(month=current.month + 1)
 
-        all_days: list[dict] = []
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True,
-                headers=_HEADERS,
-            ) as client:
-                for month in months:
-                    params = {
-                        "origin": req.origin,
-                        "destin": req.destination,
-                        "tripType": "oneway",
-                        "numAdt": str(req.adults),
-                        "numChd": str(req.children),
-                        "numInf": str(req.infants),
-                        "departureMonth": month,
-                        "flightMode": "oneway",
-                    }
-                    resp = await client.get(f"{_API_BASE}/outbound", params=params)
-                    if resp.status_code != 200:
-                        logger.warning(
-                            "airBaltic outbound %s: HTTP %d", month, resp.status_code
-                        )
-                        continue
-
-                    body = resp.json()
-                    if not body.get("success"):
-                        logger.warning(
-                            "airBaltic outbound %s: %s", month, body.get("error", "")
-                        )
-                        continue
-
-                    data = body.get("data", [])
-                    if isinstance(data, list):
-                        all_days.extend(data)
-
+            all_days = await asyncio.get_event_loop().run_in_executor(
+                None, self._fetch_months_sync, req, months
+            )
         except Exception as e:
             logger.error("airBaltic API error: %s", e)
             return self._empty(req)
@@ -117,7 +87,7 @@ class AirbalticConnectorClient:
 
         offers.sort(key=lambda o: o.price)
         logger.info(
-            "airBaltic %s->%s returned %d offers in %.1fs (httpx)",
+            "airBaltic %s->%s returned %d offers in %.1fs",
             req.origin, req.destination, len(offers), elapsed,
         )
 
@@ -132,6 +102,51 @@ class AirbalticConnectorClient:
             offers=offers,
             total_results=len(offers),
         )
+
+    def _fetch_months_sync(self, req: FlightSearchRequest, months: list[str]) -> list[dict]:
+        """Fetch calendar data for all months synchronously via curl_cffi."""
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
+        all_days: list[dict] = []
+        to = int(self.timeout)
+
+        for month in months:
+            params = {
+                "origin": req.origin,
+                "destin": req.destination,
+                "tripType": "oneway",
+                "numAdt": str(req.adults),
+                "numChd": str(req.children),
+                "numInf": str(req.infants),
+                "departureMonth": month,
+                "flightMode": "oneway",
+            }
+            qs = "&".join(f"{k}={v}" for k, v in params.items())
+            url = f"{_API_BASE}/outbound?{qs}"
+
+            try:
+                resp = sess.get(url, headers=_HEADERS, timeout=to)
+            except Exception as e:
+                logger.warning("airBaltic outbound %s error: %s", month, e)
+                continue
+
+            if resp.status_code != 200:
+                logger.warning("airBaltic outbound %s: HTTP %d", month, resp.status_code)
+                continue
+
+            try:
+                body = resp.json()
+            except Exception:
+                continue
+
+            if not body.get("success"):
+                logger.warning("airBaltic outbound %s: %s", month, body.get("error", ""))
+                continue
+
+            data = body.get("data", [])
+            if isinstance(data, list):
+                all_days.extend(data)
+
+        return all_days
 
     @staticmethod
     def _build_offers(

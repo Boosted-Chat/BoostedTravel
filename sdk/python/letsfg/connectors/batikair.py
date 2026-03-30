@@ -38,6 +38,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,7 @@ class BatikAirConnectorClient:
         page = None
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             # --- API response interception (in case response is unencrypted) ---
             captured_data: dict = {}
