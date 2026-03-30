@@ -35,6 +35,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class SpringConnectorClient:
             async with httpx.AsyncClient(
                 timeout=self.timeout, follow_redirects=True,
                 cookies=cookies,
-            ) as client:
+                proxy=get_httpx_proxy_url(),) as client:
                 # Get session cookie
                 await client.get(
                     base,

@@ -28,6 +28,11 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+<<<<<<< Updated upstream
+=======
+from .airline_routes import get_city_airports
+from .browser import auto_block_if_proxied
+>>>>>>> Stashed changes
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +55,29 @@ def _api_headers() -> dict[str, str]:
     }
 
 
+<<<<<<< Updated upstream
+=======
+def _get_curl_proxy() -> dict | None:
+    """Return curl_cffi proxy dict from LETSFG_PROXY, or None."""
+    import os
+    url = os.environ.get("LETSFG_PROXY", "").strip()
+    if not url:
+        return None
+    return {"http": url, "https": url}
+
+
+>>>>>>> Stashed changes
 def _get_version_sync() -> str:
     """Fetch API version from /buildnumber (sync, run in executor)."""
     from curl_cffi import requests as cffi_requests
 
     try:
+<<<<<<< Updated upstream
         sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+=======
+        proxies = _get_curl_proxy()
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=proxies)
+>>>>>>> Stashed changes
         r = sess.get(
             "https://wizzair.com/buildnumber",
             headers={"User-Agent": _UA},
@@ -81,7 +103,12 @@ def _search_timetable_sync(
     """POST to timetableV2 (sync, run in executor). Returns parsed JSON."""
     from curl_cffi import requests as cffi_requests
 
+<<<<<<< Updated upstream
     sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+=======
+    proxies = _get_curl_proxy()
+    sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=proxies)
+>>>>>>> Stashed changes
     base = f"https://be.wizzair.com/{version}/Api"
 
     flight_list = [
@@ -133,6 +160,49 @@ class WizzairConnectorClient:
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        # Wizzair requires station codes, not city codes. Expand and merge.
+        origins = get_city_airports(req.origin)
+        destinations = get_city_airports(req.destination)
+
+        if len(origins) > 1 or len(destinations) > 1:
+            all_offers: list[FlightOffer] = []
+            for o in origins:
+                for d in destinations:
+                    if o == d:
+                        continue
+                    sub_req = FlightSearchRequest(
+                        origin=o,
+                        destination=d,
+                        date_from=req.date_from,
+                        return_from=req.return_from,
+                        adults=req.adults,
+                        children=req.children,
+                        infants=req.infants,
+                        cabin_class=req.cabin_class,
+                        currency=req.currency,
+                        max_stopovers=req.max_stopovers,
+                    )
+                    try:
+                        resp = await self._search_single(sub_req)
+                        all_offers.extend(resp.offers)
+                    except Exception:
+                        pass
+            all_offers.sort(key=lambda o: o.price)
+            search_hash_id = hashlib.md5(
+                f"wizzair{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+            return FlightSearchResponse(
+                search_id=f"fs_{search_hash_id}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=req.currency,
+                offers=all_offers,
+                total_results=len(all_offers),
+            )
+        return await self._search_single(req)
+
+    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """Search a single origin→destination pair (station-level codes)."""
         t0 = time.monotonic()
         loop = asyncio.get_running_loop()
 
@@ -438,9 +508,11 @@ class WizzairBookableConnector:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             step = "started"
             pax = passengers[0] if passengers else {}

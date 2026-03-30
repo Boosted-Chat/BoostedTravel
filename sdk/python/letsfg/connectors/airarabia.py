@@ -52,6 +52,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
+from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +114,7 @@ class AirArabiaConnectorClient:
                 timeout=self.timeout,
                 headers=_HEADERS,
                 follow_redirects=True,
-            )
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -129,7 +131,7 @@ class AirArabiaConnectorClient:
         country = _ORIGIN_COUNTRY.get(req.origin)
         if not country:
             # Fallback: resolve via shared airport→country map
-            from connectors.airline_routes import get_country
+            from .airline_routes import get_country
             country = get_country(req.origin)
         if not country:
             logger.debug(
@@ -224,13 +226,15 @@ class AirArabiaConnectorClient:
         month(s) rather than filtering to the exact requested date range.
         """
         offers: list[FlightOffer] = []
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
 
         for group in data.get("BestOffersGroups", []):
             origin_code = group.get("OriginAirportCode", "")
             dest_code = group.get("DestinationAirportCode", "")
 
             # Filter to requested route
-            if origin_code != req.origin or dest_code != req.destination:
+            if origin_code not in valid_origins or dest_code not in valid_dests:
                 continue
 
             for bo in group.get("BestOffers", []):

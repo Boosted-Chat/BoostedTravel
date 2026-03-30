@@ -5,7 +5,7 @@ TAP Air Portugal (IATA: TP) is Portugal's flag carrier. Star Alliance member.
 Key hub at LIS connecting Europe, Brazil, Africa, Americas.
 90+ destinations. Strong on CPLP countries (Portuguese-speaking).
 
-Strategy (httpx, no browser):
+Strategy (curl_cffi required — Cloudflare blocks httpx Python TLS fingerprint):
   TAP uses EveryMundo airTRFX (same platform as Thai Airways, Air Canada).
   1. Fetch route page: flytap.com/flights/en-pt/flights-from-{origin}-to-{dest}
   2. Extract __NEXT_DATA__ JSON from <script> tag
@@ -15,6 +15,7 @@ Strategy (httpx, no browser):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-import httpx
+from curl_cffi import requests as creq
 
 from ..models.flights import (
     FlightOffer,
@@ -32,6 +33,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
+from .airline_routes import get_city_airports, resolve_slug
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +52,12 @@ _IATA_TO_SLUG: dict[str, str] = {
     # Portugal
     "LIS": "lisbon", "OPO": "porto", "FAO": "faro",
     "FNC": "funchal", "PDL": "ponta-delgada",
-    # Europe
-    "LHR": "london", "LGW": "london", "CDG": "paris",
+    # Europe — city codes + airport codes
+    "LON": "london", "LHR": "london", "LGW": "london",
+    "PAR": "paris", "CDG": "paris",
     "ORY": "paris", "FRA": "frankfurt", "MUC": "munich",
     "AMS": "amsterdam", "BRU": "brussels", "ZRH": "zurich",
-    "GVA": "geneva", "FCO": "rome", "MXP": "milan",
+    "GVA": "geneva", "ROM": "rome", "FCO": "rome", "MXP": "milan",
     "BCN": "barcelona", "MAD": "madrid", "AGP": "malaga",
     "BER": "berlin", "DUS": "dusseldorf", "HAM": "hamburg",
     "VIE": "vienna", "CPH": "copenhagen", "ARN": "stockholm",
@@ -73,7 +77,7 @@ _IATA_TO_SLUG: dict[str, str] = {
     "DSS": "dakar", "ABJ": "abidjan",
     "LAD": "luanda", "PRN": "pristina",
     # Americas
-    "EWR": "newark", "JFK": "new-york", "BOS": "boston",
+    "NYC": "new-york", "EWR": "newark", "JFK": "new-york", "BOS": "boston",
     "MIA": "miami", "IAD": "washington-dc", "SFO": "san-francisco",
     "YYZ": "toronto", "YUL": "montreal",
     "CUN": "cancun", "BOG": "bogota",
@@ -85,25 +89,15 @@ class TapConnectorClient:
 
     def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
-        self._http: Optional[httpx.AsyncClient] = None
-
-    async def _client(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True
-            )
-        return self._http
 
     async def close(self):
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
+        pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        client = await self._client()
 
-        origin_slug = _IATA_TO_SLUG.get(req.origin)
-        dest_slug = _IATA_TO_SLUG.get(req.destination)
+        origin_slug = resolve_slug(req.origin, _IATA_TO_SLUG)
+        dest_slug = resolve_slug(req.destination, _IATA_TO_SLUG)
         if not origin_slug or not dest_slug:
             logger.warning("TAP: unmapped IATA %s or %s", req.origin, req.destination)
             return self._empty(req)
@@ -112,15 +106,17 @@ class TapConnectorClient:
         logger.info("TAP: fetching %s", url)
 
         try:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                logger.warning("TAP: %s returned %d", url, resp.status_code)
-                return self._empty(req)
+            html = await asyncio.get_event_loop().run_in_executor(
+                None, self._fetch_sync, url
+            )
         except Exception as e:
             logger.error("TAP fetch error: %s", e)
             return self._empty(req)
 
-        fares = self._extract_fares(resp.text)
+        if not html:
+            return self._empty(req)
+
+        fares = self._extract_fares(html)
         if not fares:
             logger.info("TAP: no fares on page %s", url)
             return self._empty(req)
@@ -140,6 +136,18 @@ class TapConnectorClient:
             offers=offers,
             total_results=len(offers),
         )
+
+    def _fetch_sync(self, url: str) -> str | None:
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
+        try:
+            r = sess.get(url, headers=_HEADERS, timeout=int(self.timeout))
+            if r.status_code != 200:
+                logger.warning("TAP: %s returned %d", url, r.status_code)
+                return None
+            return r.text
+        except Exception as e:
+            logger.warning("TAP curl_cffi error: %s", e)
+            return None
 
     @staticmethod
     def _extract_fares(html: str) -> list[dict]:
@@ -181,20 +189,41 @@ class TapConnectorClient:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
 
+        # City-aware matching: LON matches LHR, LGW, STN, etc.
+        valid_origins = set(get_city_airports(req.origin))
+        valid_origins.add(req.origin)
+        valid_dests = set(get_city_airports(req.destination))
+        valid_dests.add(req.destination)
+
+        # First pass: exact date. Second pass: any date (±30 days).
+        matched_fares: list[dict] = []
+        fallback_fares: list[dict] = []
+
         for fare in fares:
             orig = fare.get("originAirportCode", "")
             dest = fare.get("destinationAirportCode", "")
-            if orig != req.origin or dest != req.destination:
+            if orig not in valid_origins or dest not in valid_dests:
                 continue
-
+            price = fare.get("totalPrice")
+            if not price or float(price) <= 0:
+                continue
             dep_date = fare.get("departureDate", "")
-            if dep_date[:10] != target_date:
-                continue
+            if dep_date[:10] == target_date:
+                matched_fares.append(fare)
+            else:
+                fallback_fares.append(fare)
 
+        # Use exact-date fares if available, otherwise use all route fares
+        use_fares = matched_fares if matched_fares else fallback_fares
+
+        for fare in use_fares:
+            dep_date = fare.get("departureDate", "")
             price = fare.get("totalPrice")
             if not price or float(price) <= 0:
                 continue
 
+            orig = fare.get("originAirportCode", "")
+            dest = fare.get("destinationAirportCode", "")
             currency = fare.get("currencyCode") or "EUR"
             price_f = round(float(price), 2)
 
@@ -225,6 +254,12 @@ class TapConnectorClient:
                 f"tp_{orig}{dest}{dep_date}{price_f}{cabin}".encode()
             ).hexdigest()[:12]
 
+            is_exact_date = dep_date[:10] == target_date
+            conditions = {}
+            if not is_exact_date:
+                conditions["price_type"] = "nearby_date"
+                conditions["fare_date"] = dep_date[:10]
+
             offers.append(FlightOffer(
                 id=f"tp_{fid}",
                 price=price_f,
@@ -234,6 +269,7 @@ class TapConnectorClient:
                 inbound=None,
                 airlines=["TAP Air Portugal"],
                 owner_airline="TP",
+                conditions=conditions,
                 booking_url=(
                     f"https://www.flytap.com/en-us/booking"
                     f"?origin={req.origin}&destination={req.destination}"

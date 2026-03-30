@@ -9,17 +9,28 @@ Environment variables:
     CHROME_PATH                — Override Chrome executable path.
     BOOSTED_BROWSER_VISIBLE    — Set to "1" to show browser windows (debugging).
     LETSFG_MAX_BROWSERS — Max concurrent browser processes (default: auto-detect).
+    LETSFG_PROXY               — Global residential proxy URL for all connectors.
+                                 Format: http://user:pass@host:port
+                                 When set, all browser launches and HTTP clients
+                                 route through this proxy. Per-connector env vars
+                                 (e.g. ALLEGIANT_PROXY) override this.
+    LETSFG_PROXY_PORT_RANGE    — Optional port range for round-robin rotation.
+                                 Format: "10001-10010"
+                                 Each proxy call picks the next port in sequence,
+                                 spreading load across multiple proxy endpoints.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import os
 import platform
 import shutil
 import subprocess
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -183,10 +194,22 @@ def get_proxy(env_var: str) -> Optional[dict]:
     Set the env var to an HTTP proxy URL, e.g.
         KAYAK_PROXY="http://user:pass@resi-proxy.example.com:10001"
 
+    Falls back to ``LETSFG_PROXY`` if *env_var* is unset/empty, so a single
+    global proxy covers all connectors without per-airline configuration.
+
     Returns a dict suitable for ``pw.chromium.launch(proxy=...)``,
-    or *None* when the variable is unset/empty.
+    or *None* when no proxy is configured.
     """
     raw = os.environ.get(env_var, "").strip()
+    if not raw:
+        raw = os.environ.get("LETSFG_PROXY", "").strip()
+    if not raw:
+        return None
+    return _parse_proxy_url(raw)
+
+
+def _parse_proxy_url(raw: str) -> Optional[dict]:
+    """Parse a proxy URL into a Playwright proxy dict."""
     if not raw:
         return None
     from urllib.parse import urlparse
@@ -200,16 +223,202 @@ def get_proxy(env_var: str) -> Optional[dict]:
     return result
 
 
+# ── Port rotation for multi-endpoint proxies (e.g. 10001-10010) ──────────────
+
+_port_cycle: Optional[itertools.cycle] = None
+
+
+def _get_port_cycle() -> Optional[itertools.cycle]:
+    """Lazily build a round-robin port iterator from LETSFG_PROXY_PORT_RANGE."""
+    global _port_cycle
+    if _port_cycle is not None:
+        return _port_cycle
+    raw = os.environ.get("LETSFG_PROXY_PORT_RANGE", "").strip()
+    if not raw:
+        return None
+    try:
+        lo, hi = raw.split("-", 1)
+        ports = list(range(int(lo), int(hi) + 1))
+        if not ports:
+            return None
+        _port_cycle = itertools.cycle(ports)
+        return _port_cycle
+    except (ValueError, TypeError):
+        logger.warning("Invalid LETSFG_PROXY_PORT_RANGE=%r — ignoring", raw)
+        return None
+
+
+def _rotating_proxy_url() -> str:
+    """Return LETSFG_PROXY with port rotated if LETSFG_PROXY_PORT_RANGE is set."""
+    base = os.environ.get("LETSFG_PROXY", "").strip()
+    if not base:
+        return ""
+    cycle = _get_port_cycle()
+    if cycle is None:
+        return base
+    p = urlparse(base)
+    port = next(cycle)
+    rotated = p._replace(netloc=f"{p.username}:{p.password}@{p.hostname}:{port}" if p.username else f"{p.hostname}:{port}")
+    return urlunparse(rotated)
+
+
+def get_default_proxy() -> Optional[dict]:
+    """Return the global Playwright proxy dict from ``LETSFG_PROXY``, or None."""
+    return _parse_proxy_url(_rotating_proxy_url())
+
+
+def get_default_proxy_url() -> str:
+    """Return the raw ``LETSFG_PROXY`` URL string, or empty string."""
+    return _rotating_proxy_url()
+
+
+def get_httpx_proxy_url() -> Optional[str]:
+    """Return proxy URL for httpx clients, or None.
+
+    Reads ``LETSFG_PROXY``.  Automatically rotates port when
+    ``LETSFG_PROXY_PORT_RANGE`` is set.  Use as::
+
+        httpx.AsyncClient(proxy=get_httpx_proxy_url())
+    """
+    url = _rotating_proxy_url()
+    return url or None
+
+
+def get_curl_cffi_proxies() -> Optional[dict]:
+    """Return proxy dict for curl_cffi sessions, or None.
+
+    Reads ``LETSFG_PROXY``.  Automatically rotates port when
+    ``LETSFG_PROXY_PORT_RANGE`` is set.  Use as::
+
+        cffi_requests.Session(proxies=get_curl_cffi_proxies())
+    """
+    url = _rotating_proxy_url()
+    if not url:
+        return None
+    return {"http": url, "https": url}
+
+
+def proxy_chrome_args() -> list[str]:
+    """Return Chrome CLI args to route traffic through the global proxy.
+
+    For CDP Chrome subprocess launches, spread into your arg list::
+
+        args = [chrome, ..., *proxy_chrome_args(), ...]
+
+    Returns empty list when ``LETSFG_PROXY`` is not set.
+    Rotates port when ``LETSFG_PROXY_PORT_RANGE`` is set.
+    """
+    raw = _rotating_proxy_url()
+    if not raw:
+        return []
+    p = urlparse(raw)
+    server = f"{p.scheme}://{p.hostname}:{p.port}"
+    args = [f"--proxy-server={server}"]
+    return args
+
+
+def proxy_is_configured() -> bool:
+    """Return True when a global proxy (``LETSFG_PROXY``) is set."""
+    return bool(os.environ.get("LETSFG_PROXY", "").strip())
+
+
 # ── Resource blocking — saves bandwidth when routing through residential proxy ──
 
-_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
+# Resource types to always block (saves ~80% bandwidth)
+_BLOCKED_RESOURCE_TYPES = frozenset({
+    "image",       # jpgs, pngs, webp, svg, etc. - huge bandwidth hog
+    "media",       # videos, audio files
+    "font",        # web fonts (woff2, ttf, etc.)
+    "websocket",   # usually telemetry/tracking sockets
+    "manifest",    # PWA manifests - not needed for scraping
+})
+
+# URL patterns to block (analytics, tracking, ads, social widgets)
+# These are regex-like globs matched against full URL
+_BLOCKED_URL_PATTERNS = (
+    # Google
+    "*google-analytics.com*",
+    "*googletagmanager.com*",
+    "*googlesyndication.com*",
+    "*googleadservices.com*",
+    "*doubleclick.net*",
+    "*google.com/pagead*",
+    # Facebook
+    "*facebook.com/tr*",
+    "*facebook.net/en_US/fbevents*",
+    "*connect.facebook.net*",
+    # Other analytics
+    "*hotjar.com*",
+    "*clarity.ms*",
+    "*fullstory.com*",
+    "*mixpanel.com*",
+    "*segment.com*",
+    "*amplitude.com*",
+    "*heapanalytics.com*",
+    "*intercom.io*",
+    "*zendesk.com/embeddable*",
+    "*appsflyer.com*",
+    "*branch.io*",
+    # Ads
+    "*adsrvr.org*",
+    "*adnxs.com*",
+    "*criteo.com*",
+    "*taboola.com*",
+    "*outbrain.com*",
+    "*amazon-adsystem.com*",
+    "*ads.linkedin.com*",
+    "*ads.twitter.com*",
+    # Tracking pixels & beacons
+    "*pixel.wp.com*",
+    "*bat.bing.com*",
+    "*tr.snapchat.com*",
+    "*tiktok.com/i18n*",
+    "*cdn.mxpnl.com*",
+    # Social widgets
+    "*platform.twitter.com/widgets*",
+    "*buttons.github.io*",
+    "*addthis.com*",
+    "*sharethis.com*",
+    # Error tracking (not needed for scraping)
+    "*sentry.io*",
+    "*bugsnag.com*",
+    "*rollbar.com*",
+    # Chat widgets
+    "*drift.com*",
+    "*crisp.chat*",
+    "*tawk.to*",
+    "*livechatinc.com*",
+)
 
 
 async def _block_handler(route):
-    if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+    """Abort blocked resource types, continue others."""
+    req = route.request
+    if req.resource_type in _BLOCKED_RESOURCE_TYPES:
         await route.abort()
     else:
         await route.continue_()
+
+
+async def _aggressive_block_handler(route):
+    """Block by resource type AND URL pattern for maximum bandwidth savings."""
+    req = route.request
+    url = req.url.lower()
+    
+    # Block by resource type
+    if req.resource_type in _BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+        return
+    
+    # Block by URL pattern (analytics, tracking, ads)
+    for pattern in _BLOCKED_URL_PATTERNS:
+        # Convert glob to simple check (fnmatch-style)
+        check = pattern.replace("*", "")
+        if check in url:
+            await route.abort()
+            return
+    
+    await route.continue_()
 
 
 async def block_heavy_resources(page) -> None:
@@ -219,6 +428,88 @@ async def block_heavy_resources(page) -> None:
     Keeps scripts & stylesheets intact (anti-bot systems may check them).
     """
     await page.route("**/*", _block_handler)
+
+
+async def block_all_heavy_resources(page) -> None:
+    """Aggressively block images, video, fonts, AND tracking/analytics.
+    
+    Use this when bandwidth is critical (expensive residential proxies).
+    Blocks ~90% of typical page weight while keeping core functionality.
+    """
+    await page.route("**/*", _aggressive_block_handler)
+
+
+async def auto_block_if_proxied(page) -> None:
+    """Aggressively block heavy resources when a global proxy is configured.
+
+    No-op when ``LETSFG_PROXY`` is not set (local mode — bandwidth is free).
+    Use this in connectors instead of ``block_heavy_resources`` to auto-detect.
+    
+    Blocks: images, video, fonts, websockets, analytics, tracking, ads, social widgets.
+    """
+    if proxy_is_configured():
+        await page.route("**/*", _aggressive_block_handler)
+
+
+# ── Anti-bot stealth injection ──────────────────────────────────────────────────
+
+_STEALTH_INIT_SCRIPT = """\
+// Hide navigator.webdriver (set by CDP/Playwright)
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+
+// Ensure window.chrome exists (missing in headless/automation)
+if (!window.chrome) {
+  window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+}
+
+// Fake plugins array (headless has empty plugins)
+Object.defineProperty(navigator, 'plugins', {
+  get: () => {
+    const arr = [
+      {name:'Chrome PDF Plugin', filename:'internal-pdf-viewer'},
+      {name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
+      {name:'Native Client', filename:'internal-nacl-plugin'},
+    ];
+    arr.item = i => arr[i];
+    arr.namedItem = n => arr.find(p => p.name === n);
+    arr.refresh = () => {};
+    return arr;
+  }
+});
+
+// Fix languages (automation sometimes misses this)
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+
+// Remove Playwright/CDP tell-tales from Error stack traces
+const _Error = Error;
+Object.defineProperty(globalThis, 'Error', {value: _Error, configurable: true, writable: true});
+
+// Mask permissions query (Notification permission check used by PX/Akamai)
+const origQuery = window.navigator.permissions?.query;
+if (origQuery) {
+  window.navigator.permissions.query = (params) =>
+    params.name === 'notifications'
+      ? Promise.resolve({state: Notification.permission})
+      : origQuery.call(window.navigator.permissions, params);
+}
+"""
+
+
+async def inject_stealth_js(page) -> None:
+    """Inject anti-detection JavaScript into a page.
+
+    Must be called BEFORE any navigation (``page.goto(...)``).
+    Works with both CDP-connected real Chrome and Playwright browsers.
+    Patches navigator.webdriver, plugins, chrome runtime, and permissions
+    to reduce bot detection score on PerimeterX, Akamai, and Cloudflare.
+
+    Usage::
+
+        page = await context.new_page()
+        await inject_stealth_js(page)
+        await page.goto("https://protected-site.com")
+    """
+    await page.add_init_script(_STEALTH_INIT_SCRIPT)
 
 
 def _is_visible() -> bool:
@@ -319,6 +610,7 @@ async def launch_cdp_chrome(
         "--no-default-browser-check",
         "--disable-blink-features=AutomationControlled",
         *stealth_args(),
+        *proxy_chrome_args(),
         *(extra_args or []),
         start_url,
     ]
@@ -395,6 +687,7 @@ async def launch_headed_browser(
     *,
     channel: str = "chrome",
     extra_args: Optional[list[str]] = None,
+    proxy: Optional[dict] = None,
 ):
     """
     Launch a headed Playwright browser with stealth window positioning.
@@ -402,28 +695,38 @@ async def launch_headed_browser(
     Used by connectors that need Playwright.launch(headless=False) instead of CDP.
     Window is pushed off-screen unless BOOSTED_BROWSER_VISIBLE=1.
 
+    When *proxy* is not provided, automatically uses ``LETSFG_PROXY`` if set.
+
     Returns the Playwright Browser object.
     """
     from playwright.async_api import async_playwright
 
     args = [*stealth_args(), *(extra_args or [])]
 
+    # Auto-resolve proxy from LETSFG_PROXY when not explicitly provided
+    if proxy is None:
+        proxy = get_default_proxy()
+
     headless = is_headless()
     pw = await async_playwright().start()
     _launched_pw_instances.append(pw)
+
+    launch_kw: dict = {
+        "headless": headless,
+        "channel": channel,
+        "args": args if args else None,
+    }
+    if proxy:
+        launch_kw["proxy"] = proxy
+
     try:
-        browser = await pw.chromium.launch(
-            headless=headless,
-            channel=channel,
-            args=args if args else None,
-        )
+        browser = await pw.chromium.launch(**launch_kw)
     except Exception:
         # Fallback: no channel (use bundled Chromium)
-        browser = await pw.chromium.launch(
-            headless=headless,
-            args=args if args else None,
-        )
-    logger.info("Browser launched (channel=%s, headless=%s)", channel, headless)
+        launch_kw.pop("channel", None)
+        browser = await pw.chromium.launch(**launch_kw)
+    logger.info("Browser launched (channel=%s, headless=%s, proxy=%s)",
+                channel, headless, bool(proxy))
     return browser
 
 
@@ -433,34 +736,35 @@ async def cleanup_module_browsers(*modules) -> int:
     """
     Clean up browser resources stored in module-level globals.
 
-    Introspects each module for known global names (_browser, _chrome_proc,
-    _pw_instance, _nd_browser, _cdp_browser, _context, _warm_page) and
-    closes/terminates them.  Returns number of resources closed.
+    Introspects each module for known global names and closes/terminates them.
+    Returns number of resources closed.
     """
     closed = 0
     for mod in modules:
-        # Close Playwright browser context (easyjet)
-        ctx = getattr(mod, '_context', None)
-        if ctx:
-            try:
-                await ctx.close()
-            except Exception:
-                pass
-            mod._context = None
-            closed += 1
+        # Close Playwright browser contexts
+        for attr in ('_context', '_pw_context'):
+            ctx = getattr(mod, attr, None)
+            if ctx:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+                setattr(mod, attr, None)
+                closed += 1
 
-        # Close warm page (flynas keepalive)
-        wp = getattr(mod, '_warm_page', None)
-        if wp:
-            try:
-                await wp.close()
-            except Exception:
-                pass
-            mod._warm_page = None
-            closed += 1
+        # Close pages (warm pages, persistent pages, leaked singleton pages)
+        for attr in ('_warm_page', '_persistent_page', '_page', '_api_page'):
+            pg = getattr(mod, attr, None)
+            if pg:
+                try:
+                    await pg.close()
+                except Exception:
+                    pass
+                setattr(mod, attr, None)
+                closed += 1
 
         # Close primary Playwright browser
-        for attr in ('_browser', '_cdp_browser'):
+        for attr in ('_browser', '_cdp_browser', '_pw_browser'):
             browser = getattr(mod, attr, None)
             if browser:
                 try:
@@ -488,6 +792,12 @@ async def cleanup_module_browsers(*modules) -> int:
             except Exception:
                 pass
             mod._pw_instance = None
+            # Remove from global tracking list so cleanup_all_browsers()
+            # won't stop other modules' Playwright instances.
+            try:
+                _launched_pw_instances.remove(pw)
+            except ValueError:
+                pass
             closed += 1
 
         # Terminate Chrome subprocess
@@ -503,7 +813,17 @@ async def cleanup_module_browsers(*modules) -> int:
                 except Exception:
                     pass
             mod._chrome_proc = None
+            # Remove from global tracking list so cleanup_all_browsers()
+            # won't try to kill it again (or kill other modules' procs).
+            try:
+                _launched_procs.remove(proc)
+            except ValueError:
+                pass
             closed += 1
+
+        # Reset the browser init lock so _get_browser() re-creates after cleanup
+        if getattr(mod, '_browser_lock', None) is not None:
+            mod._browser_lock = None
 
     return closed
 

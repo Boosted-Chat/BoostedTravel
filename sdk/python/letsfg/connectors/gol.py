@@ -32,6 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, get_default_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ async def _get_context():
         os.path.abspath(_USER_DATA_DIR),
         channel="chrome",
         headless=False,
+        proxy=get_default_proxy(),
         args=[
             "--disable-blink-features=AutomationControlled",
             "--window-position=-2400,-2400",
@@ -98,6 +100,7 @@ async def _ensure_persistent_page():
 
     ctx = await _get_context()
     page = await ctx.new_page()
+    await auto_block_if_proxied(page)
 
     logger.info("GOL: loading Angular SPA...")
     await page.goto(f"{_GOL_BASE}/compra", wait_until="domcontentloaded", timeout=30000)

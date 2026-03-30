@@ -45,6 +45,9 @@ _HEADERS = {
 
 # Static slug mapping for major KLM airports. Falls back to airport API.
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "ROM": "rome",
+    "MIL": "milan", "TYO": "tokyo", "WAS": "washington-dc",
     # Netherlands
     "AMS": "amsterdam",
     # UK / Ireland

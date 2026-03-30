@@ -40,7 +40,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, get_curl_cffi_proxies, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,7 @@ async def _get_browser():
             f"--remote-debugging-port={_DEBUG_PORT}",
             f"--user-data-dir={_USER_DATA_DIR}",
             "--no-first-run",
+            *proxy_chrome_args(),
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
             "--disable-http2",
@@ -194,7 +195,7 @@ class VoloteaConnectorClient:
         route_key = f"{req.origin}-{req.destination}"
         reverse_key = f"{req.destination}-{req.origin}"
 
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
         target_date = req.date_from.strftime("%Y%m%d")
         booking_url = self._build_booking_url(req)
 
@@ -387,6 +388,7 @@ class VoloteaConnectorClient:
 
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             # API response interception
             captured: dict[str, Any] = {}

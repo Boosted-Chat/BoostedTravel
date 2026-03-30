@@ -34,7 +34,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied, inject_stealth_js
+from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ async def _get_context():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
@@ -186,8 +188,17 @@ class AirEuropaConnectorClient:
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
+
+        # ── City code expansion (LON → LHR, BCN stays BCN) ──
+        origins = get_city_airports(req.origin)
+        destinations = get_city_airports(req.destination)
+        api_origin = origins[0] if origins else req.origin
+        api_dest = destinations[0] if destinations else req.destination
+
         context = await _get_context()
         page = await context.new_page()
+        await inject_stealth_js(page)
+        await auto_block_if_proxied(page)
 
         search_data: dict = {}
         api_event = asyncio.Event()
@@ -196,72 +207,130 @@ class AirEuropaConnectorClient:
             nonlocal search_data
             url = response.url.lower()
             if response.status not in (200, 201):
+                if response.status in (403, 429) and any(k in url for k in ("air-bounds", "availability", "flight", "search", "offer")):
+                    logger.warning("AirEuropa: blocked %d on %s", response.status, url[:120])
                 return
             try:
-                if "air-bounds" not in url:
+                # Only capture Amadeus DES flight API responses — exclude CMS/masterdata/channel URLs
+                is_flight_api = any(k in url for k in (
+                    "air-bounds", "air-shopping", "availability",
+                    "/offers", "flight-search", "low-fare",
+                ))
+                # Exclude known non-flight API paths
+                is_excluded = any(k in url for k in (
+                    "channel-cms", "masterdata", "config", "tracking",
+                    "analytics", "tag-manager", "i18n", "assets",
+                    "login", "session", "payment",
+                ))
+                if not is_flight_api or is_excluded:
                     return
                 ct = response.headers.get("content-type", "")
                 if "json" not in ct:
                     return
                 body = await response.text()
-                if len(body) < 100:
+                if len(body) < 200:
                     return
                 data = json.loads(body)
-                if isinstance(data, dict) and "data" in data and isinstance(data.get("data"), dict):
-                    search_data.update(data)
-                    api_event.set()
-                    logger.info("AirEuropa: captured air-bounds API (%d keys, %dB)", len(data), len(body))
+                if isinstance(data, dict):
+                    keys = list(data.keys())[:8]
+                    logger.info("AirEuropa: API response keys=%s from %s (%dB)", keys, url[:100], len(body))
+                    # Primary: Amadeus DES format with data.airBoundGroups
+                    inner = data.get("data", {})
+                    if isinstance(inner, dict) and ("airBoundGroups" in inner or "airBounds" in inner):
+                        search_data.update(data)
+                        api_event.set()
+                        logger.info("AirEuropa: captured air-bounds API (%d keys, %dB)", len(data), len(body))
+                    # Alternate: direct flight results with flight-specific keys
+                    elif any(k in data for k in ("flights", "offers", "itineraries", "airBounds", "airBoundGroups")):
+                        search_data.update(data)
+                        api_event.set()
+                        logger.info("AirEuropa: captured alternate flight API (%d keys)", len(data))
             except Exception:
                 pass
 
         page.on("response", _on_response)
 
         try:
-            logger.info("AirEuropa: loading homepage for %s→%s", req.origin, req.destination)
-            await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(5.0)
+            logger.info("AirEuropa: loading search for %s→%s", req.origin, req.destination)
+
+            # Navigate directly to Air Europa's digital booking flow with search params
+            # (avoids fragile form fill + Angular validation issues)
+            dep = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, 'strftime') else str(req.date_from)
+            dep_compact = dep.replace("-", "")  # 20260615
+            adults = req.adults or 1
+
+            # Air Europa's booking URL format (Amadeus DES Angular app)
+            # Use expanded airport codes (LON→LHR) since city codes cause redirect to /booking/recovery
+            direct_url = (
+                f"https://digital.aireuropa.com/booking/availability?origin={api_origin}"
+                f"&destination={api_dest}&departureDate={dep_compact}"
+                f"&adt={adults}&chd={req.children or 0}&inf={req.infants or 0}"
+                f"&cabinClass=ECONOMY&tripType=ONE_WAY&channel=WEB&market=GB&lang=en"
+            )
+
+            # First: establish session on homepage (needed for Amadeus DES auth tokens)
+            await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(3.0)
             await _dismiss_overlays(page)
 
-            # One-way toggle — click mat-select inside common-select.way-trip
-            await page.evaluate("""() => {
-                const ms = document.querySelector('common-select.way-trip mat-select');
-                if (ms && ms.offsetHeight > 0) ms.click();
-            }""")
-            await asyncio.sleep(0.8)
-            await page.evaluate("""() => {
-                const opts = document.querySelectorAll('mat-option');
-                for (const o of opts) {
-                    const t = (o.textContent || '').trim().toLowerCase();
-                    if (t.includes('one way')) { o.click(); return; }
-                }
-            }""")
-            await asyncio.sleep(1.0)
+            # Navigate to results page
+            logger.info("AirEuropa: navigating to booking flow: %s", direct_url[:120])
+            await page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(5.0)
 
-            ok = await self._fill_airport(page, "input#departure", req.origin)
-            if not ok:
-                return self._empty(req)
-            await asyncio.sleep(1.0)
+            # Check if we landed on a different URL (redirect)
+            current_url = page.url.lower()
+            logger.info("AirEuropa: landed on %s", page.url[:150])
 
-            ok = await self._fill_airport(page, "input#arrival", req.destination)
-            if not ok:
-                return self._empty(req)
-            await asyncio.sleep(1.0)
+            # If redirected back to homepage, try form-fill approach as fallback
+            if "digital.aireuropa" not in current_url and "booking" not in current_url:
+                logger.info("AirEuropa: direct URL failed, trying form fill fallback")
+                await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=20000)
+                await asyncio.sleep(4.0)
+                await _dismiss_overlays(page)
 
-            ok = await self._fill_date(page, req)
-            if not ok:
-                return self._empty(req)
+                # One-way toggle
+                await page.evaluate("""() => {
+                    const ms = document.querySelector('common-select.way-trip mat-select');
+                    if (ms && ms.offsetHeight > 0) ms.click();
+                }""")
+                await asyncio.sleep(0.8)
+                await page.evaluate("""() => {
+                    const opts = document.querySelectorAll('mat-option');
+                    for (const o of opts) {
+                        const t = (o.textContent || '').trim().toLowerCase();
+                        if (t.includes('one way') || t.includes('one-way')) { o.click(); return; }
+                    }
+                }""")
+                await asyncio.sleep(1.0)
 
-            # Click search — ae-btn-block ae-btn-primary (text 'Search'), NOT ae-btn-primary alone (that's 'My account')
-            await page.evaluate("""() => {
-                const btn = document.querySelector('button.ae-btn-block.ae-btn-primary');
-                if (btn && btn.offsetHeight > 0) { btn.click(); return; }
-                const btns = document.querySelectorAll('button');
-                for (const b of btns) {
-                    const t = (b.textContent || '').trim().toLowerCase();
-                    if (t === 'search' && b.offsetHeight > 0) { b.click(); return; }
-                }
-            }""")
-            logger.info("AirEuropa: search clicked")
+                ok = await self._fill_airport(page, "input#departure", req.origin)
+                if not ok:
+                    return self._empty(req)
+                await asyncio.sleep(1.0)
+
+                ok = await self._fill_airport(page, "input#arrival", req.destination)
+                if not ok:
+                    return self._empty(req)
+                await asyncio.sleep(1.0)
+
+                ok = await self._fill_date(page, req)
+                if not ok:
+                    return self._empty(req)
+
+                # Click search and wait for navigation
+                async with page.expect_navigation(timeout=20000, wait_until="domcontentloaded"):
+                    await page.evaluate("""() => {
+                        const btn = document.querySelector('button.ae-btn-block.ae-btn-primary');
+                        if (btn && btn.offsetHeight > 0) { btn.click(); return; }
+                        const btns = document.querySelectorAll('button');
+                        for (const b of btns) {
+                            const t = (b.textContent || '').trim().toLowerCase();
+                            if (t === 'search' && b.offsetHeight > 0) { b.click(); return; }
+                        }
+                    }""")
+                logger.info("AirEuropa: form submitted, navigated to %s", page.url[:120])
+                await asyncio.sleep(5.0)
 
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + remaining

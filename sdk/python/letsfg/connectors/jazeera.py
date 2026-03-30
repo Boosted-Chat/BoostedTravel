@@ -37,6 +37,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ async def _ensure_token() -> str | None:
     try:
         from curl_cffi import requests as cffi_requests
 
-        ses = cffi_requests.Session(impersonate="chrome131")
+        ses = cffi_requests.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         r = ses.post(_TOKEN_URL, headers=_HEADERS, json={}, timeout=15)
         if r.status_code not in (200, 201):
             logger.warning("Jazeera auth failed: %s %s", r.status_code, r.text[:200])
@@ -136,7 +137,7 @@ class JazeeraConnectorClient:
             body = self._build_request_body(req, currency)
             headers = {**_HEADERS, "Authorization": token}
 
-            ses = cffi_requests.Session(impersonate="chrome131")
+            ses = cffi_requests.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
             r = ses.post(
                 _AVAIL_URL,
                 headers=headers,

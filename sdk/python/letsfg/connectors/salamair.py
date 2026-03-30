@@ -1,10 +1,10 @@
 """
-SalamAir direct API connector — pure httpx, no browser needed.
+SalamAir direct API connector — curl_cffi for TLS fingerprint bypass.
 
 SalamAir (IATA: OV) is an Omani low-cost carrier based in Muscat, operating
 60+ routes from Muscat to the Middle East, South Asia, Africa, and Europe.
 
-Strategy (httpx, no browser):
+Strategy (curl_cffi required — api.salamair.com fingerprints TLS):
   The booking.salamair.com React SPA calls a REST API at api.salamair.com.
   We replicate those exact calls:
     1. POST /api/session → get JWT session token (X-Session-Token header)
@@ -26,13 +26,14 @@ Response structure (per market date):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
 from datetime import datetime
 from typing import Optional
 
-import httpx
+from curl_cffi import requests as creq
 
 from ..models.flights import (
     FlightOffer,
@@ -41,6 +42,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -62,48 +64,33 @@ _HEADERS = {
 
 
 class SalamAirConnectorClient:
-    """SalamAir scraper — httpx calls to api.salamair.com REST API."""
+    """SalamAir scraper — curl_cffi calls to api.salamair.com REST API."""
 
     def __init__(self, timeout: float = 20.0):
         self.timeout = timeout
-        self._http: Optional[httpx.AsyncClient] = None
-        self._token: Optional[str] = None
-
-    async def _client(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                timeout=self.timeout,
-                headers=_HEADERS,
-                follow_redirects=True,
-            )
-        return self._http
-
-    async def _ensure_token(self, client: httpx.AsyncClient) -> str:
-        """Create a session and cache the JWT token."""
-        if self._token:
-            return self._token
-        resp = await client.post(f"{_API_BASE}/api/session")
-        token = resp.headers.get("x-session-token", "")
-        if not token:
-            raise RuntimeError(f"SalamAir session failed: {resp.status_code}")
-        self._token = token
-        return token
 
     async def close(self):
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
-        self._token = None
+        pass
 
-    async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        t0 = time.monotonic()
-        client = await self._client()
+    def _search_sync(self, req: FlightSearchRequest) -> dict | None:
+        """Run session + search synchronously via curl_cffi."""
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
+        hdrs = dict(_HEADERS)
+        to = int(self.timeout)
 
+        # 1. Get session token
         try:
-            token = await self._ensure_token(client)
+            resp = sess.post(f"{_API_BASE}/api/session", headers=hdrs, timeout=to)
         except Exception as e:
             logger.error("SalamAir session error: %s", e)
-            return self._empty(req)
+            return None
 
+        token = resp.headers.get("x-session-token", "")
+        if not token:
+            logger.warning("SalamAir session failed: %d", resp.status_code)
+            return None
+
+        # 2. Search flights
         date_str = req.date_from.strftime("%Y-%m-%d")
         params = {
             "TripType": "1",
@@ -123,26 +110,29 @@ class SalamAirConnectorClient:
         url = f"{_API_BASE}/api/flights?{qs}"
 
         try:
-            resp = await client.get(
-                url, headers={"X-Session-Token": token}
-            )
-        except httpx.TimeoutException:
-            logger.warning("SalamAir search timed out %s→%s", req.origin, req.destination)
-            return self._empty(req)
+            hdrs["X-Session-Token"] = token
+            resp = sess.get(url, headers=hdrs, timeout=to)
         except Exception as e:
             logger.error("SalamAir search error: %s", e)
-            return self._empty(req)
+            return None
 
         if resp.status_code != 200:
             logger.warning("SalamAir search %d: %s", resp.status_code, resp.text[:200])
-            # Token may have expired — clear for next call
-            self._token = None
-            return self._empty(req)
+            return None
 
         try:
-            data = resp.json()
+            return resp.json()
         except Exception:
             logger.warning("SalamAir non-JSON response")
+            return None
+
+    async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        t0 = time.monotonic()
+
+        data = await asyncio.get_event_loop().run_in_executor(
+            None, self._search_sync, req
+        )
+        if not data:
             return self._empty(req)
 
         offers = self._parse_trips(data, req)

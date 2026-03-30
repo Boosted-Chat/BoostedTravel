@@ -34,7 +34,17 @@ LetsFG is the largest agent-native flight search and booking toolkit. It gives y
 | Google Flights API | N/A | N/A | Doesn't exist (no public API) | N/A |
 | **LetsFG** | **10 seconds** | **1 tool call** | **195 airlines + GDS in parallel** | **We maintain it** |
 
-Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate prices based on demand tracking, cookie/session tracking, browser fingerprinting, and surge pricing. **LetsFG returns the raw airline price every time.** 100% free — just star our GitHub repo for unlimited access.
+Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate prices based on demand tracking, cookie/session tracking, browser fingerprinting, and surge pricing. **LetsFG returns the raw airline price every time.**
+
+## Pricing Model
+
+| Step | Cost | What You Get |
+|------|------|--------------|
+| **Search** | FREE | Price, times, duration, stops. **Star users** see airline names. **Non-star users** see masked results ("Airline #1"). |
+| **Unlock** | 1% (min $1) | Reveals airline name + booking URL + confirmed live price. Locks offer for 30 min. |
+| **Book** | Ticket price | Exact airline price + Stripe processing (2.9% + 30¢). Zero markup. |
+
+**GitHub star bonus:** Star the repo to see airline names in search results — lets you comparison shop before deciding which offer to unlock.
 
 ## How It Works (3 Steps)
 
@@ -43,6 +53,10 @@ Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate price
 POST /api/v1/flights/search
 ```
 Search 400+ airlines across multiple providers + 195 local airline connectors. Returns real-time prices with zero markup or bias. Completely free, no limits.
+
+**Airline name visibility:**
+- **Star users**: See full airline names (e.g., "Ryanair", "British Airways") — compare before unlocking
+- **Non-star users**: See masked names ("Airline #1", "Airline #2") — must unlock to reveal
 
 **Local-only search** (no API key, no backend):
 ```python
@@ -53,26 +67,28 @@ result = await search_local("GDN", "BCN", "2026-06-15")
 result = await search_local("GDN", "BCN", "2026-06-15", max_browsers=4)
 ```
 
-### 2. Unlock (FREE)
+### 2. Unlock (1% fee, min $1)
 ```
 POST /api/v1/bookings/unlock
 ```
-Confirm the live price and lock it for booking. FREE with GitHub star verification.
+Reveal the airline name + booking URL and confirm the live price.
 
 **What happens when you unlock:**
-1. LetsFG sends `offer_id` to the airline's NDC/GDS system
-2. Airline confirms **current live price** (may differ from search)
-3. Offer **reserved for 30 minutes** — you must book within this window
-4. Returns `confirmed_price`, `confirmed_currency`, `offer_expires_at`
+1. You're charged the unlock fee (1% of ticket price, minimum $1)
+2. LetsFG sends `offer_id` to the airline's NDC/GDS system
+3. Airline confirms **current live price** (may differ from search)
+4. Airline name and booking URL are revealed
+5. Offer **reserved for 30 minutes** — you must book within this window
 
-**Requirements:** GitHub star must be verified first (`letsfg star --github <username>` or `bt.link_github(username)`). Without verification, unlock returns HTTP 403.
+**Requirements:** Payment method must be attached (`letsfg setup-payment`). Without payment method, unlock returns HTTP 402.
 
 **Key unlock details:**
 - Input: `offer_id` (from search results) — this is the only required parameter
-- HTTP 403 → GitHub star not verified — star the repo and call link-github
-- HTTP 410 → offer expired (airline sold the seats) — search again
+- Fee: 1% of ticket price (minimum $1) — charged immediately via Stripe
+- HTTP 402 → No payment method — run `letsfg setup-payment`
+- HTTP 410 → Offer expired (airline sold the seats) — search again
 - The `confirmed_price` may differ from search price (airline prices change in real-time)
-- If 30-minute window expires without booking, search and unlock again (free)
+- If 30-minute window expires without booking, search and unlock again (another fee)
 
 ```python
 from letsfg import LetsFG, PaymentRequiredError, OfferExpiredError
@@ -252,12 +268,12 @@ npx letsfg-mcp
 | Command | Description | Cost |
 |---------|-------------|------|
 | `letsfg register` | Get your API key | Free |
-| `letsfg search <origin> <dest> <date>` | Search flights | Free |
+| `letsfg search <origin> <dest> <date>` | Search flights (star = airline names visible) | Free |
 | `letsfg locations <query>` | Resolve city/airport to IATA | Free |
-| `letsfg unlock <offer_id>` | Unlock offer details | Free |
+| `letsfg unlock <offer_id>` | Reveal airline + confirm price | 1% (min $1) |
 | `letsfg book <offer_id>` | Book the flight | Ticket price |
-| `letsfg star --github <username>` | Link GitHub for free access | Free |
-| `letsfg setup-payment` | Attach payment card (required for booking) | Free |
+| `letsfg star --github <username>` | Link GitHub to see airline names in search | Free |
+| `letsfg setup-payment` | Attach payment card (required for unlock/book) | Free |
 | `letsfg me` | View profile & usage | Free |
 
 ## Authentication — How to Use Your API Key
@@ -515,8 +531,8 @@ This section documents the safety guarantees that make LetsFG safe for autonomou
 | `get_agent_profile` | None (read-only) | Free | Yes | Yes |
 | `setup_payment` | Updates payment method | Free | Yes | Yes (last write wins) |
 | `link_github` | Verifies GitHub star | Free | Yes | Yes |
-| `unlock_flight_offer` | Reserves offer | Free | Not idempotent | **No** |
-| `book_flight` | Creates airline reservation | Free | **Only with idempotency_key** | **With key: yes** |
+| `unlock_flight_offer` | Charges fee, reserves offer | 1% (min $1) | **No** — charges fee each time | **No** |
+| `book_flight` | Creates airline reservation | Ticket price | **Only with idempotency_key** | **With key: yes** |
 
 ### Idempotency Keys (Preventing Double-Bookings)
 

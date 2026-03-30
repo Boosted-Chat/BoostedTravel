@@ -44,6 +44,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, launch_headed_browser
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,11 @@ class ZipairConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             logger.info("Zipair: Playwright fallback for %s→%s", req.origin, req.destination)
             await page.goto("https://www.zipair.net/en",

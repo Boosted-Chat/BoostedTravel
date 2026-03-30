@@ -36,6 +36,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -50,7 +51,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_popen_kwargs, find_chrome, _launched_procs
+from .airline_routes import get_city_airports
+from .browser import stealth_popen_kwargs, find_chrome, _launched_procs, get_curl_cffi_proxies, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,7 @@ async def _get_browser():
         f"--remote-debugging-port={_DEBUG_PORT}",
         f"--user-data-dir={_USER_DATA_DIR}",
         "--no-first-run",
+        *proxy_chrome_args(),
         "--no-default-browser-check",
         "--disable-blink-features=AutomationControlled",
         "--disable-http2",
@@ -144,6 +147,42 @@ async def _get_browser():
     return _browser
 
 
+async def _reset_chrome_profile():
+    """Kill Chrome and wipe the profile so next farm gets a fresh start."""
+    global _browser, _pw_instance, _chrome_proc, _farmed_cookies, _farm_timestamp
+    logger.info("Norwegian: resetting Chrome profile for fresh Incapsula farm")
+    if _browser:
+        try:
+            await _browser.close()
+        except Exception:
+            pass
+        _browser = None
+    if _pw_instance:
+        try:
+            await _pw_instance.stop()
+        except Exception:
+            pass
+        _pw_instance = None
+    if _chrome_proc:
+        try:
+            _chrome_proc.terminate()
+            _chrome_proc.wait(timeout=5)
+        except Exception:
+            try:
+                _chrome_proc.kill()
+            except Exception:
+                pass
+        _chrome_proc = None
+    _farmed_cookies = []
+    _farm_timestamp = 0.0
+    if os.path.isdir(_USER_DATA_DIR):
+        try:
+            shutil.rmtree(_USER_DATA_DIR)
+            logger.info("Norwegian: deleted stale Chrome profile %s", _USER_DATA_DIR)
+        except Exception as e:
+            logger.warning("Norwegian: failed to delete Chrome profile: %s", e)
+
+
 class NorwegianConnectorClient:
     """Norwegian hybrid scraper — cookie-farm + curl_cffi direct API."""
 
@@ -156,6 +195,52 @@ class NorwegianConnectorClient:
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
         Search Norwegian flights via cookie-farm + curl_cffi direct API.
+
+        Norwegian requires airport codes (LGW, LTN), not city codes (LON).
+        Expands city codes and merges results.
+        """
+        origins = get_city_airports(req.origin)
+        destinations = get_city_airports(req.destination)
+
+        if len(origins) > 1 or len(destinations) > 1:
+            all_offers: list[FlightOffer] = []
+            for o in origins:
+                for d in destinations:
+                    if o == d:
+                        continue
+                    sub_req = FlightSearchRequest(
+                        origin=o,
+                        destination=d,
+                        date_from=req.date_from,
+                        return_from=req.return_from,
+                        adults=req.adults,
+                        children=req.children,
+                        infants=req.infants,
+                        cabin_class=req.cabin_class,
+                        currency=req.currency,
+                        max_stopovers=req.max_stopovers,
+                    )
+                    try:
+                        resp = await self._search_single(sub_req)
+                        all_offers.extend(resp.offers)
+                    except Exception:
+                        pass
+            all_offers.sort(key=lambda o: o.price)
+            search_hash = hashlib.md5(
+                f"norwegian{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+            return FlightSearchResponse(
+                search_id=f"fs_{search_hash}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=all_offers[0].currency if all_offers else req.currency,
+                offers=all_offers,
+                total_results=len(all_offers),
+            )
+        return await self._search_single(req)
+
+    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """Search a single origin→destination pair (airport-level codes).
 
         Fast path (~1s): curl_cffi with farmed Incapsula cookies.
         Slow path (~18s): Playwright farms cookies first, then curl_cffi.
@@ -172,7 +257,16 @@ class NorwegianConnectorClient:
 
             # If search failed (expired cookies), re-farm once and retry
             if data is None:
-                logger.info("Norwegian: API search failed, re-farming cookies")
+                logger.warning("Norwegian: API search failed, re-farming cookies")
+                cookies = await self._farm_cookies(req)
+                if cookies:
+                    data = await self._api_search(req, cookies)
+
+            # If still failing, reset the Chrome profile (Incapsula may have
+            # flagged the browser fingerprint) and try from scratch
+            if data is None:
+                logger.warning("Norwegian: persistent failure, resetting Chrome profile")
+                await _reset_chrome_profile()
                 cookies = await self._farm_cookies(req)
                 if cookies:
                     data = await self._api_search(req, cookies)
@@ -232,6 +326,7 @@ class NorwegianConnectorClient:
 
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             logger.info("Norwegian: farming Incapsula cookies from booking.norwegian.com")
             await page.goto(
@@ -273,7 +368,7 @@ class NorwegianConnectorClient:
         self, req: FlightSearchRequest, cookies: list[dict]
     ) -> Optional[dict]:
         """Synchronous curl_cffi token + search."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
         # Load farmed cookies into session
         for c in cookies:

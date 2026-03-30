@@ -50,7 +50,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_args
+from .browser import stealth_args, get_curl_cffi_proxies, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -197,9 +197,11 @@ class CondorConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             search_done = asyncio.Event()
 
@@ -277,7 +279,7 @@ class CondorConnectorClient:
         self, req: FlightSearchRequest, cookies: list[dict],
     ) -> Optional[dict]:
         """Synchronous curl_cffi vacancies search."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
         # Load farmed cookies into session (may be empty for cookieless path)
         for c in cookies:
@@ -353,9 +355,11 @@ class CondorConnectorClient:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             captured_data: dict = {}
             api_event = asyncio.Event()

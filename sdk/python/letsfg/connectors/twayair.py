@@ -62,7 +62,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_popen_kwargs, find_chrome, _launched_procs
+from .browser import stealth_popen_kwargs, find_chrome, _launched_procs, get_curl_cffi_proxies, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,7 @@ async def _get_browser():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-http2",
@@ -237,7 +238,7 @@ class TwayAirConnectorClient:
         csrf_header: str,
     ) -> Optional[list[FlightOffer]]:
         """Synchronous curl_cffi POST to getLowestFare."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
         for name, value in cookies.items():
             sess.cookies.set(name, value, domain="www.twayair.com")
@@ -325,6 +326,7 @@ class TwayAirConnectorClient:
                 page = context.pages[0]
             else:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
         else:
             context = await browser.new_context(
                 viewport={"width": 1440, "height": 900},
@@ -333,6 +335,7 @@ class TwayAirConnectorClient:
                 service_workers="block",
             )
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
         try:
             try:
@@ -430,6 +433,15 @@ class TwayAirConnectorClient:
         except Exception as e:
             logger.warning("TwayAir [CDP]: error: %s", e)
             return None
+        finally:
+            try:
+                if is_cdp:
+                    await page.goto("about:blank", wait_until="commit", timeout=5000)
+                else:
+                    await page.close()
+                    await context.close()
+            except Exception:
+                pass
 
     def _determine_currency(self, req: FlightSearchRequest, is_domestic: bool) -> str:
         if is_domestic:

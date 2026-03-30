@@ -204,6 +204,34 @@ def get_city_airports(iata: str) -> list[str]:
     return CITY_AIRPORTS.get(iata.upper().strip(), [iata.upper().strip()])
 
 
+def city_match_set(iata: str) -> frozenset[str]:
+    """Return all IATA codes that should match *iata*, expanding city codes.
+
+    For city codes like 'LON' returns frozenset({'LON','LHR','LGW','STN','LTN','LCY','SEN'}).
+    For airport codes like 'LHR' returns frozenset({'LHR'}).
+    Always includes the input code itself.
+    """
+    codes = set(get_city_airports(iata))
+    codes.add(iata.upper().strip())
+    return frozenset(codes)
+
+
+def resolve_slug(iata: str, slug_dict: dict[str, str]) -> str | None:
+    """Look up *iata* in *slug_dict* with city-code expansion fallback.
+
+    Tries the literal code first, then expands city codes (e.g. LON → LHR)
+    and returns the first matching slug.  Works for any EveryMundo connector.
+    """
+    slug = slug_dict.get(iata)
+    if slug:
+        return slug
+    for airport in get_city_airports(iata):
+        slug = slug_dict.get(airport)
+        if slug:
+            return slug
+    return None
+
+
 def get_country(iata: str) -> str | None:
     """Resolve an IATA airport or city code to its ISO country code."""
     iata = iata.upper().strip()

@@ -46,6 +46,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, proxy_chrome_args
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ async def _get_browser():
                     f"--user-data-dir={_USER_DATA_DIR}",
                     "--window-size=1366,768",
                     "--no-first-run",
+                    *proxy_chrome_args(),
                     "--no-default-browser-check",
                     "--disable-blink-features=AutomationControlled",
                     "--window-position=-2400,-2400",
@@ -258,6 +260,7 @@ class JetstarConnectorClient:
                 service_workers="block",
             )
         page = await context.new_page()
+        await auto_block_if_proxied(page)
 
         try:
             # Kasada warm-up: visit base booking page first to acquire

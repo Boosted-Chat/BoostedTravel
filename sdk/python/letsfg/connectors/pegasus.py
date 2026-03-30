@@ -33,6 +33,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied
+from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,7 @@ _CHROME_FLAGS = [
     "--force-color-profile=srgb",
     "--metrics-recording-only",
     "--no-first-run",
+    *proxy_chrome_args(),
     "--password-store=basic",
     "--no-service-autorun",
     "--disable-search-engine-choice-screen",
@@ -108,7 +111,7 @@ async def _get_browser():
         if _browser and _browser.is_connected():
             return _browser
 
-        from connectors.browser import find_chrome
+        from .browser import find_chrome
 
         chrome = find_chrome()
         user_data = os.path.join(
@@ -162,6 +165,26 @@ class PegasusConnectorClient:
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        # Expand city codes (LON → LHR) — Pegasus needs airport codes in URL
+        origins = get_city_airports(req.origin)
+        if len(origins) > 1:
+            req = FlightSearchRequest(
+                origin=origins[0], destination=req.destination,
+                date_from=req.date_from, return_from=req.return_from,
+                adults=req.adults, children=req.children, infants=req.infants,
+                cabin_class=req.cabin_class, currency=req.currency,
+                max_stopovers=req.max_stopovers,
+            )
+        dests = get_city_airports(req.destination)
+        if len(dests) > 1:
+            req = FlightSearchRequest(
+                origin=req.origin, destination=dests[0],
+                date_from=req.date_from, return_from=req.return_from,
+                adults=req.adults, children=req.children, infants=req.infants,
+                cabin_class=req.cabin_class, currency=req.currency,
+                max_stopovers=req.max_stopovers,
+            )
+
         t0 = time.monotonic()
         browser = await _get_browser()
         context = browser.contexts[0]
@@ -217,6 +240,7 @@ class PegasusConnectorClient:
                 req.destination,
                 req.date_from.strftime("%Y-%m-%d"),
             )
+            await auto_block_if_proxied(page)
             await page.goto(
                 search_url,
                 wait_until="load",

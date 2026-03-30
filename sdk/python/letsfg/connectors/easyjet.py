@@ -40,7 +40,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs
+from .browser import find_chrome, stealth_popen_kwargs, proxy_chrome_args, auto_block_if_proxied
+from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ async def _get_browser():
                 pass
 
         from playwright.async_api import async_playwright
-        from connectors.browser import find_chrome, stealth_popen_kwargs, _launched_procs
+        from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
 
         # Try connecting to existing Chrome on the port first
         pw = None
@@ -130,6 +131,7 @@ async def _get_browser():
             f"--remote-debugging-port={_DEBUG_PORT}",
             f"--user-data-dir={_USER_DATA_DIR}",
             "--no-first-run",
+            *proxy_chrome_args(),
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
             "--disable-http2",
@@ -214,21 +216,95 @@ class EasyjetConnectorClient:
     async def close(self):
         pass  # Browser is shared singleton
 
+    # easyJet airports — used to skip airports easyJet doesn't serve
+    # (e.g. LHR, LCY, SEN) so the fan-out only tries relevant ones.
+    _EASYJET_AIRPORTS: frozenset[str] = frozenset({
+        # UK
+        "LGW", "LTN", "STN", "BRS", "MAN", "EDI", "GLA", "LPL",
+        "BHX", "NCL", "BFS", "ABZ", "INV", "EMA", "SOU",
+        # Europe hubs
+        "CDG", "ORY", "LYS", "NCE", "TLS", "BOD", "NTE", "MRS",
+        "AMS", "BER", "MXP", "FCO", "NAP", "VCE", "PSA", "BRI",
+        "BCN", "MAD", "AGP", "ALC", "PMI", "IBZ", "SVQ", "FUE",
+        "ACE", "LPA", "TFS", "FAO", "LIS", "OPO", "GVA", "BSL",
+        "CPH", "PRG", "BUD", "KRK", "GDN", "WRO", "VIE",
+        "ATH", "HER", "CFU", "RHO", "JTR", "ZTH", "SKG",
+        "SPU", "DBV", "ZAG", "LJU", "TLV", "IST", "SAW",
+        "ESB", "ADB", "AYT", "DLM", "BJV", "HRG", "SSH",
+        "MRK", "RAK",
+    })
+
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
-        Search easyJet using CDP Chrome + homepage form + API response interception.
+        Search easyJet with city-code fan-out (parallel).
 
-        1. Get persistent browser context (cookies carry over)
-        2. Open new page, set up response interception for POST /funnel/api/query
-        3. Navigate to homepage, fill search form
-        4. Click "Show flights" → capture intercepted API response
-        5. Parse journeyPairs → FlightOffers
-        6. Close page (context stays alive for next search)
+        If origin/dest is a city code (e.g. LON), expand to individual airports
+        and search each one in parallel, merging results.  easyJet does NOT fly
+        from LHR so city expansion is critical for London searches.
+        """
+        origins = get_city_airports(req.origin)
+        dests = get_city_airports(req.destination)
+
+        # Filter to only easyJet-served airports to avoid wasting time
+        origins = [a for a in origins if a in self._EASYJET_AIRPORTS] or origins
+        dests = [a for a in dests if a in self._EASYJET_AIRPORTS] or dests
+
+        all_offers: list[FlightOffer] = []
+        seen_hashes: set[str] = set()
+        currency = "GBP"
+
+        pairs = [(o, d) for o in origins for d in dests if o != d]
+        if not pairs:
+            return self._empty(req)
+
+        # Run all airport pairs in parallel (max 3 concurrent browser pages)
+        _sem = asyncio.Semaphore(3)
+
+        async def _search_pair(orig: str, dest: str) -> FlightSearchResponse | None:
+            async with _sem:
+                sub_req = req.model_copy(update={"origin": orig, "destination": dest})
+                return await self._search_single(sub_req)
+
+        results = await asyncio.gather(
+            *[_search_pair(o, d) for o, d in pairs],
+            return_exceptions=True,
+        )
+
+        for resp in results:
+            if isinstance(resp, BaseException) or not resp or not resp.offers:
+                continue
+            currency = resp.currency or currency
+            for o in resp.offers:
+                segs = o.outbound.segments if o.outbound else []
+                route = "-".join(s.origin for s in segs) if segs else ""
+                h = f"{o.price}-{route}"
+                if h not in seen_hashes:
+                    seen_hashes.add(h)
+                    all_offers.append(o)
+
+        all_offers.sort(key=lambda o: o.price)
+        search_hash = hashlib.md5(
+            f"easyjet{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
+
+        return FlightSearchResponse(
+            search_id=f"fs_{search_hash}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=currency,
+            offers=all_offers,
+            total_results=len(all_offers),
+        )
+
+    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """
+        Search easyJet for a single origin→dest pair using CDP Chrome.
         """
         t0 = time.monotonic()
 
         context = await _get_context()
         page = await context.new_page()
+        await auto_block_if_proxied(page)
 
         # Set up response interception BEFORE navigating
         search_data: dict = {}
@@ -363,8 +439,47 @@ class EasyjetConnectorClient:
             return False
         return True
 
+    # IATA → human-readable name for autocomplete fallback
+    _IATA_NAMES: dict[str, str] = {
+        "LGW": "London Gatwick", "LTN": "London Luton", "STN": "London Stansted",
+        "BRS": "Bristol", "MAN": "Manchester", "EDI": "Edinburgh",
+        "GLA": "Glasgow", "LPL": "Liverpool", "BHX": "Birmingham",
+        "NCL": "Newcastle", "BFS": "Belfast", "ABZ": "Aberdeen",
+        "INV": "Inverness", "EMA": "East Midlands", "SOU": "Southampton",
+        "CDG": "Paris Charles de Gaulle", "ORY": "Paris Orly",
+        "AMS": "Amsterdam", "BER": "Berlin", "BCN": "Barcelona",
+        "MAD": "Madrid", "LIS": "Lisbon", "FCO": "Rome Fiumicino",
+        "MXP": "Milan Malpensa", "NAP": "Naples", "VCE": "Venice",
+        "GVA": "Geneva", "BSL": "Basel", "CPH": "Copenhagen",
+        "PRG": "Prague", "BUD": "Budapest", "KRK": "Krakow",
+        "GDN": "Gdansk", "WRO": "Wroclaw", "VIE": "Vienna",
+        "ATH": "Athens", "IST": "Istanbul", "AGP": "Malaga",
+        "ALC": "Alicante", "PMI": "Palma de Mallorca", "FAO": "Faro",
+        "NCE": "Nice", "LYS": "Lyon", "TLS": "Toulouse",
+        "BOD": "Bordeaux", "NTE": "Nantes", "MRS": "Marseille",
+    }
+
     async def _fill_airport_field(self, page, label: str, iata: str) -> bool:
         """Fill an airport textbox and select the matching suggestion."""
+        # Try IATA code first, then fall back to city name
+        result = await self._try_fill_airport(page, label, iata)
+        if result:
+            return True
+
+        # Fallback: try full airport name (easyJet's autocomplete may prefer names)
+        name = self._IATA_NAMES.get(iata)
+        if name:
+            logger.info("easyJet: retrying %s with name '%s' instead of IATA", label, name)
+            result = await self._try_fill_airport(page, label, name, match_hint=iata)
+            if result:
+                return True
+
+        logger.warning("easyJet: %s field — no matching suggestion found for %s", label, iata)
+        return False
+
+    async def _try_fill_airport(self, page, label: str, query: str, match_hint: str = "") -> bool:
+        """Type a query and try to click the matching suggestion. Returns True on success."""
+        hint = match_hint or query
         try:
             # Remove any overlays that might intercept clicks
             await page.evaluate("""() => {
@@ -389,20 +504,19 @@ class EasyjetConnectorClient:
 
             await field.click(timeout=3000)
             await asyncio.sleep(0.3)
-            await field.fill(iata)
-            logger.info("easyJet: typed '%s' in %s field", iata, label)
-            await asyncio.sleep(2.0)
+            await field.fill(query)
+            logger.info("easyJet: typed '%s' in %s field", query, label)
+            await asyncio.sleep(3.0)  # extra time for autocomplete via proxy
 
-            # Try multiple selector strategies for the autocomplete dropdown
+            # Strategy 1: Playwright role-based selectors
             for role in ("option", "radio", "listitem"):
                 try:
                     option = page.get_by_role(role, name=re.compile(
-                        rf"{re.escape(iata)}", re.IGNORECASE
+                        rf"{re.escape(hint)}", re.IGNORECASE
                     )).first
                     if await option.count() > 0:
                         await option.click(timeout=3000)
-                        logger.info("easyJet: selected %s airport via %s role", iata, role)
-                        # Close any lingering dropdown overlays
+                        logger.info("easyJet: selected %s airport via %s role", hint, role)
                         await asyncio.sleep(0.3)
                         await page.keyboard.press("Escape")
                         await asyncio.sleep(0.3)
@@ -410,17 +524,20 @@ class EasyjetConnectorClient:
                 except Exception:
                     continue
 
+            # Strategy 2: CSS locator selectors
             for sel in (
-                f'[data-testid*="airport"] >> text=/{re.escape(iata)}/i',
-                f'li:has-text("{iata}")',
-                f'[role="listbox"] >> text=/{re.escape(iata)}/i',
-                f'ul li >> text=/{re.escape(iata)}/i',
+                f'[data-testid*="airport"] >> text=/{re.escape(hint)}/i',
+                f'li:has-text("{hint}")',
+                f'[role="listbox"] >> text=/{re.escape(hint)}/i',
+                f'ul li >> text=/{re.escape(hint)}/i',
+                f'button:has-text("{hint}")',
+                f'a:has-text("{hint}")',
             ):
                 try:
                     el = page.locator(sel).first
                     if await el.count() > 0:
                         await el.click(timeout=3000)
-                        logger.info("easyJet: selected %s airport via locator", iata)
+                        logger.info("easyJet: selected %s airport via locator", hint)
                         await asyncio.sleep(0.3)
                         await page.keyboard.press("Escape")
                         await asyncio.sleep(0.3)
@@ -428,6 +545,50 @@ class EasyjetConnectorClient:
                 except Exception:
                     continue
 
+            # Strategy 3: JS-based — find any visible element containing the
+            # IATA code in its text and click it (handles custom components)
+            try:
+                clicked = await page.evaluate("""(term) => {
+                    const walker = document.createTreeWalker(
+                        document.body, NodeFilter.SHOW_ELEMENT, null
+                    );
+                    const regex = new RegExp('\\\\b' + term + '\\\\b', 'i');
+                    const candidates = [];
+                    while (walker.nextNode()) {
+                        const el = walker.currentNode;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        const style = getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        // Only check direct text content (not children)
+                        const directText = Array.from(el.childNodes)
+                            .filter(n => n.nodeType === 3).map(n => n.textContent).join('');
+                        const fullText = el.textContent || '';
+                        if (regex.test(fullText) && (el.tagName === 'LI' || el.tagName === 'BUTTON'
+                            || el.tagName === 'A' || el.getAttribute('role') === 'option'
+                            || el.getAttribute('role') === 'listitem'
+                            || el.classList.toString().match(/airport|result|suggest|item/i))) {
+                            candidates.push(el);
+                        }
+                    }
+                    // Pick the smallest (most specific) element
+                    candidates.sort((a, b) => a.textContent.length - b.textContent.length);
+                    if (candidates.length > 0) {
+                        candidates[0].click();
+                        return true;
+                    }
+                    return false;
+                }""", hint)
+                if clicked:
+                    logger.info("easyJet: selected %s airport via JS tree-walk", hint)
+                    await asyncio.sleep(0.3)
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+                    return True
+            except Exception:
+                pass
+
+            # Strategy 4: Just click the first visible dropdown item (any match)
             for sel in (
                 '[role="listbox"] [role="option"]',
                 '[class*="airport"] li',
@@ -439,7 +600,7 @@ class EasyjetConnectorClient:
                     item = page.locator(sel).first
                     if await item.count() > 0:
                         await item.click(timeout=3000)
-                        logger.info("easyJet: selected first dropdown item for %s", iata)
+                        logger.info("easyJet: selected first dropdown item for %s", hint)
                         await asyncio.sleep(0.3)
                         await page.keyboard.press("Escape")
                         await asyncio.sleep(0.3)
@@ -447,7 +608,6 @@ class EasyjetConnectorClient:
                 except Exception:
                     continue
 
-            logger.warning("easyJet: %s field — no matching suggestion found for %s", label, iata)
             return False
         except Exception as e:
             logger.warning("easyJet: %s field error: %s", label, e)
@@ -684,7 +844,7 @@ class EasyjetBookableConnector:
         *,
         base_url: str | None = None,
     ):
-        from connectors.booking_base import (
+        from .booking_base import (
             CheckoutProgress,
             dismiss_overlays,
             safe_click,
@@ -748,9 +908,11 @@ class EasyjetBookableConnector:
             try:
                 from playwright_stealth import stealth_async
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
                 await stealth_async(page)
             except ImportError:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
 
             step = "started"
             pax = passengers[0] if passengers else {}

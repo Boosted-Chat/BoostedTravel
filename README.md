@@ -5,331 +5,103 @@
 <tr>
 <td align="center">
 
-## ⭐ 1,000 Stargazers = Free Forever ⭐
+# ⭐ FOUNDING MEMBER ACCESS ⭐
+
+### Star now → Lock in FREE access forever
 
 <a href="https://github.com/LetsFG/LetsFG/stargazers">
   <img src="https://img.shields.io/github/stars/LetsFG/LetsFG?style=for-the-badge&logo=github&label=STARS&color=gold" alt="GitHub stars">
 </a>
 
-**First 1,000 stargazers get lifetime free access.**<br>
-Search 400+ airlines, book at raw prices, zero fees — forever.
+**First 1,000 stargazers get lifetime free access to LetsFG.**<br>
+Search 400+ airlines, book at raw airline prices, zero fees — forever.
 
 <a href="https://github.com/LetsFG/LetsFG"><img src="https://img.shields.io/badge/⭐_STAR_NOW-lock_in_free_access-FFD700?style=for-the-badge" alt="Star Now"></a>
 
-<sub>After 1,000 stars: 1% unlock fee (min $1) • Founding members: always free</sub>
+<sub>After 1,000 stars: 1% unlock fee (min $1) applies • Founding members: always free</sub>
 
 </td>
 </tr>
 </table>
 
----
-
-<img src="assets/logo.png" alt="LetsFG" width="140">
-
-# Your AI agent just learned to book flights.
-
-**195 airlines. Real prices. One function call.**
-
-LetsFG gives your AI agent flight search and booking superpowers — 195 airline connectors fire in parallel, enterprise GDS sources (Amadeus, Sabre, Duffel) fill in the rest, and your agent gets the cheapest price on the planet. Zero markup. Real airline tickets.
-
-**The same flight costs $20–$50 less** because you skip OTA inflation, cookie tracking, and surge pricing.
-
-<br>
-
-[<img src="https://img.shields.io/badge/⭐_Star_to_unlock_free_access-FFD700?style=for-the-badge&logoColor=black" alt="Star to unlock">](https://github.com/LetsFG/LetsFG)
-&nbsp;&nbsp;
-[<img src="https://img.shields.io/badge/💬_Try_on_Messenger-0099FF?style=for-the-badge&logo=messenger&logoColor=white" alt="Try on Messenger">](https://m.me/61579557368989)
-&nbsp;&nbsp;
-[<img src="https://img.shields.io/badge/📸_Try_on_Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Try on Instagram">](https://ig.me/m/letsfg_)
-&nbsp;&nbsp;
-[<img src="https://img.shields.io/badge/📦_pip_install_letsfg-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="pip install">](https://pypi.org/project/letsfg/)
-
-<br>
-
-[![GitHub stars](https://img.shields.io/github/stars/LetsFG/LetsFG?style=social)](https://github.com/LetsFG/LetsFG)
-[![PyPI](https://img.shields.io/pypi/v/letsfg)](https://pypi.org/project/letsfg/)
-[![npm](https://img.shields.io/npm/v/letsfg-mcp?label=npm%20%28MCP%29)](https://www.npmjs.com/package/letsfg-mcp)
-[![smithery badge](https://smithery.ai/badge/letsfg)](https://smithery.ai/servers/letsfg)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
 </div>
 
 ---
 
-## Real prices: LetsFG vs Google Flights
+<table>
+<tr>
+<td width="140">
+<img src="assets/logo.png" alt="LetsFG" width="120">
+</td>
+<td>
 
-We searched 5 routes on Google Flights and LetsFG on the same day (June 15, 2026). Same airline, same itinerary — LetsFG was cheaper every time:
+# LetsFG🔥🚀✈️ — agent-native travel search.
+
+### Flights & hotels $50 cheaper in 5 seconds. Native to AI agents.
+
+</td>
+</tr>
+</table>
+
+LetsFG finds the cheapest flights across the entire internet — 185+ airline connectors firing in parallel + enterprise GDS sources (Amadeus, Duffel, Sabre, Travelport) — and returns results in ~5 seconds. No web scraping wait times, no browser tabs, no inflated prices. Just raw airline prices, zero markup.
+
+Native to **OpenClaw**, **Perplexity Computer**, **Manus**, **Claude Code**, **Codex**, **Cursor**, **Windsurf** — any AI agent that supports CLI, MCP, or packages.
+
+> ⭐ **First 1,000 stargazers get lifetime free access.** Star → verify → search unlimited forever. No trial, no catch. Booking charges the raw airline ticket price only — we add zero margin.
+
+[![GitHub stars](https://img.shields.io/github/stars/LetsFG/LetsFG?style=social)](https://github.com/LetsFG/LetsFG)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/letsfg)](https://pypi.org/project/letsfg/)
+[![npm](https://img.shields.io/npm/v/letsfg-mcp?label=npm%20%28MCP%29)](https://www.npmjs.com/package/letsfg-mcp)
+[![smithery badge](https://smithery.ai/badge/letsfg)](https://smithery.ai/servers/letsfg)
+[![npm](https://img.shields.io/npm/v/letsfg?label=npm%20%28JS%20SDK%29)](https://www.npmjs.com/package/letsfg)
+[![Smithery](https://smithery.ai/badge/letsfg-mcp)](https://smithery.ai/server/letsfg-mcp)
+
+## Real Prices: LetsFG vs Google Flights
+
+We searched 5 routes on Google Flights and LetsFG on the same day (March 30, 2026) for June 15, 2026. Same airline, same itinerary — LetsFG was cheaper on every single one:
 
 | Route | Airline | Google Flights | LetsFG | You Save |
 |-------|---------|---------------|--------|----------|
 | LAX → Paris (CDG) | WestJet, 1 stop | $723 | **$687** | **$36** |
-| Warsaw → Bali (DPS) | Etihad, 1 stop | $876 | **$842** | **$34** |
 | SFO → London (LHR) | WestJet, 1 stop | $669 | **$636** | **$33** |
 | Chicago → Miami | Spirit, nonstop | $120 | **$114** | **$6** |
 | London → Barcelona | Vueling, nonstop | $62 | **$56** | **$6** |
 | LA → New York (JFK) | Frontier, 1 stop | $125 | **$124** | **$1** |
 
-> **$116 saved across 6 flights.** Google Flights inflates further on repeat searches. LetsFG returns the raw airline price every time.
+> **$82 saved across 5 flights.** These are first-search prices — Google Flights inflates further on repeat searches ([well-documented](https://www.nytimes.com/2023/08/05/travel/flight-prices-cookies.html)). LetsFG returns the raw airline price every time.
 
-**Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 200+ website connectors including Google Flights itself, Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, etc.) and enterprise GDS/NDC sources (Amadeus, Sabre, Duffel). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
+**Why the difference?** Flight websites (Google Flights, Kayak, Expedia) add demand-tracking markup, cookie-based pricing, and display fees. LetsFG queries the same GDS/NDC providers (Amadeus, Duffel, Sabre, Travelport) but returns the raw price — no intermediary markup, no tracking, no inflation.
 
----
+## Why LetsFG?
 
-## Try it right now — no install needed
+LetsFG finds the best price across the entire internet. It fires 185+ airline connectors in parallel, scanning carriers across Europe, Asia, Americas, Middle East, Africa, and Oceania — then merges results with enterprise GDS/NDC sources that provide competitive pricing from 400+ carriers including premium airlines like Lufthansa, British Airways, and Emirates.
 
-**Don't want to install anything?** Message our AI assistant and search flights instantly:
-
-<div align="center">
-
-### 💬 [**Try it on Messenger**](https://m.me/61579557368989) &nbsp;&nbsp;·&nbsp;&nbsp; 📸 [**Try it on Instagram**](https://ig.me/m/letsfg_)
-
-</div>
-
-Ask it anything: *"Find me the cheapest flight from London to Barcelona next month"* — it searches 195 airlines in real time and gives you the best deals.
-
-When you're ready to integrate it into your own agent, keep reading.
-
----
-
-## Pricing
-
-| How you use it | Search | Unlock | Book | Runs where? |
-|----------------|--------|--------|------|-------------|
-| **CLI / Python SDK / npm** | ✅ Free | ✅ Free | Ticket price only | Your machine |
-| **MCP Server (local)** | ✅ Free | ✅ Free | Ticket price only | Your machine |
-| **API / Messenger / Instagram** | ✅ Free | 1% (min $1) | Ticket price only | Our servers |
-
-**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 195 airline connectors on your machine. No API key needed, no fees, no limits.
-
-**Server = free search + small unlock fee.** When you use our hosted API (or chat with us on Messenger/Instagram), search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
-
-> ⭐ **First 1,000 stargazers get lifetime free access everywhere** — including server unlock. Star → verify → free forever.
-
----
-
-## Why developers star this repo
-
-| | Google Flights / Expedia | **LetsFG** |
+| | Google Flights / Booking.com / Expedia | **LetsFG** |
 |---|---|---|
-| Price | Inflated (tracking, cookies, surge) | **Raw airline price. $116 cheaper across 6 verified routes.** |
-| Coverage | Misses budget airlines | **195 connectors + 400 GDS airlines** |
-| Speed | 30s+ (loading, ads, redirects) | **~10 seconds** |
-| Repeat search raises price? | Yes | **Never** |
-| Works in AI agents? | No | **Native** (CLI, MCP, SDK) |
-| Booking | Redirects to OTA checkout | **Real airline PNR, e-ticket to inbox** |
-| Cost to you | Hidden markup | **CLI/local: 100% free. Server: free search, 1% unlock.** |
+| Search speed | 30s+ (loading, ads, redirects) | **~5 seconds** |
+| Price consistency | Goes up on repeat searches | **Same price every time** |
+| Booking | Ticket + hidden markup | **Raw airline price, zero markup** |
+| LCC coverage | Missing many low-cost carriers | **185+ direct airline connectors** |
+| Works inside AI agents? | No (no API) | **Native** (CLI, MCP, SDK) |
+| Cross-airline combos? | No | **Virtual interlining** (Ryanair out + Wizz return) |
 
 ---
 
-## Get started in 30 seconds
+## One-Click Install
 
 ```bash
 pip install letsfg
 letsfg star --github your-username   # ⭐ verify your star (one-time)
 ```
 
-Search flights immediately:
+Done! You can now search flights — unlimited, free forever (founding members only):
 
 ```bash
-letsfg search-local LHR BCN 2026-06-15
+letsfg search-local GDN BCN 2026-06-15
 ```
 
-That single command fires 195 airline connectors on your machine and returns real-time prices. **Free. Unlimited. Zero setup.**
-
-Want enterprise GDS coverage too? One more command:
-
-```bash
-letsfg register --name my-agent --email you@example.com
-export LETSFG_API_KEY=trav_...
-letsfg search LHR JFK 2026-04-15
-```
-
-<details>
-<summary><strong>Full search → unlock → book flow</strong></summary>
-
-```bash
-# Search (free, unlimited)
-letsfg search LON BCN 2026-04-01 --return 2026-04-08 --sort price
-
-# Unlock (confirms live price, holds for 30 min — free)
-letsfg unlock off_xxx
-
-# Book (ticket price only, zero markup)
-letsfg book off_xxx \
-  --passenger '{"id":"pas_0","given_name":"John","family_name":"Doe","born_on":"1990-01-15","gender":"m","title":"mr"}' \
-  --email john.doe@example.com
-```
-
-</details>
-
-> ⭐ **Star this repo → verify → get unlimited access forever.** No trial, no catch. First 1,000 stars only.
-
----
-
-## Works everywhere your agent runs
-
-### MCP Server (Claude Desktop / Cursor / Windsurf / OpenClaw)
-
-```json
-{
-  "mcpServers": {
-    "letsfg": {
-      "command": "npx",
-      "args": ["-y", "letsfg-mcp"]
-    }
-  }
-}
-```
-
-**That's it — search works immediately, no API key needed.** 195 airline connectors run locally.
-
-<details>
-<summary>Add API key for unlock/book + GDS coverage</summary>
-
-```json
-{
-  "mcpServers": {
-    "letsfg": {
-      "command": "npx",
-      "args": ["-y", "letsfg-mcp"],
-      "env": {
-        "LETSFG_API_KEY": "trav_your_api_key"
-      }
-    }
-  }
-}
-```
-
-Get a key: `letsfg register --name my-agent --email you@example.com`
-
-</details>
-
-**5-minute quickstarts:** [Claude Desktop](docs/quickstart-claude.md) · [Cursor](docs/quickstart-cursor.md) · [Windsurf](docs/quickstart-windsurf.md)
-
-### Python SDK
-
-```python
-from letsfg import LetsFG
-
-bt = LetsFG()  # reads LETSFG_API_KEY from env
-flights = bt.search("LHR", "JFK", "2026-04-15")
-print(f"{flights.total_results} offers, cheapest: {flights.cheapest.summary()}")
-```
-
-### JavaScript SDK
-
-```typescript
-import { LetsFG } from 'letsfg';
-
-const bt = new LetsFG({ apiKey: 'trav_...' });
-const flights = await bt.search('LHR', 'JFK', '2026-04-15');
-console.log(`${flights.totalResults} offers`);
-```
-
-### Local-only (no API key, no backend)
-
-```python
-from letsfg.local import search_local
-
-result = await search_local("GDN", "BCN", "2026-06-15")
-for offer in result.offers[:5]:
-    print(f"{offer.airlines[0]}: {offer.currency} {offer.price}")
-```
-
----
-
-## Install
-
-| Package | Command | What you get |
-|---------|---------|--------------|
-| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 195 local airline connectors |
-| **MCP Server** | `npx letsfg-mcp` | Claude, Cursor, Windsurf — no API key needed |
-| **JS/TS SDK** | `npm install -g letsfg` | SDK + CLI |
-| **Remote MCP** | `https://api.letsfg.co/mcp` | No install (API key required) |
-| **Smithery** | [smithery.ai/servers/letsfg](https://smithery.ai/servers/letsfg) | One-click MCP install |
-
----
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `letsfg star --github <username>` | **⭐ Verify GitHub star (required for free access)** |
-| `letsfg search <origin> <dest> <date>` | Search flights (free) |
-| `letsfg search-local <origin> <dest> <date>` | Search locally, no API key |
-| `letsfg register` | Get your API key |
-| `letsfg locations <query>` | Resolve city/airport to IATA codes |
-| `letsfg unlock <offer_id>` | Confirm live price & reserve 30 min |
-| `letsfg book <offer_id>` | Book the flight |
-| `letsfg me` | View profile & usage stats |
-
-All commands accept `--json` for structured output and `--api-key` to override the env variable.
-
----
-
-## How it works
-
-```
-Search (free) → Unlock (free) → Book (ticket price only)
-```
-
-1. **Search** — 195 local connectors + enterprise GDS sources fire in parallel. Returns full details: price, airlines, duration, stopovers, conditions.
-2. **Unlock** — confirms the live price with the airline and reserves the fare for 30 minutes.
-3. **Book** — creates a real airline PNR. E-ticket sent to the passenger's inbox.
-
-### Two search channels run simultaneously
-
-| Channel | What it does | Speed | Auth |
-|---------|-------------|-------|------|
-| **Local connectors** | 195 airline scrapers on your machine via Playwright + httpx | 5-25s | None |
-| **Cloud GDS/NDC** | Amadeus, Duffel, Sabre, Travelport, Kiwi via backend API | 2-15s | API key |
-
-Results are merged, deduplicated, currency-normalized, and sorted. Best price wins.
-
-<details>
-<summary><strong>Virtual interlining</strong></summary>
-
-The combo engine builds cross-airline round-trips by combining one-way fares from different carriers. A Ryanair outbound + Wizz Air return can save 30-50% vs booking a round-trip on either airline alone.
-
-</details>
-
-<details>
-<summary><strong>City-wide airport expansion</strong></summary>
-
-Search a city code and LetsFG automatically searches all airports in that city. `LON` expands to LHR, LGW, STN, LTN, SEN, LCY. `NYC` expands to JFK, EWR, LGA. Works for 25+ major cities worldwide.
-
-</details>
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│  AI Agents / CLI / SDK / MCP Server                 │
-├──────────────────┬──────────────────────────────────┤
-│  Local connectors │  Enterprise Cloud API            │
-│  (195 airlines via│  (Amadeus, Duffel, Sabre,        │
-│   Playwright)     │   Travelport, Kiwi — contract-   │
-│                   │   only GDS/NDC providers)        │
-├──────────────────┴──────────────────────────────────┤
-│            Merge + Dedup + Combo Engine              │
-│            (virtual interlining, currency norm)      │
-└─────────────────────────────────────────────────────┘
-```
-
-<details>
-<summary><strong>195 airline connectors — full list</strong></summary>
-
-| Region | Airlines |
-|--------|----------|
-| **Europe** | Ryanair, Wizz Air, EasyJet, Norwegian, Vueling, Eurowings, Transavia, Pegasus, Turkish Airlines, Condor, SunExpress, Volotea, Smartwings, Jet2, LOT Polish Airlines, Finnair, SAS, Aegean, Aer Lingus, ITA Airways, TAP Portugal, Icelandair, PLAY |
-| **Middle East & Africa** | Emirates, Etihad, Qatar Airways, flydubai, Air Arabia, flynas, Salam Air, Air Peace, FlySafair, EgyptAir, Ethiopian Airlines, Kenya Airways, Royal Air Maroc, South African Airways |
-| **Asia-Pacific** | AirAsia, IndiGo, SpiceJet, Akasa Air, Air India, Air India Express, VietJet, Cebu Pacific, Scoot, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR, Singapore Airlines, Cathay Pacific, Malaysian Airlines, Thai Airways, Korean Air, ANA, JAL, Qantas, Virgin Australia, Bangkok Airways, Air New Zealand, Garuda Indonesia, Philippine Airlines, US-Bangla, Biman Bangladesh |
-| **Americas** | Southwest, JetBlue, Frontier, Spirit, Allegiant, Avelo, Breeze, Sun Country, Flair, Porter, WestJet, Volaris, VivaAerobus, GOL, Azul, LATAM, JetSmart, Flybondi, Arajet, Wingo, Sky Airline, Copa, Avianca |
-| **Oceania** | Rex, Bonza, Link Airways, Air Vanuatu, Fiji Airways |
-
-</details>
+This runs 185+ airline connectors locally on your machine and returns real-time prices. **Free for life if you're in the first 1,000 stars.**
 
 ---
 
@@ -345,10 +117,482 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 
 ---
 
-<div align="center">
+## Two Ways to Use LetsFG
 
-**[Documentation](https://api.letsfg.co/docs)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)** · **[Instagram](https://ig.me/m/letsfg_)**
+### Option A: Local Only (Free with ⭐ Star)
 
-MIT License · Made with ❤️ for AI agents
+Star the repo, verify once, search forever.
 
-</div>
+```bash
+pip install letsfg
+letsfg star --github your-username   # one-time verification
+letsfg search-local LHR BCN 2026-04-15
+```
+
+**What you get:**
+- 185+ airline connectors running on your machine (Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, Qantas, and 175+ more)
+- Real-time prices scraped directly from airline websites
+- Virtual interlining — cross-airline round-trips that save 30–50%
+- **FREE forever (founding members only — first 1,000 stars)**
+
+```python
+from letsfg.local import search_local
+
+# Star verification happens automatically on first search
+result = await search_local("GDN", "BCN", "2026-06-15")
+for offer in result.offers[:5]:
+    print(f"{offer.airlines[0]}: {offer.currency} {offer.price}")
+```
+
+### Option B: With API Key (Recommended — Much Better Coverage)
+
+One extra command unlocks the full power of LetsFG:
+
+```bash
+pip install letsfg
+letsfg star --github your-username   # one-time verification
+letsfg register --name my-agent --email you@example.com
+# → Returns: trav_xxxxx... (your API key)
+export LETSFG_API_KEY=trav_...
+
+letsfg search LHR JFK 2026-04-15
+```
+
+**What you get (in addition to everything in Option A):**
+- **Enterprise GDS/NDC providers** — Amadeus, Duffel, Sabre, Travelport, Kiwi. These are contract-only data sources that normally require enterprise agreements worth $50k+/year. LetsFG is contracted with these providers and makes their inventory available to every user.
+- **400+ full-service airlines** — Lufthansa, British Airways, Emirates, Singapore Airlines, ANA, Cathay Pacific, and hundreds more that don't have public APIs
+- **Competitive pricing** — the backend aggregates offers from multiple GDS sources and picks the cheapest for each route
+- **Unlock & book** — confirm live prices and create real airline PNRs with e-tickets
+- Both local connectors AND cloud sources run simultaneously — results merged and deduplicated automatically
+
+**Registration is instant, free, and handled by CLI** — an AI agent can do it in one command. The API key connects you to our closed-source backend service which maintains enterprise contracts with GDS/NDC providers and premium carriers.
+
+> ⭐ **Founding members (first 1,000 stars) get lifetime free access.** After 1,000: 1% unlock fee or $1, whichever is greater.
+
+```python
+from letsfg import LetsFG
+
+bt = LetsFG()  # reads LETSFG_API_KEY from env
+flights = bt.search("LHR", "JFK", "2026-04-15")
+print(f"{flights.total_results} offers, cheapest: {flights.cheapest.summary()}")
+```
+
+---
+
+## Quick Start (Full Flow)
+
+```bash
+pip install letsfg
+
+# ⭐ Verify your GitHub star (one-time — locks in free access)
+letsfg star --github your-username
+
+# Register and get API key (free, instant)
+letsfg register --name my-agent --email you@example.com
+export LETSFG_API_KEY=trav_...
+
+# Search (free for founding members)
+letsfg search LHR JFK 2026-04-15
+letsfg search LON BCN 2026-04-01 --return 2026-04-08 --cabin M --sort price
+
+# Unlock (confirms live price, reserves for 30 min)
+letsfg unlock off_xxx
+
+# Book
+letsfg book off_xxx \
+  --passenger '{"id":"pas_0","given_name":"John","family_name":"Doe","born_on":"1990-01-15","gender":"m","title":"mr"}' \
+  --email john.doe@example.com
+```
+
+All commands support `--json` for machine-readable output:
+
+```bash
+letsfg search GDN BER 2026-03-03 --json | jq '.offers[0]'
+```
+
+## Install
+
+### Python (recommended — includes 185+ local airline connectors)
+
+```bash
+pip install letsfg
+playwright install chromium  # needed for browser-based connectors
+```
+
+### JavaScript / TypeScript (API client only)
+
+```bash
+npm install -g letsfg
+```
+
+### MCP Server (Claude Desktop / Cursor / Windsurf / OpenClaw)
+
+```bash
+npx letsfg-mcp
+```
+
+Add to your MCP config (Claude Desktop, Cursor, Windsurf, etc.):
+
+```json
+{
+  "mcpServers": {
+    "letsfg": {
+      "command": "npx",
+      "args": ["-y", "letsfg-mcp"]
+    }
+  }
+}
+```
+
+**That's it — search works immediately, no API key needed.** The MCP server queries our cloud backend (100+ airline connectors + GDS/NDC sources) and returns real-time prices. Rate limited to **10 searches per minute**.
+
+For unlock/book functionality, add an API key:
+
+```json
+{
+  "mcpServers": {
+    "letsfg": {
+      "command": "npx",
+      "args": ["-y", "letsfg-mcp"],
+      "env": {
+        "LETSFG_API_KEY": "trav_your_api_key"
+      }
+    }
+  }
+}
+```
+
+Get a key: `letsfg register --name my-agent --email you@example.com`. ⭐ **Founding members (first 1,000 stars) get lifetime free access** — star the repo and call `link_github` to verify.
+
+**5-minute quickstarts:** [Claude Desktop](docs/quickstart-claude.md) · [Cursor](docs/quickstart-cursor.md) · [Windsurf](docs/quickstart-windsurf.md)
+
+### Python SDK
+
+```python
+from letsfg import LetsFG
+
+bt = LetsFG(api_key="trav_...")
+flights = bt.search("LHR", "JFK", "2026-04-15")
+print(f"{flights.total_results} offers, cheapest: {flights.cheapest.summary()}")
+
+unlocked = bt.unlock(flights.offers[0].id)
+booking = bt.book(
+    offer_id=unlocked.offer_id,
+    passengers=[{"id": "pas_0", "given_name": "John", "family_name": "Doe", "born_on": "1990-01-15", "gender": "m", "title": "mr"}],
+    contact_email="john.doe@example.com",
+)
+print(f"Booked! PNR: {booking.booking_reference}")
+```
+
+### JS SDK
+
+```typescript
+import { LetsFG } from 'letsfg';
+
+const bt = new LetsFG({ apiKey: 'trav_...' });
+const flights = await bt.search('LHR', 'JFK', '2026-04-15');
+console.log(`${flights.totalResults} offers`);
+```
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `letsfg star --github <username>` | **⭐ Verify GitHub star (required for free access)** |
+| `letsfg register` | Get your API key |
+| `letsfg search <origin> <dest> <date>` | Search flights (requires star) |
+| `letsfg search-local <origin> <dest> <date>` | Search local connectors only |
+| `letsfg locations <query>` | Resolve city/airport to IATA codes |
+| `letsfg unlock <offer_id>` | Confirm live price & reserve for 30 min |
+| `letsfg book <offer_id>` | Book the flight |
+| `letsfg system-info` | Show system resources & concurrency tier |
+| `letsfg me` | View profile & usage stats |
+
+All commands accept `--json` for structured output and `--api-key` to override the env variable.
+
+## How It Works
+
+1. **Search** (free) — returns offers with full details: price, airlines, duration, stopovers, conditions
+2. **Unlock** — confirms live price with the airline, reserves for 30 minutes
+3. **Book** — creates real airline PNR, e-ticket sent to passenger email
+
+### Three Search Modes
+
+| Mode | What it does | Speed | Auth |
+|------|-------------|-------|------|
+| **MCP cloud** | MCP server queries 100+ airline connectors + GDS/NDC via cloud backend | 5-15s | None (10 req/min rate limit) |
+| **Cloud search** | Queries GDS/NDC providers (Duffel, Amadeus, Sabre, Travelport, Kiwi) via backend API | 2-15s | API key |
+| **Local search** | Fires 185+ airline connectors on your machine via Playwright + httpx | 5-25s | None |
+
+MCP cloud is the default for `npx letsfg-mcp` — zero setup, no API key. Cloud search + local search run simultaneously in the Python SDK. Results are merged, deduplicated, currency-normalized, and sorted.
+
+### Virtual Interlining
+
+The combo engine builds cross-airline round-trips by combining one-way fares from different carriers. A Ryanair outbound + Wizz Air return can save 30-50% vs booking a round-trip on either airline alone.
+
+### City-Wide Airport Expansion
+
+Search a city code and LetsFG automatically searches all airports in that city. `LON` expands to LHR, LGW, STN, LTN, SEN, LCY. `NYC` expands to JFK, EWR, LGA. Works for 25+ major cities worldwide — one search covers every airport.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│  AI Agents / CLI / SDK / MCP Server                 │
+├──────────────────┬──────────────────────────────────┤
+│  Local connectors │  Enterprise Cloud API            │
+│  (185+ airlines via│  (Amadeus, Duffel, Sabre,        │
+│   Playwright)     │   Travelport, Kiwi — contract-   │
+│                   │   only GDS/NDC providers)        │
+├──────────────────┴──────────────────────────────────┤
+│            Merge + Dedup + Combo Engine              │
+│            (virtual interlining, currency norm)      │
+└─────────────────────────────────────────────────────┘
+```
+
+## Local Airline Connectors (185+ airlines)
+
+The Python SDK includes 185+ production-grade airline connectors — not fragile scrapers, but maintained integrations that handle each airline's specific API pattern. No API key needed for local search. Each connector uses one of three proven strategies:
+
+| Strategy | How it works | Example airlines |
+|----------|-------------|-----------------|
+| **Direct API** | Reverse-engineered REST/GraphQL endpoints via `httpx`/`curl_cffi` | Ryanair, Wizz Air, Norwegian, Akasa |
+| **CDP Chrome** | Real Chrome + Playwright CDP for sites with bot detection | EasyJet, Southwest, Pegasus |
+| **API Interception** | Playwright page navigation + response interception | VietJet, Cebu Pacific, Lion Air |
+
+### Supported Airlines
+
+<details>
+<summary>Full list of 185+ airline connectors</summary>
+
+| Region | Airlines |
+|--------|----------|
+| **Europe** | Ryanair, Wizz Air, EasyJet, Norwegian, Vueling, Eurowings, Transavia, Pegasus, Turkish Airlines, Condor, SunExpress, Volotea, Smartwings, Jet2, LOT Polish Airlines, Finnair, SAS, Aegean, Aer Lingus, ITA Airways, TAP Portugal, Icelandair, PLAY, Level, Iberia, Iberia Express, Sky Express, Olympic Air, Cyprus Airways, Discover Airlines, Air Serbia, Brussels Airlines, Swiss, Lufthansa, KLM, Air France, British Airways, Austrian |
+| **Middle East & Africa** | Emirates, Etihad, Qatar Airways, flydubai, Air Arabia, flynas, Salam Air, Jazeera Airways, Kuwait Airways, Oman Air, MEA, Royal Jordanian, Air Peace, FlySafair, EgyptAir, Ethiopian Airlines, Kenya Airways, Royal Air Maroc, South African Airways, Rwanda Air, Fly Arystan |
+| **Asia-Pacific** | AirAsia, IndiGo, SpiceJet, Akasa Air, Air India, Air India Express, VietJet, Cebu Pacific, Scoot, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR, Singapore Airlines, Cathay Pacific, Malaysian Airlines, Thai Airways, Korean Air, ANA, JAL, Qantas, Virgin Australia, Bangkok Airways, Air New Zealand, Garuda Indonesia, Philippine Airlines, US-Bangla, Biman Bangladesh, Citilink, TransNusa, Super Air Jet, Starlux, Asiana, EVA Air, China Airlines, China Eastern, China Southern, Hainan Airlines, Air China |
+| **Americas** | American Airlines, Delta, United, Southwest, JetBlue, Alaska Airlines, Hawaiian Airlines, Sun Country, Frontier, Volaris, VivaAerobus, Allegiant, Avelo, Breeze, Flair, GOL, Azul, JetSmart, Flybondi, Porter, WestJet, LATAM, Copa, Avianca, Air Canada, Air Transat, Arajet, Wingo, Sky Airline, Aerolineas Argentinas |
+| **Oceania & Pacific** | Air Vanuatu, Aircalin, Air Tahiti Nui, Fiji Airways, PNG Air, Solomon Airlines, Samoa Airways, Rex, Link Airways, Air North |
+| **OTA & Meta** | Kiwi.com, Skiplagged, Etraveli/Gotogate, Travelgenio, Aviasales, Travix (CheapTickets/BudgetAir), TravelUp, Lastminute, BYOjet, Ixigo, Rehlat, Travelstart, Yatra, Despegar, Cleartrip, Traveloka, Wego, Webjet, Tiket.com, I Want That Flight |
+| **Meta Search** | Kayak, Momondo, Cheapflights, Skyscanner, eDreams, Opodo, Trip.com, SerpAPI/Google Flights |
+
+</details>
+
+### Local Search (No API Key)
+
+```python
+from letsfg.local import search_local
+
+# Runs all relevant connectors on your machine — completely free
+result = await search_local("GDN", "BCN", "2026-06-15")
+
+# Limit browser concurrency for constrained environments
+result = await search_local("GDN", "BCN", "2026-06-15", max_browsers=4)
+```
+
+```bash
+# CLI local-only search
+letsfg search-local GDN BCN 2026-06-15
+
+# Limit browser concurrency
+letsfg search-local GDN BCN 2026-06-15 --max-browsers 4
+```
+
+### Shared Browser Infrastructure
+
+All browser-based connectors share a common launcher (`connectors/browser.py`) with:
+
+- Automatic Chrome discovery (Windows, macOS, Linux)
+- Stealth headless mode (`--headless=new`) — undetectable by airline bot protection
+- Off-screen window positioning to avoid stealing focus
+- CDP persistent sessions for airlines that require cookie state
+- Adaptive concurrency — automatically scales browser instances based on system RAM
+- `BOOSTED_BROWSER_VISIBLE=1` to show browser windows for debugging
+
+### Performance Tuning
+
+LetsFG auto-detects your system's available RAM and scales browser concurrency accordingly:
+
+| System RAM | Tier | Max Browsers | Notes |
+|-----------|------|-------------|-------|
+| < 2 GB | Minimal | 2 | Low-end VMs, CI runners |
+| 2–4 GB | Low | 3 | Budget laptops |
+| 4–8 GB | Moderate | 5 | Standard laptops |
+| 8–16 GB | Standard | 8 | Most desktops |
+| 16–32 GB | High | 12 | Dev workstations |
+| 32+ GB | Maximum | 16 | Servers |
+
+Override auto-detection when needed:
+
+```bash
+# Environment variable (highest priority)
+export LETSFG_MAX_BROWSERS=4
+
+# CLI flag
+letsfg search-local LHR BCN 2026-04-15 --max-browsers 4
+
+# Check your system profile
+letsfg system-info
+```
+
+```python
+# Python SDK
+from letsfg import configure_max_browsers, get_system_profile
+
+profile = get_system_profile()
+print(f"RAM: {profile['ram_available_gb']:.1f} GB, Tier: {profile['tier']}, Recommended: {profile['recommended_max_browsers']}")
+
+configure_max_browsers(4)  # explicit override
+```
+
+## Error Handling
+
+| Exception | HTTP | When |
+|-----------|------|------|
+| `AuthenticationError` | 401 | Missing or invalid API key |
+| `OfferExpiredError` | 410 | Offer no longer available (search again) |
+| `LetsFGError` | any | Base class for all API errors |
+
+## Packages
+
+| Package | Install | What it is |
+|---------|---------|------------|
+| **Python SDK + CLI** | `pip install letsfg` | SDK + `letsfg` CLI + 185+ local airline connectors |
+| **JS/TS SDK + CLI** | `npm install -g letsfg` | SDK + `letsfg` CLI command |
+| **MCP Server** | `npx letsfg-mcp` | Model Context Protocol for Claude, Cursor, Windsurf — **no API key needed** for search |
+| **Remote MCP** | `https://api.letsfg.co/mcp` | Streamable HTTP — no install needed (API key required) |
+| **Smithery** | [smithery.ai/server/letsfg-mcp](https://smithery.ai/server/letsfg-mcp) | One-click MCP install via Smithery |
+| **UTCP** | [`sdk/utcp/utcp.json`](sdk/utcp/) | Universal Tool Calling Protocol — direct HTTP, no intermediary server |
+| **Native Function Calling** | [`sdk/function-calling/`](sdk/function-calling/) | Drop-in schemas for OpenAI, Anthropic, Gemini function calling |
+| **LangChain** | [`sdk/langchain/`](sdk/langchain/) | LangChain/LangGraph BaseTool wrappers |
+| **Semantic Kernel** | [`sdk/semantic-kernel/`](sdk/semantic-kernel/) | Microsoft Semantic Kernel plugin |
+
+## Beyond MCP — 6 Ways to Integrate
+
+LetsFG is **protocol-agnostic**. MCP is great, but it's not the only way. Pick the integration that fits your architecture:
+
+### 1. MCP Server (Claude Desktop, Cursor, Windsurf)
+
+The standard. Run `npx letsfg-mcp` and add to your MCP config. See [Install](#install) above.
+
+### 2. UTCP — Direct HTTP, No Intermediary
+
+[UTCP](https://github.com/universal-tool-calling-protocol/utcp) lets agents call LetsFG via native HTTP endpoints — no wrapper server. One JSON manifest, one hop, zero infrastructure.
+
+```
+https://raw.githubusercontent.com/LetsFG/LetsFG/main/sdk/utcp/utcp.json
+```
+
+The manifest describes every tool with its HTTP endpoint, parameters, response schema, cost, side effects, and idempotency guarantees. 60% faster execution, 68% fewer tokens vs MCP for multi-step workflows.
+
+→ [`sdk/utcp/`](sdk/utcp/)
+
+### 3. Native Function Calling (OpenAI, Anthropic, Gemini)
+
+Drop-in tool schemas for every major LLM provider. No MCP server, no framework — your agent calls the LLM, forwards tool calls to the LetsFG REST API.
+
+```python
+# OpenAI
+with open("sdk/function-calling/openai-tools.json") as f:
+    tools = json.load(f)["tools"]
+response = client.chat.completions.create(model="gpt-4o", messages=messages, tools=tools)
+```
+
+```python
+# Anthropic
+with open("sdk/function-calling/anthropic-tools.json") as f:
+    tools = json.load(f)["tools"]
+response = client.messages.create(model="claude-sonnet-4-20250514", tools=tools, messages=messages)
+```
+
+→ [`sdk/function-calling/`](sdk/function-calling/)
+
+### 4. LangChain / LangGraph
+
+Ready-made `BaseTool` classes. Plug into any LangChain agent or LangGraph workflow.
+
+```python
+from letsfg.integrations.langchain import get_tools
+
+tools = get_tools()  # reads LETSFG_API_KEY from env
+agent = create_react_agent(llm, tools)
+```
+
+→ [`sdk/langchain/`](sdk/langchain/)
+
+### 5. Semantic Kernel
+
+Microsoft Semantic Kernel plugin for .NET and Python agents.
+
+```python
+from letsfg.integrations.semantic_kernel import LetsFGPlugin
+
+kernel.add_plugin(LetsFGPlugin(), plugin_name="flights")
+```
+
+→ [`sdk/semantic-kernel/`](sdk/semantic-kernel/)
+
+### 6. CLI (Shell / Unix Tools)
+
+For agents that work via shell commands. Battle-tested, fully auditable, zero dependencies beyond Python.
+
+```bash
+pip install letsfg
+letsfg search LHR BCN 2026-06-15 --json | jq '.offers[0]'
+letsfg locations "London" --json
+```
+
+Works with any agent that can execute shell commands — including Claude Code, Codex, and terminal-based workflows.
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/getting-started.md) | Authentication, payment setup, search flags, cabin classes |
+| [API Guide](docs/api-guide.md) | Error handling, search results, workflows, unlock details, location resolution |
+| [Agent Guide](docs/agent-guide.md) | AI agent architecture, preference scoring, price tracking, rate limits |
+| [Architecture Guide](docs/architecture-guide.md) | Parallel execution, failure handling, caching, browser concurrency, performance tuning |
+| [Tutorials](docs/tutorials.md) | Python & JS integration tutorials, concurrent search, travel assistant patterns |
+| [Packages & SDKs](docs/packages.md) | Python SDK, JavaScript SDK, MCP Server, local connectors |
+| [Self-Hosting & HTTP Endpoints](docs/self-hosting.md) | Deploy connectors as local HTTP APIs (FastAPI, Flask, Docker, Dokku) |
+| [CLI Reference](docs/cli-reference.md) | Commands, flags, examples |
+| [AGENTS.md](AGENTS.md) | Agent-specific instructions (for LLMs) |
+| [CLAUDE.md](CLAUDE.md) | Codebase context for Claude |
+
+## API Docs
+
+- **OpenAPI spec:** [`openapi.yaml`](openapi.yaml) (included in this repo)
+- **Interactive Swagger UI:** https://api.letsfg.co/docs
+- **ReDoc:** https://api.letsfg.co/redoc
+- **Agent discovery:** https://api.letsfg.co/.well-known/ai-plugin.json
+- **Agent manifest:** https://api.letsfg.co/.well-known/agent.json
+- **LLM instructions:** https://api.letsfg.co/llms.txt
+- **Smithery:** https://smithery.ai/server/letsfg-mcp
+
+**Base URL:** `https://api.letsfg.co`
+
+## Links
+
+- **PyPI:** https://pypi.org/project/letsfg/
+- **npm (JS SDK):** https://www.npmjs.com/package/letsfg
+- **npm (MCP):** https://www.npmjs.com/package/letsfg-mcp
+
+## Contact & Partnerships
+
+Interested in B2B integration, partnership, or bulk/enterprise access? Reach out:
+
+- **General:** contact@letsfg.co
+- **Founder:** adam@letsfg.co
+
+We're actively looking for partners — airlines, travel platforms, AI agent builders, and anyone building on top of flight data. Don't hesitate to reach out.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for our security policy.
+
+## License
+
+Free for personal use. Search is free for everyone — no agreement needed. Commercial booking requires a 1% fee (min $1 USD) via Stripe Connect. By using the Software you agree to the [LICENSE](LICENSE). To set up a commercial agreement, email contact@letsfg.co or adam@letsfg.co.

@@ -32,12 +32,15 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
 # IATA code -> URL slug mapping for thaiairways.com EveryMundo fare pages.
 # Validated against live site. Slugs are lowercase-hyphenated city names.
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "PAR": "paris", "TYO": "tokyo",
     # Thailand (domestic)
     "BKK": "bangkok",
     "CNX": "chiang-mai",
@@ -146,7 +149,7 @@ class ThaiConnectorClient:
                 timeout=self.timeout,
                 follow_redirects=True,
                 headers=_HEADERS,
-            ) as client:
+                proxy=get_httpx_proxy_url(),) as client:
                 resp = await client.get(url)
 
             if resp.status_code != 200:

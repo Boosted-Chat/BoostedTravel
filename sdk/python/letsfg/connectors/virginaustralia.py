@@ -40,6 +40,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
+from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +67,8 @@ class VirginAustraliaConnectorClient:
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True
-            )
+                timeout=self.timeout, headers=_HEADERS, follow_redirects=True,
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -114,6 +116,8 @@ class VirginAustraliaConnectorClient:
     def _parse(self, feed: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         offers: list[FlightOffer] = []
         target_ts = int(datetime.combine(req.date_from, datetime.min.time()).timestamp())
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
 
         # Feed is keyed by origin IATA (lowercase)
         origin_data = feed.get(req.origin.lower())
@@ -121,9 +125,9 @@ class VirginAustraliaConnectorClient:
             return offers
 
         for item in origin_data.get("sale_items", []):
-            if item.get("origin", "").upper() != req.origin.upper():
+            if item.get("origin", "").upper() not in valid_origins:
                 continue
-            if item.get("destination", "").upper() != req.destination.upper():
+            if item.get("destination", "").upper() not in valid_dests:
                 continue
 
             # Check if travel date falls within any travel_period

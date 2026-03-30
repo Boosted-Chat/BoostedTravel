@@ -26,6 +26,8 @@ from typing import Optional
 
 from curl_cffi import requests as creq
 
+from .airline_routes import city_match_set
+
 from ..models.flights import (
     FlightOffer,
     FlightRoute,
@@ -44,6 +46,8 @@ _HEADERS = {
 
 # IATA → slug for Icelandair EveryMundo route pages.
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "PAR": "paris",
     # Iceland
     "KEF": "reykjavik", "AEY": "akureyri", "EGS": "egilsstadir",
     # UK / Ireland
@@ -182,8 +186,8 @@ class IcelandairConnectorClient:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
 
-        origin_codes = {req.origin, _IATA_TO_CITY.get(req.origin, req.origin)}
-        dest_codes = {req.destination, _IATA_TO_CITY.get(req.destination, req.destination)}
+        origin_codes = city_match_set(req.origin)
+        dest_codes = city_match_set(req.destination)
 
         for fare in fares:
             orig = fare.get("originAirportCode", "")

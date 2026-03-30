@@ -140,6 +140,11 @@ IATA_TO_SLUG: dict[str, str] = {
     # ── Oceania ──
     "SYD": "sydney", "MEL": "melbourne", "BNE": "brisbane",
     "PER": "perth", "AKL": "auckland",
+    # ── City codes (multi-airport cities) ──
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "ROM": "rome",
+    "MIL": "milan", "WAS": "washington", "CHI": "chicago", "TYO": "tokyo",
+    "OSA": "osaka", "SEL": "seoul", "BJS": "beijing", "SHA": "shanghai",
+    "BUE": "buenos-aires", "STO": "stockholm", "REK": "reykjavik",
 }
 
 _BASE_URL = "https://www.lufthansa.com/xx/en/flights"

@@ -35,6 +35,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied, get_default_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ async def _get_context():
             _USER_DATA_DIR,
             channel="chrome",
             headless=False,
+            proxy=get_default_proxy(),
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
@@ -128,6 +130,7 @@ class SunExpressConnectorClient:
 
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             # ── Step 1: Load homepage (establishes session) ────────────
             logger.info("SunExpress: loading homepage for %s→%s", req.origin, req.destination)

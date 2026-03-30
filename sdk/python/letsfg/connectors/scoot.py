@@ -45,7 +45,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,7 @@ async def _get_browser():
             f"--remote-debugging-port={_DEBUG_PORT}",
             f"--user-data-dir={_USER_DATA_DIR}",
             "--no-first-run",
+            *proxy_chrome_args(),
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
             "--disable-http2",
@@ -178,6 +179,7 @@ class ScootConnectorClient:
                 page = context.pages[0]
             else:
                 page = await context.new_page()
+                await auto_block_if_proxied(page)
         else:
             context = await browser.new_context(
                 viewport=random.choice(_VIEWPORTS),
@@ -186,6 +188,7 @@ class ScootConnectorClient:
                 service_workers="block",
             )
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
         try:
             try:

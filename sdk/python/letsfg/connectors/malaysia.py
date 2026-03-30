@@ -27,6 +27,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class MalaysiaConnectorClient:
                 timeout=self.timeout,
                 follow_redirects=True,
                 headers=_HEADERS,
-            )
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self) -> None:

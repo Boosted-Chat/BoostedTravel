@@ -31,7 +31,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_args, stealth_popen_kwargs
+from .browser import stealth_args, stealth_popen_kwargs, get_curl_cffi_proxies, auto_block_if_proxied, inject_stealth_js
+from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ _CDP_PORT = 9455
 _USER_DATA_DIR = os.path.join(os.environ.get("TEMP", "/tmp"), "eurowings_cdp_data")
 
 _API_URL = "https://apps.eurowings.com/flightsearch/v1/booking/flight-data?action=QUERY_FLIGHT_DATA"
-_IMPERSONATE = "chrome136"
+_IMPERSONATE = "chrome131"
 _COOKIE_MAX_AGE = 25 * 60  # 25 minutes
 
 # ── Module-level singletons ──────────────────────────────────────────────────
@@ -83,7 +84,7 @@ async def _get_browser():
     async with lock:
         if _cdp_browser and _cdp_browser.is_connected():
             return _cdp_browser
-        from connectors.browser import get_or_launch_cdp
+        from .browser import get_or_launch_cdp
         _cdp_browser, _chrome_proc = await get_or_launch_cdp(_CDP_PORT, _USER_DATA_DIR)
         logger.info("Eurowings: Chrome ready via CDP (port %d)", _CDP_PORT)
         return _cdp_browser
@@ -106,35 +107,53 @@ class EurowingsConnectorClient:
         Slow path (~15s): Playwright farms cookies first, then curl_cffi.
         Fallback: Full Playwright interception if API fails.
         """
+        # ── City code expansion (LON → LHR, STN, etc.) ──
+        origins = get_city_airports(req.origin)
+        destinations = get_city_airports(req.destination)
+        if len(origins) > 1 or len(destinations) > 1:
+            tasks = []
+            sem = asyncio.Semaphore(2)  # limit parallel sub-searches to avoid overwhelming Chrome
+            for o in origins:
+                for d in destinations:
+                    if o == d:
+                        continue
+                    sub_req = FlightSearchRequest(
+                        origin=o, destination=d,
+                        date_from=req.date_from, return_from=req.return_from,
+                        adults=req.adults, children=req.children, infants=req.infants,
+                        cabin_class=req.cabin_class, currency=req.currency,
+                        max_stopovers=req.max_stopovers,
+                    )
+
+                    async def _throttled(r=sub_req):
+                        async with sem:
+                            return await self._search_single(r)
+
+                    tasks.append(_throttled())
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            all_offers: list[FlightOffer] = []
+            for r in results:
+                if isinstance(r, FlightSearchResponse):
+                    all_offers.extend(r.offers)
+            all_offers.sort(key=lambda o: o.price)
+            h = hashlib.md5(
+                f"ew{req.origin}{req.destination}{req.date_from}".encode()
+            ).hexdigest()[:12]
+            return FlightSearchResponse(
+                search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
+                currency=all_offers[0].currency if all_offers else "EUR",
+                offers=all_offers, total_results=len(all_offers),
+            )
+        return await self._search_single(req)
+
+    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """Search a single origin→destination pair (no city expansion)."""
         t0 = time.monotonic()
 
         try:
-            # Fast path: try with existing farmed cookies
-            cookies = await self._ensure_cookies()
-            data = None
-            if cookies:
-                data = await self._api_search(req, cookies)
-
-            # Re-farm once if stale / rejected
-            if data is None:
-                logger.info("Eurowings: API search failed, re-farming cookies")
-                cookies = await self._farm_cookies()
-                if cookies:
-                    data = await self._api_search(req, cookies)
-
-            if data:
-                elapsed = time.monotonic() - t0
-                offers = self._parse_response(data, req)
-                if offers:
-                    offers.sort(key=lambda o: o.price)
-                    logger.info(
-                        "Eurowings %s→%s returned %d offers in %.1fs (hybrid API)",
-                        req.origin, req.destination, len(offers), elapsed,
-                    )
-                    return self._build_response(offers, req, elapsed)
-
-            # Last resort: full Playwright browser fallback
-            logger.warning("Eurowings: API returned no data, falling back to Playwright")
+            # NOTE: The cookie-farm + API path via apps.eurowings.com is blocked by
+            # Cloudflare (challenge never resolves). Go directly to Playwright fallback
+            # which fills the search form on www.eurowings.com and captures flight data.
             return await self._playwright_fallback(req, t0)
 
         except Exception as e:
@@ -156,7 +175,7 @@ class EurowingsConnectorClient:
             return await self._farm_cookies()
 
     async def _farm_cookies(self) -> list[dict]:
-        """Visit Eurowings homepage to harvest Cloudflare cookies."""
+        """Visit Eurowings *booking* page to harvest Cloudflare cookies for the API."""
         global _farmed_cookies, _farm_timestamp
 
         browser = await _get_browser()
@@ -171,9 +190,11 @@ class EurowingsConnectorClient:
         )
         try:
             page = await ctx.new_page()
-            logger.info("Eurowings: farming cookies via homepage visit")
+            await auto_block_if_proxied(page)
+            logger.info("Eurowings: farming cookies via booking page")
+            # Visit the actual booking page (not just homepage) to get all session tokens
             await page.goto(
-                "https://www.eurowings.com/en.html",
+                "https://www.eurowings.com/en/booking/flights.html",
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
@@ -193,59 +214,95 @@ class EurowingsConnectorClient:
             await ctx.close()
 
     # ------------------------------------------------------------------
-    # Direct API via curl_cffi
+    # Direct API via in-browser fetch (uses Chrome TLS to bypass CF)
     # ------------------------------------------------------------------
 
     async def _api_search(
         self, req: FlightSearchRequest, cookies: list[dict],
     ) -> Optional[dict]:
-        """POST QUERY_FLIGHT_DATA via curl_cffi with farmed cookies."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._api_search_sync, req, cookies)
-
-    def _api_search_sync(
-        self, req: FlightSearchRequest, cookies: list[dict],
-    ) -> Optional[dict]:
-        """Synchronous curl_cffi QUERY_FLIGHT_DATA search."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
-
-        for c in cookies:
-            domain = c.get("domain", "")
-            sess.cookies.set(c["name"], c["value"], domain=domain)
-
-        body = json.dumps(self._build_api_body(req))
-
+        """POST QUERY_FLIGHT_DATA via in-browser fetch (bypasses Cloudflare TLS check)."""
+        browser = await _get_browser()
+        ctx = None
+        page = None
         try:
-            r = sess.post(
-                _API_URL,
-                headers={
-                    "content-type": "application/json",
-                    "accept": "application/json, text/plain, */*",
-                    "referer": "https://www.eurowings.com/",
-                },
-                data=body,
-                timeout=15,
+            ctx = await browser.new_context(
+                viewport=random.choice(_VIEWPORTS),
+                locale=random.choice(_LOCALES),
+                timezone_id=random.choice(_TIMEZONES),
             )
+            page = await ctx.new_page()
+            await inject_stealth_js(page)
+            await auto_block_if_proxied(page)
+
+            # Navigate to the actual booking page (same URL the cookie farm visits)
+            # This generates the CF cookie for apps.eurowings.com subdomain
+            await page.goto(
+                "https://www.eurowings.com/en/booking/flights.html",
+                wait_until="domcontentloaded",
+                timeout=25000,
+            )
+            # Wait for Cloudflare challenge to resolve ("Just a moment..." page)
+            for _cf_tick in range(20):
+                title = await page.title()
+                body_text = await page.evaluate("() => (document.body?.innerText || '').substring(0, 200)")
+                if ("just a moment" not in title.lower()
+                    and "checking" not in title.lower()
+                    and "just a moment" not in body_text.lower()):
+                    break
+                logger.info("Eurowings: CF challenge in progress (%d)...", _cf_tick)
+                await asyncio.sleep(2)
+            await asyncio.sleep(2.0)
+
+            # Dismiss cookies (same as farm does)
+            await self._dismiss_cookies(page)
+            await asyncio.sleep(1.0)
+
+            body = self._build_api_body(req)
+            result = await page.evaluate("""async (args) => {
+                const [url, body] = args;
+                try {
+                    const resp = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'content-type': 'application/json',
+                            'accept': 'application/json, text/plain, */*',
+                        },
+                        body: JSON.stringify(body),
+                        credentials: 'include',
+                    });
+                    if (!resp.ok) return {_error: resp.status, _text: (await resp.text()).substring(0, 200)};
+                    return await resp.json();
+                } catch (e) {
+                    return {_error: -1, _text: e.message};
+                }
+            }""", [_API_URL, body])
+
+            if not result or result.get("_error"):
+                err = result.get("_error", "?") if result else "null"
+                snippet = result.get("_text", "") if result else ""
+                logger.warning("Eurowings: in-browser fetch returned %s — %s", err, snippet[:150])
+                return None
+
+            status = result.get("_payload", {}).get("_status", "")
+            if status != "SUCCESS":
+                logger.warning("Eurowings: API status=%s", status)
+                return None
+
+            return result
         except Exception as e:
-            logger.error("Eurowings: API request failed: %s", e)
+            logger.error("Eurowings: in-browser API error: %s", e)
             return None
-
-        if r.status_code != 200:
-            logger.warning("Eurowings: API returned %d", r.status_code)
-            return None
-
-        try:
-            data = r.json()
-        except Exception:
-            logger.warning("Eurowings: API response not JSON")
-            return None
-
-        status = data.get("_payload", {}).get("_status", "")
-        if status != "SUCCESS":
-            logger.warning("Eurowings: API status=%s", status)
-            return None
-
-        return data
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            if ctx:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
 
     @staticmethod
     def _build_api_body(req: FlightSearchRequest) -> dict:
@@ -292,6 +349,8 @@ class EurowingsConnectorClient:
             ),
         )
         page = await ctx.new_page()
+        await inject_stealth_js(page)
+        await auto_block_if_proxied(page)
 
         captured: dict = {}
 
@@ -417,9 +476,24 @@ class EurowingsConnectorClient:
         try:
             await trigger.click(timeout=5000)
         except Exception:
-            # Overlay may have reappeared — remove and retry
-            await self._remove_overlays(page)
-            await trigger.click(timeout=5000)
+            # Try broader selectors — Eurowings may have changed button text
+            for sel in (
+                f'[aria-label="{label}"]',
+                f'[aria-label*="{label.split()[0]}"]',  # "Departure" or "Destination"
+                f'button[aria-haspopup="dialog"]:has-text("{label.split()[0]}")',
+                '[data-testid*="origin"]' if "Departure" in label else '[data-testid*="destination"]',
+            ):
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        await self._remove_overlays(page)
+                        await el.click(timeout=5000)
+                        break
+                except Exception:
+                    continue
+            else:
+                logger.warning("Eurowings: could not find %s button", label)
+                return
         await asyncio.sleep(1)
 
         # The dialog contains an autocomplete input (not readonly)

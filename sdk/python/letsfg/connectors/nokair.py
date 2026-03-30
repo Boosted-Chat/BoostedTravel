@@ -28,6 +28,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class NokAirConnectorClient:
                 timeout=self.timeout,
                 headers=_HEADERS,
                 follow_redirects=True,
-            )
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):

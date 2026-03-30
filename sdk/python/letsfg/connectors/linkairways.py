@@ -30,6 +30,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import acquire_browser_slot, auto_block_if_proxied, release_browser_slot, stealth_args
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ class LinkAirwaysConnectorClient:
                 ],
             )
             page = await browser.new_page()
+            await auto_block_if_proxied(page)
 
             # Step 1: Load the StartOver page
             logger.info("LinkAirways: loading StartOver.aspx for %s→%s", origin, destination)

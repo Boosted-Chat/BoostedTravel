@@ -37,7 +37,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs
+from .browser import find_chrome, stealth_popen_kwargs, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,7 @@ class PeachConnectorClient:
         page = None
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             search_url = self._build_search_url(req)
             logger.info("Peach: navigating to booking URL for %s→%s on %s",

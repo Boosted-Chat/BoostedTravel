@@ -33,11 +33,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import (
-    find_chrome,
-    stealth_popen_kwargs,
-    _launched_procs,
-)
+from .browser import _launched_procs, auto_block_if_proxied, find_chrome, proxy_chrome_args, stealth_popen_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +52,9 @@ _browser_lock: Optional[asyncio.Lock] = None
 # EveryMundo uses city slugs, NOT airport codes.
 # "flights-from-incheon-to-tokyo" returns 404 but "flights-from-seoul-to-tokyo" works.
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "ROM": "rome",
+    "TYO": "tokyo", "SEL": "seoul", "OSA": "osaka",
     # South Korea
     "ICN": "seoul",
     "GMP": "seoul",
@@ -226,6 +225,7 @@ async def _get_context():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-http2",
@@ -276,6 +276,7 @@ class KoreanConnectorClient:
         try:
             context = await _get_context()
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)

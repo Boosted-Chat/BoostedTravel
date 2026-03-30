@@ -43,7 +43,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ async def _get_context():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-http2",
@@ -215,6 +216,7 @@ class EmiratesConnectorClient:
 
         context = await _get_context()
         page = await context.new_page()
+        await auto_block_if_proxied(page)
 
         # Interception state
         flexi_data: dict = {}
@@ -239,7 +241,7 @@ class EmiratesConnectorClient:
 
         try:
             # Step 1: Load booking page
-            logger.info("Emirates: loading /book/ for %s→%s", req.origin, req.destination)
+            logger.warning("Emirates: loading /book/ for %s→%s", req.origin, req.destination)
             await page.goto(
                 "https://www.emirates.com/english/book/",
                 wait_until="domcontentloaded",
@@ -281,12 +283,13 @@ class EmiratesConnectorClient:
                     }
                 }
             }""")
-            logger.info("Emirates: search clicked")
+            logger.warning("Emirates: search clicked")
 
             # Step 6: Wait for results page
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + remaining
             got_results = False
+            logged_url = False
             while time.monotonic() < deadline:
                 await asyncio.sleep(1.0)
                 url = page.url
@@ -299,12 +302,16 @@ class EmiratesConnectorClient:
                     await asyncio.sleep(6.0)
                     got_results = True
                     break
+                if not logged_url and time.monotonic() > deadline - remaining + 5:
+                    logger.warning("Emirates: waiting for results, current URL: %s", url[:200])
+                    logged_url = True
 
             if not got_results:
                 logger.warning("Emirates: never reached results page (URL: %s)", page.url[:200])
                 return self._empty(req)
 
             # Step 7: Scrape flight data from DOM
+            logger.warning("Emirates: reached results page, scraping...")
             flights = await self._scrape_results(page)
 
             if not flights:
@@ -342,7 +349,7 @@ class EmiratesConnectorClient:
             )
 
         except Exception as e:
-            logger.error("Emirates CDP error: %s", e)
+            logger.warning("Emirates CDP error: %s", e)
             return self._empty(req)
         finally:
             try:
@@ -433,8 +440,10 @@ class EmiratesConnectorClient:
             logger.warning("Emirates: invalid date_from: %s", req.date_from)
             return False
 
-        target_month = dt.strftime("%B %Y")  # e.g. "April 2026"
+        target_month = dt.strftime("%B %Y")  # e.g. "June 2026"
         target_day = str(dt.day)
+        target_month_name = dt.strftime("%B")  # e.g. "June"
+        target_year = str(dt.year)
 
         try:
             # Unstick the header so it doesn't block clicks
@@ -445,62 +454,195 @@ class EmiratesConnectorClient:
 
             # JS-click the date input (label/header overlaps the input)
             await page.evaluate("""() => {
-                const inp = document.querySelector('#date-input0, #startDate');
+                const inp = document.querySelector('#date-input0, #startDate, [data-ref="date-input"]');
                 if (inp) { inp.focus(); inp.click(); }
             }""")
             await asyncio.sleep(2.0)
 
             # Navigate calendar to target month
-            for _ in range(12):
-                visible_months = await page.evaluate("""() => {
-                    const caps = document.querySelectorAll('.CalendarMonth_caption strong');
-                    return [...caps].map(c => c.textContent).filter(Boolean);
+            for click_idx in range(18):
+                visible_months = await page.evaluate(r"""() => {
+                    // Strategy 1: DayPicker .CalendarMonth_caption strong
+                    let caps = [...document.querySelectorAll('.CalendarMonth_caption strong')].map(c => c.textContent);
+                    if (caps.length > 0) return caps.filter(Boolean);
+                    // Strategy 2: aria-label on month headings
+                    caps = [...document.querySelectorAll('[class*="month"] [class*="caption"], [class*="Month"] h3, [class*="calendar"] h2')]
+                        .map(c => c.textContent);
+                    if (caps.length > 0) return caps.filter(Boolean);
+                    // Strategy 3: anything that looks like "Month YYYY"
+                    const all = document.querySelectorAll('strong, h2, h3, [class*="heading"], [class*="title"], span');
+                    return [...all].map(e => e.textContent).filter(t => /^[A-Z][a-z]+ \d{4}$/.test(t?.trim()));
                 }""")
-                if target_month in (visible_months or []):
-                    break
-                # Click forward button
-                await page.evaluate("""() => {
-                    const next = document.querySelector(
-                        'button[aria-label*="forward"], .DayPickerNavigation_button:last-of-type'
-                    );
-                    if (next) next.click();
-                }""")
-                await asyncio.sleep(0.5)
 
-            # Click the target day in the correct month
-            clicked = await page.evaluate("""(args) => {
+                # Check if target month is visible
+                found = False
+                for vm in (visible_months or []):
+                    if vm and target_month_name in vm and target_year in vm:
+                        found = True
+                        break
+                if found:
+                    logger.warning("Emirates: calendar reached %s (click %d)", target_month, click_idx)
+                    break
+
+                if click_idx == 0:
+                    logger.warning("Emirates: calendar visible months: %s, navigating to %s",
+                                   visible_months, target_month)
+
+                # Click forward button
+                clicked_fwd = await page.evaluate("""() => {
+                    const selectors = [
+                        'button[aria-label*="forward"]', 'button[aria-label*="next"]',
+                        'button[aria-label*="Forward"]', 'button[aria-label*="Next"]',
+                        '.DayPickerNavigation_button:last-of-type',
+                        '[class*="navigation"] button:last-of-type',
+                        '[class*="calendar"] [class*="next"]',
+                        '[class*="arrow-right"]', '[class*="nav-next"]',
+                        '[class*="chevron-right"]', '[class*="right-arrow"]',
+                        'button[class*="next"]',
+                    ];
+                    for (const sel of selectors) {
+                        const next = document.querySelector(sel);
+                        if (next && next.offsetHeight > 0) { next.click(); return sel; }
+                    }
+                    return null;
+                }""")
+                if not clicked_fwd:
+                    logger.warning("Emirates: no forward button found at click %d, months: %s", click_idx, visible_months)
+                    break
+                logger.warning("Emirates: fwd click %d via %s", click_idx, clicked_fwd)
+                await asyncio.sleep(1.5)
+            else:
+                logger.warning("Emirates: exhausted calendar navigation (18 clicks)")
+
+            # Diagnostic: inspect calendar state before clicking day
+            diag = await page.evaluate("""(args) => {
                 const [targetMonth, targetDay] = args;
                 const months = document.querySelectorAll('.CalendarMonth');
-                for (const m of months) {
+                const monthInfo = [...months].map(m => {
                     const cap = m.querySelector('.CalendarMonth_caption strong');
-                    if (cap && cap.textContent === targetMonth) {
-                        const days = m.querySelectorAll(
-                            '.CalendarDay, td[role="button"], .CalendarDay__text__default'
-                        );
-                        for (const d of days) {
-                            const text = d.textContent.trim();
-                            if (text === targetDay && d.offsetHeight > 0 &&
-                                !d.classList.contains('CalendarDay__blocked') &&
-                                !d.classList.contains('CalendarDay__blocked_out_of_range') &&
-                                d.getAttribute('aria-disabled') !== 'true') {
-                                d.click();
-                                return true;
+                    const days = m.querySelectorAll('.CalendarDay, td[role="button"], td[role="gridcell"]');
+                    const dayTexts = [...days].slice(0, 5).map(d => d.textContent.trim());
+                    return { caption: cap?.textContent, dayCount: days.length, sampleDays: dayTexts };
+                });
+                // Also check aria-label candidates
+                const ariaCells = document.querySelectorAll('[aria-label]');
+                const ariaMatches = [...ariaCells]
+                    .filter(c => (c.getAttribute('aria-label') || '').includes(targetDay + ' '))
+                    .slice(0, 3)
+                    .map(c => ({ aria: c.getAttribute('aria-label'), tag: c.tagName, visible: c.offsetHeight > 0 }));
+                return { monthCount: months.length, months: monthInfo.slice(0, 6), ariaMatches };
+            }""", [target_month, target_day])
+            logger.warning("Emirates: calendar DOM diag: %s", diag)
+
+            # Click the target day — two-phase: mark element, then Playwright-click.
+            # Using page.evaluate to click directly can hang if the click
+            # triggers a page re-render or navigation.
+            date_iso = dt.strftime("%Y-%m-%d")
+
+            # Phase 1: Mark the target element with a data attribute
+            strategy = await page.evaluate("""(args) => {
+                const [targetMonth, targetDay, targetMonthName, targetYear, dateISO] = args;
+
+                // Strategy 1: CalendarMonth caption match + td with day text
+                const months = document.querySelectorAll('.CalendarMonth');
+                for (const m of months) {
+                    const cap = m.querySelector('.CalendarMonth_caption strong, .CalendarMonth_caption');
+                    const capText = cap ? cap.textContent.trim() : '';
+                    if (capText.includes(targetMonthName) && capText.includes(targetYear)) {
+                        const cells = m.querySelectorAll('td, button, [role="gridcell"], [role="button"]');
+                        for (const d of cells) {
+                            if (d.textContent.trim() === targetDay) {
+                                d.setAttribute('data-letsfg-target', 'day');
+                                return 'month-caption-td';
                             }
                         }
                     }
                 }
-                return false;
-            }""", [target_month, target_day])
 
-            if not clicked:
-                logger.warning("Emirates: could not click day %s in %s", target_day, target_month)
+                // Strategy 2: data-date attribute
+                const byDate = document.querySelector('td[data-date="' + dateISO + '"], [data-date="' + dateISO + '"]');
+                if (byDate) { byDate.setAttribute('data-letsfg-target', 'day'); return 'data-date'; }
+
+                // Strategy 3: aria-label
+                const ariaPatterns = [
+                    targetDay + ' ' + targetMonthName + ' ' + targetYear,
+                    targetMonthName + ' ' + targetDay + ', ' + targetYear,
+                    dateISO,
+                ];
+                for (const pat of ariaPatterns) {
+                    for (const c of document.querySelectorAll('[aria-label]')) {
+                        if ((c.getAttribute('aria-label') || '').includes(pat)) {
+                            c.setAttribute('data-letsfg-target', 'day');
+                            return 'aria';
+                        }
+                    }
+                }
+
+                // Strategy 4: brute walk calendar containers
+                const calContainers = document.querySelectorAll(
+                    '.DayPicker, [class*="calendar"], [class*="Calendar"], [class*="DayPicker"], table'
+                );
+                for (const container of calContainers) {
+                    for (const c of container.querySelectorAll('td, button')) {
+                        if (c.textContent.trim() === targetDay) {
+                            const parentText = (c.closest('table, [class*="month"], [class*="Month"]') || container).textContent;
+                            if (parentText.includes(targetMonthName)) {
+                                c.setAttribute('data-letsfg-target', 'day');
+                                return 'walk';
+                            }
+                        }
+                    }
+                }
+
+                return null;
+            }""", [target_month, target_day, target_month_name, target_year, date_iso])
+
+            if not strategy:
+                logger.warning("Emirates: could not find day %s in %s", target_day, target_month)
                 return False
 
+            # Phase 2: Scroll into view, force visibility, then click via Playwright
+            try:
+                # First scroll the marked element into view and ensure visibility
+                await page.evaluate("""() => {
+                    const el = document.querySelector('[data-letsfg-target="day"]');
+                    if (el) {
+                        el.scrollIntoView({block: 'center', behavior: 'instant'});
+                        // Force visibility if the element is hidden
+                        if (el.offsetHeight === 0) {
+                            el.style.display = 'block';
+                            el.style.visibility = 'visible';
+                        }
+                    }
+                }""")
+                await asyncio.sleep(0.3)
+
+                target_el = page.locator('[data-letsfg-target="day"]').first
+                await target_el.click(timeout=5000, force=True)
+                logger.warning("Emirates: date selected via Playwright click (%s)", strategy)
+            except Exception as e:
+                logger.warning("Emirates: Playwright click on marked day failed: %s", e)
+                # Fallback: simulate full React-compatible event sequence via JS
+                await page.evaluate("""() => {
+                    const el = document.querySelector('[data-letsfg-target="day"]');
+                    if (el) {
+                        // Scroll into view first
+                        el.scrollIntoView({block: 'center'});
+                        // React listens to mousedown/mouseup/click at the document level
+                        const rect = el.getBoundingClientRect();
+                        const cx = rect.left + rect.width / 2;
+                        const cy = rect.top + rect.height / 2;
+                        const opts = {bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window};
+                        el.dispatchEvent(new MouseEvent('mousedown', opts));
+                        el.dispatchEvent(new MouseEvent('mouseup', opts));
+                        el.dispatchEvent(new MouseEvent('click', opts));
+                    }
+                }""")
+                logger.warning("Emirates: date selected via React-compat event dispatch")
+
+            # Clean up marker attribute and wait for UI update
+            await page.evaluate("() => { const el = document.querySelector('[data-letsfg-target]'); if (el) el.removeAttribute('data-letsfg-target'); }")
             await asyncio.sleep(1.5)
-            date_val = await page.evaluate(
-                "() => document.querySelector('#date-input0, #startDate')?.value"
-            )
-            logger.info("Emirates: date selected → %s", date_val)
             return True
 
         except Exception as e:

@@ -31,6 +31,8 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
+from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,8 @@ _HEADERS = {
 
 # IATA → slug for Air New Zealand's EveryMundo fare pages.
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "TYO": "tokyo",
     # New Zealand
     "AKL": "auckland", "WLG": "wellington", "CHC": "christchurch",
     "ZQN": "queenstown", "DUD": "dunedin", "PMR": "palmerston-north",
@@ -84,8 +88,8 @@ class AirNewZealandConnectorClient:
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True
-            )
+                timeout=self.timeout, headers=_HEADERS, follow_redirects=True,
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -175,11 +179,13 @@ class AirNewZealandConnectorClient:
     def _build_offers(self, fares: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
 
         for fare in fares:
             orig = fare.get("originAirportCode", "")
             dest = fare.get("destinationAirportCode", "")
-            if orig != req.origin or dest != req.destination:
+            if orig not in valid_origins or dest not in valid_dests:
                 continue
 
             dep_date = fare.get("departureDate", "")

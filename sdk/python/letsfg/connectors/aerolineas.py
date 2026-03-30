@@ -9,7 +9,7 @@ from datetime import date, datetime, time as dt_time
 from typing import Optional
 from urllib.parse import urlencode
 
-from .browser import _launched_pw_instances, acquire_browser_slot, release_browser_slot
+from .browser import _launched_pw_instances, acquire_browser_slot, release_browser_slot, auto_block_if_proxied
 from ..models.flights import (
     FlightOffer,
     FlightRoute,
@@ -121,6 +121,7 @@ async def _refresh_session():
     _context = context
 
     page = await context.new_page()
+    await auto_block_if_proxied(page)
     await page.add_init_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
     )

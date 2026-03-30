@@ -41,6 +41,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ class SpiceJetConnectorClient:
     @staticmethod
     def _acquire_token_sync() -> Optional[str]:
         """Synchronous token acquisition via curl_cffi."""
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
         r = sess.post(
             _TOKEN_URL,
             json={},
@@ -201,7 +202,7 @@ class SpiceJetConnectorClient:
             },
         }
 
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
         try:
             r = sess.post(
                 _SEARCH_URL,
