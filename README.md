@@ -38,7 +38,9 @@ LetsFG gives your AI agent flight search and booking superpowers — 195 airline
 
 [<img src="https://img.shields.io/badge/⭐_Star_to_unlock_free_access-FFD700?style=for-the-badge&logoColor=black" alt="Star to unlock">](https://github.com/LetsFG/LetsFG)
 &nbsp;&nbsp;
-[<img src="https://img.shields.io/badge/💬_Try_it_now_on_Messenger-0099FF?style=for-the-badge&logo=messenger&logoColor=white" alt="Try on Messenger">](https://m.me/61579557368989)
+[<img src="https://img.shields.io/badge/💬_Try_on_Messenger-0099FF?style=for-the-badge&logo=messenger&logoColor=white" alt="Try on Messenger">](https://m.me/61579557368989)
+&nbsp;&nbsp;
+[<img src="https://img.shields.io/badge/📸_Try_on_Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Try on Instagram">](https://ig.me/m/letsfg_)
 &nbsp;&nbsp;
 [<img src="https://img.shields.io/badge/📦_pip_install_letsfg-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="pip install">](https://pypi.org/project/letsfg/)
 
@@ -74,17 +76,33 @@ We searched 5 routes on Google Flights and LetsFG on the same day (June 15, 2026
 
 ## Try it right now — no install needed
 
-**Don't want to install anything?** Message our AI assistant on Messenger and search flights instantly:
+**Don't want to install anything?** Message our AI assistant and search flights instantly:
 
 <div align="center">
 
-### 👉 [**m.me/letsfg** — Try it on Messenger](https://m.me/61579557368989) 👈
+### 💬 [**Try it on Messenger**](https://m.me/61579557368989) &nbsp;&nbsp;·&nbsp;&nbsp; 📸 [**Try it on Instagram**](https://ig.me/m/letsfg_)
 
 </div>
 
 Ask it anything: *"Find me the cheapest flight from London to Barcelona next month"* — it searches 195 airlines in real time and gives you the best deals.
 
 When you're ready to integrate it into your own agent, keep reading.
+
+---
+
+## Pricing
+
+| How you use it | Search | Unlock | Book | Runs where? |
+|----------------|--------|--------|------|-------------|
+| **CLI / Python SDK / npm** | ✅ Free | ✅ Free | Ticket price only | Your machine |
+| **MCP Server (local)** | ✅ Free | ✅ Free | Ticket price only | Your machine |
+| **API / Messenger / Instagram** | ✅ Free | 1% (min $1) | Ticket price only | Our servers |
+
+**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 195 airline connectors on your machine. No API key needed, no fees, no limits.
+
+**Server = free search + small unlock fee.** When you use our hosted API (or chat with us on Messenger/Instagram), search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
+
+> ⭐ **First 1,000 stargazers get lifetime free access everywhere** — including server unlock. Star → verify → free forever.
 
 ---
 
@@ -98,7 +116,7 @@ When you're ready to integrate it into your own agent, keep reading.
 | Repeat search raises price? | Yes | **Never** |
 | Works in AI agents? | No | **Native** (CLI, MCP, SDK) |
 | Booking | Redirects to OTA checkout | **Real airline PNR, e-ticket to inbox** |
-| Cost to you | Hidden markup | **Free search. Ticket price only for booking.** |
+| Cost to you | Hidden markup | **CLI/local: 100% free. Server: free search, 1% unlock.** |
 
 ---
 
@@ -328,7 +346,7 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 
 <div align="center">
 
-**[Documentation](https://api.letsfg.co/docs)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)**
+**[Documentation](https://api.letsfg.co/docs)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)** · **[Instagram](https://ig.me/m/letsfg_)**
 
 MIT License · Made with ❤️ for AI agents
 
