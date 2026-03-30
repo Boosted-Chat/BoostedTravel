@@ -63,12 +63,13 @@ We searched 5 routes on Google Flights and LetsFG on the same day (June 15, 2026
 | Route | Airline | Google Flights | LetsFG | You Save |
 |-------|---------|---------------|--------|----------|
 | LAX → Paris (CDG) | WestJet, 1 stop | $723 | **$687** | **$36** |
+| Warsaw → Bali (DPS) | Etihad, 1 stop | $876 | **$842** | **$34** |
 | SFO → London (LHR) | WestJet, 1 stop | $669 | **$636** | **$33** |
 | Chicago → Miami | Spirit, nonstop | $120 | **$114** | **$6** |
 | London → Barcelona | Vueling, nonstop | $62 | **$56** | **$6** |
 | LA → New York (JFK) | Frontier, 1 stop | $125 | **$124** | **$1** |
 
-> **$82 saved across 5 flights.** Google Flights inflates further on repeat searches. LetsFG returns the raw airline price every time.
+> **$116 saved across 6 flights.** Google Flights inflates further on repeat searches. LetsFG returns the raw airline price every time.
 
 **Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 200+ website connectors including Google Flights itself, Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, etc.) and enterprise GDS/NDC sources (Amadeus, Sabre, Duffel). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
 
@@ -110,7 +111,7 @@ When you're ready to integrate it into your own agent, keep reading.
 
 | | Google Flights / Expedia | **LetsFG** |
 |---|---|---|
-| Price | Inflated (tracking, cookies, surge) | **Raw airline price. $82 cheaper across 5 verified routes.** |
+| Price | Inflated (tracking, cookies, surge) | **Raw airline price. $116 cheaper across 6 verified routes.** |
 | Coverage | Misses budget airlines | **195 connectors + 400 GDS airlines** |
 | Speed | 30s+ (loading, ads, redirects) | **~10 seconds** |
 | Repeat search raises price? | Yes | **Never** |
