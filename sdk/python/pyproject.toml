@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "letsfg"
-version = "1.4.0"
+version = "1.5.8"
 description = "Agent-native flight search & booking. 400+ airlines, 195 direct airline connectors run locally. Built for autonomous AI agents."
 readme = "README.md"
 license = {text = "MIT"}
@@ -67,3 +67,21 @@ Issues = "https://github.com/LetsFG/LetsFG/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["letsfg"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/_*",
+    "/.test_*",
+    "/_test_*",
+    "*.png",
+    "*.json",
+    "*.pma",
+    "*.db",
+    "*.db-journal",
+    ".test_ita_profile/",
+    "__pycache__/",
+    ".pytest_cache/",
+    "dist/",
+    "build/",
+    "*.egg-info/",
+]

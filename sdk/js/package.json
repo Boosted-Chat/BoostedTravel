@@ -1,6 +1,6 @@
 {
   "name": "letsfg",
-  "version": "1.3.0",
+  "version": "1.4.2",
   "description": "Agent-native flight search & booking. 195 airline connectors run locally + enterprise GDS/NDC APIs. Built for autonomous AI agents.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

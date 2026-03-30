@@ -3,7 +3,12 @@ LetsFG — Agent-native flight search & booking SDK.
 
 195 airline connectors run locally + enterprise GDS/NDC APIs via backend.
 
-Local search (FREE, no API key):
+**GitHub Star Required!**
+Before using, you must:
+1. Star https://github.com/LetsFG/LetsFG
+2. Run: letsfg star --github <your-username>
+
+Local search (FREE with star):
     from letsfg.local import search_local
     result = await search_local("SHA", "CTU", "2026-03-20")
 
@@ -27,6 +32,7 @@ from letsfg.client import (
     ErrorCode,
     ErrorCategory,
 )
+from letsfg.config import StarRequiredError
 from letsfg.models import (
     FlightOffer,
     FlightSearchResult,
@@ -38,7 +44,7 @@ from letsfg.models import (
     AgentProfile,
 )
 
-__version__ = "1.4.0"
+__version__ = "1.5.8"
 __all__ = [
     "LetsFG",
     "LetsFGError",
@@ -48,6 +54,7 @@ __all__ = [
     "PaymentRequiredError",
     "OfferExpiredError",
     "ValidationError",
+    "StarRequiredError",
     "ErrorCode",
     "ErrorCategory",
     "FlightOffer",

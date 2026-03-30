@@ -1,6 +1,6 @@
 {
   "name": "letsfg-mcp",
-  "version": "1.3.0",
+  "version": "1.4.2",
   "mcpName": "io.github.Efistoffeles/letsfg",
   "description": "LetsFG MCP Server — 195 airline connectors running locally + enterprise GDS/NDC APIs. Flight search & booking for Claude, Cursor, Windsurf, and any MCP-compatible AI agent.",
   "main": "dist/index.js",
