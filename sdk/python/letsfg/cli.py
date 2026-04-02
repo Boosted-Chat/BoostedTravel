@@ -15,6 +15,7 @@ Usage (booking — requires API key):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -30,6 +31,7 @@ except ImportError:
     HAS_RICH = False
 
 from letsfg.client import LetsFG, LetsFGError
+from letsfg.connectors.currency import fetch_rates, _fallback_convert
 
 app = typer.Typer(
     name="letsfg",
@@ -542,6 +544,27 @@ def search_cloud_cmd(
                     stops_val = max(len(segs) - 1, 0)
         return str(stops_val) if stops_val is not None else "-"
 
+    def _convert_cloud_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
+        from_cur = (from_cur or "").upper()
+        to_cur = (to_cur or "").upper()
+        if not amount or not from_cur or from_cur == to_cur:
+            return amount, to_cur or from_cur
+
+        # Live rates map currency -> units per EUR.
+        if eur_rates:
+            from_rate = eur_rates.get(from_cur)
+            to_rate = eur_rates.get(to_cur)
+            if from_rate and to_rate:
+                return round((amount / from_rate) * to_rate, 2), to_cur
+
+        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
     if HAS_RICH:
         table = Table(show_header=True, header_style="bold")
         table.add_column("#", style="dim", width=4)
@@ -552,8 +575,9 @@ def search_cloud_cmd(
         table.add_column("Stops", justify="center")
 
         for i, o in enumerate(offers, 1):
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", [])) or "-"
             route = _cloud_route(o)
             dur = _cloud_duration(o)
@@ -563,8 +587,9 @@ def search_cloud_cmd(
         console.print(table)
     else:
         for i, o in enumerate(offers, 1):
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", [])) or "-"
             route = _cloud_route(o)
             dur = _cloud_duration(o)
