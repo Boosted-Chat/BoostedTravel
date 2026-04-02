@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -154,6 +155,9 @@ _HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Rotate fingerprints to avoid WAF blocks on a single TLS profile
+_FINGERPRINTS = ["chrome136", "chrome133a", "chrome131", "chrome124", "chrome120"]
+
 
 class LHGroupBaseConnector:
     """Base connector for all Lufthansa Group airlines.
@@ -196,11 +200,24 @@ class LHGroupBaseConnector:
         url = f"{_BASE_URL}/flight-{origin_slug}-{dest_slug}"
 
         try:
-            with creq.Session(impersonate="chrome131") as sess:
-                resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
+            resp = None
+            last_exc = None
+            # Try up to 2 fingerprints before giving up
+            for fp in random.sample(_FINGERPRINTS, min(2, len(_FINGERPRINTS))):
+                try:
+                    with creq.Session(impersonate=fp) as sess:
+                        resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
+                    if resp.status_code == 200:
+                        break
+                    logger.warning("%s: %s returned %d (fp=%s)", self.AIRLINE_NAME, url, resp.status_code, fp)
+                    resp = None
+                except Exception as e:
+                    last_exc = e
+                    logger.debug("%s: fp=%s failed: %s", self.AIRLINE_NAME, fp, e)
 
-            if resp.status_code != 200:
-                logger.warning("%s: %s returned %d", self.AIRLINE_NAME, url, resp.status_code)
+            if resp is None or resp.status_code != 200:
+                if last_exc:
+                    logger.warning("%s: all fingerprints failed, last error: %s", self.AIRLINE_NAME, last_exc)
                 return self._empty(req)
 
             flights, product = self._extract_jsonld(resp.text)
