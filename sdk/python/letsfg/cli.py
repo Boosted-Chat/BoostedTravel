@@ -192,6 +192,33 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
     return f"{code}-{owner}" if code else owner
 
 
+def _offer_price(offer: dict) -> float:
+    """Extract comparable offer price; missing/invalid values sort last."""
+    try:
+        return float(offer.get("price", float("inf")))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _offer_duration_seconds(offer: dict) -> int:
+    """Extract comparable offer duration; missing/invalid values sort last."""
+    raw = offer.get("duration_seconds")
+    if raw is None:
+        raw = (offer.get("outbound") or {}).get("total_duration_seconds")
+    try:
+        return int(raw) if raw is not None else int(1e18)
+    except (TypeError, ValueError):
+        return int(1e18)
+
+
+def _final_sort_offers(offers: list[dict], sort: str) -> None:
+    """Apply deterministic client-side sorting after merged results are fetched."""
+    if sort == "duration":
+        offers.sort(key=lambda o: (_offer_duration_seconds(o), _offer_price(o)))
+        return
+    offers.sort(key=lambda o: (_offer_price(o), _offer_duration_seconds(o)))
+
+
 # ── Search ────────────────────────────────────────────────────────────────
 
 @app.command()
@@ -266,11 +293,8 @@ def search(
     offers = result.get("offers", [])
     total = result.get("total_results", len(offers))
 
-    # Sort
-    if sort == "price":
-        offers.sort(key=lambda o: o.get("price", float("inf")))
-    elif sort == "duration":
-        offers.sort(key=lambda o: (o.get("outbound", {}).get("total_duration_seconds") or float("inf")))
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(offers, sort)
 
     offers = offers[:limit]
 
@@ -501,11 +525,8 @@ def search_local_cmd(
     offers = result.get("offers", [])
     total = result.get("total_results", len(offers))
 
-    # Sort
-    if sort == "price":
-        offers.sort(key=lambda o: o.get("price", float("inf")))
-    elif sort == "duration":
-        offers.sort(key=lambda o: (o.get("outbound", {}).get("total_duration_seconds") or float("inf")))
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(offers, sort)
 
     offers = offers[:limit]
 
@@ -666,6 +687,10 @@ def search_cloud_cmd(
 
     offers = data.get("offers", [])
     total = data.get("total_results", len(offers))
+
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(offers, sort)
+    offers = offers[:limit]
 
     if output_json:
         _json_out({"total_results": total, "offers": offers})
