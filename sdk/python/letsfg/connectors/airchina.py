@@ -1,25 +1,31 @@
 """
 Air China (CA) — CDP Chrome connector — form fill + API intercept.
 
-Air China's website at airchina.com uses a search widget with autocomplete
+Air China's website at airchina.com.cn uses a search widget with autocomplete
 airport fields and calendar date picker. Direct API calls are blocked;
 headed CDP Chrome with form fill + API interception is required.
 
+IMPORTANT: Air China uses visual object-click captcha for bot detection.
+For headless/backend operation, set OPENAI_API_KEY to enable automatic
+captcha solving via GPT-4o-mini vision (~$0.0001/solve).
+
 Strategy (CDP Chrome + API interception):
 1. Launch headed Chrome via CDP (off-screen, stealth).
-2. Navigate to airchina.com → SPA loads with search widget.
+2. Navigate to airchina.com.cn → SPA loads with search widget.
 3. Accept cookies → set one-way → fill origin/dest → select date → search.
 4. Intercept the search API response (flight availability JSON).
-5. If API not captured, fall back to DOM scraping on results page.
+5. If API not captured or blocked, fall back to DOM scraping on results page.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -43,11 +49,419 @@ _USER_DATA_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".airchina_chrome_data"
 )
 
+
+# ── GPT-4o-mini Vision Captcha Solver ──
+async def _solve_captcha_via_backend(img_b64: str, captcha_text: str, api_key: str, ref_b64: str = None) -> Optional[tuple]:
+    """Call LetsFG captcha solver service. Returns (x_pct, y_pct) or None."""
+    import httpx
+    base_url = os.environ.get("LETSFG_CAPTCHA_URL", "https://captcha.letsfg.co")
+    try:
+        payload = {"image_b64": img_b64, "instruction": captcha_text}
+        if ref_b64:
+            payload["reference_b64"] = ref_b64
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{base_url}/api/v1/captcha/solve",
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                json=payload
+            )
+            if resp.status_code != 200:
+                logger.debug("Backend captcha solve returned %s: %s", resp.status_code, resp.text[:200])
+                return None
+            data = resp.json()
+            return (float(data["x"]), float(data["y"]))
+    except Exception as e:
+        logger.debug("Backend captcha solve failed: %s", e)
+        return None
+
+
+async def _solve_captcha_via_gemini(img_b64: str, prompt_text: str, gemini_key: str, ref_b64: str = None) -> Optional[tuple]:
+    """Call Gemini 3.1 Flash-Lite directly. Returns (x_pct, y_pct) or None."""
+    import httpx
+    try:
+        parts = [
+            {"text": prompt_text},
+            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+        ]
+        if ref_b64:
+            parts.append({"inline_data": {"mime_type": "image/jpeg", "data": ref_b64}})
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={gemini_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": parts}],
+                    "generationConfig": {"maxOutputTokens": 50}
+                }
+            )
+            if resp.status_code != 200:
+                return None
+            content = (resp.json().get("candidates", [{}])[0]
+                       .get("content", {}).get("parts", [{}])[0].get("text", ""))
+            m = re.search(r'\{[^}]*"x"\s*:\s*([\d.]+)[^}]*"y"\s*:\s*([\d.]+)[^}]*\}', content)
+            return (float(m.group(1)), float(m.group(2))) if m else None
+    except Exception as e:
+        logger.debug("Gemini captcha solve failed: %s", e)
+        return None
+
+
+async def _solve_captcha_via_openai(img_b64: str, prompt_text: str, openai_key: str, ref_b64: str = None) -> Optional[tuple]:
+    """Call GPT-4o-mini directly. Returns (x_pct, y_pct) or None."""
+    import httpx
+    try:
+        content_parts = [
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+        ]
+        if ref_b64:
+            content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ref_b64}"}})
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": content_parts}],
+                    "max_tokens": 50
+                }
+            )
+            if resp.status_code != 200:
+                return None
+            content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            m = re.search(r'\{[^}]*"x"\s*:\s*([\d.]+)[^}]*"y"\s*:\s*([\d.]+)[^}]*\}', content)
+            return (float(m.group(1)), float(m.group(2))) if m else None
+    except Exception as e:
+        logger.debug("OpenAI captcha solve failed: %s", e)
+        return None
+
+
+async def _solve_captcha_with_llm(page) -> bool:
+    """
+    Solve visual click captcha using LLM vision.
+    Priority: 1) LetsFG backend (zero config) → 2) Gemini direct → 3) OpenAI direct.
+    Users need NO extra API keys — backend proxies the LLM call using our Gemini key.
+    """
+    letsfg_key = os.environ.get("LETSFG_API_KEY")
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+
+    if not letsfg_key and not gemini_key and not openai_key:
+        logger.warning("No LETSFG_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY — cannot auto-solve captcha")
+        return False
+
+    try:
+        import httpx  # noqa: F811
+    except ImportError:
+        logger.warning("httpx not installed — cannot solve captcha")
+        return False
+
+    for attempt in range(5):
+        try:
+            # Air China uses a specific captcha modal with known structure:
+            #   div.captcha_drop (full-page overlay, position:fixed)
+            #   div#captcha_modal (the visible dialog, position:absolute)
+            #     div.captcha_header ("安全验证")
+            #     div.captcha_body > img (the captcha image, base64 JPG)
+            #     div.captcha_footer ("请点击上图中的：" + reference img)
+
+            # Wait for captcha image to fully load (it loads async)
+            await asyncio.sleep(2.0)
+
+            # Get captcha image directly from DOM — select the LARGEST image 
+            # (there are small icons/spinners in the modal too)
+            captcha_info = await page.evaluate("""() => {
+                // Find all images in the captcha area
+                const imgs = document.querySelectorAll('.captcha_body img, #captcha_modal img, .captcha_drop img');
+                let bestImg = null;
+                let bestArea = 0;
+                for (const img of imgs) {
+                    const area = img.naturalWidth * img.naturalHeight;
+                    if (area > bestArea && img.src) {
+                        bestArea = area;
+                        bestImg = img;
+                    }
+                }
+                if (!bestImg || bestArea < 5000) return null;  // Must be at least ~70x70
+                
+                const r = bestImg.getBoundingClientRect();
+                // Get instruction text and reference image from footer
+                const footer = document.querySelector('.captcha_footer');
+                let instruction = '';
+                let refSrc = '';
+                if (footer) {
+                    instruction = footer.textContent.trim();
+                    const refImg = footer.querySelector('img');
+                    if (refImg) refSrc = refImg.src || '';
+                }
+                const src = bestImg.src || '';
+                return {
+                    src: src,
+                    srcLen: src.length,
+                    x: r.x, y: r.y, w: r.width, h: r.height,
+                    instruction: instruction,
+                    refSrc: refSrc,
+                    refSrcLen: (refSrc || '').length,
+                    naturalWidth: bestImg.naturalWidth,
+                    naturalHeight: bestImg.naturalHeight,
+                    complete: bestImg.complete,
+                };
+            }""")
+
+            if not captcha_info:
+                logger.warning("AirChina: captcha image element not found")
+                return False
+
+            logger.info("AirChina: captcha image src length=%d, natural=%dx%d, complete=%s, refLen=%d",
+                        captcha_info.get('srcLen', 0),
+                        captcha_info.get('naturalWidth', 0), captcha_info.get('naturalHeight', 0),
+                        captcha_info.get('complete'), captcha_info.get('refSrcLen', 0))
+
+            # If image not loaded yet, wait and retry
+            if not captcha_info.get('complete') or captcha_info.get('srcLen', 0) < 1000:
+                logger.info("AirChina: captcha image not fully loaded, waiting...")
+                await asyncio.sleep(3.0)
+                captcha_info = await page.evaluate("""() => {
+                    const imgs = document.querySelectorAll('.captcha_body img, #captcha_modal img, .captcha_drop img');
+                    let bestImg = null;
+                    let bestArea = 0;
+                    for (const img of imgs) {
+                        const area = img.naturalWidth * img.naturalHeight;
+                        if (area > bestArea && img.src) { bestArea = area; bestImg = img; }
+                    }
+                    if (!bestImg || bestArea < 5000) return null;
+                    const r = bestImg.getBoundingClientRect();
+                    const footer = document.querySelector('.captcha_footer');
+                    let instruction = '';
+                    let refSrc = '';
+                    if (footer) {
+                        instruction = footer.textContent.trim();
+                        const refImg = footer.querySelector('img');
+                        if (refImg) refSrc = refImg.src || '';
+                    }
+                    return {
+                        src: bestImg.src || '',
+                        srcLen: (bestImg.src || '').length,
+                        x: r.x, y: r.y, w: r.width, h: r.height,
+                        instruction: instruction,
+                        refSrc: refSrc,
+                        refSrcLen: (refSrc || '').length,
+                        naturalWidth: bestImg.naturalWidth,
+                        naturalHeight: bestImg.naturalHeight,
+                        complete: bestImg.complete,
+                    };
+                }""")
+                if not captcha_info:
+                    return False
+                logger.info("AirChina: retry - src length=%d, complete=%s",
+                            captcha_info.get('srcLen', 0), captcha_info.get('complete'))
+
+            # Extract base64 image data from the src attribute
+            img_src = captcha_info["src"]
+            if img_src.startswith("data:image"):
+                # data:image/jpg;base64,/9j/4AAQ...
+                img_b64 = img_src.split(",", 1)[1]
+            else:
+                logger.warning("AirChina: captcha image is not base64: %s", img_src[:60])
+                return False
+
+            # Extract reference image (the small target image showing WHICH object to click)
+            ref_b64 = None
+            ref_src = captcha_info.get("refSrc", "")
+            if ref_src and ref_src.startswith("data:image"):
+                ref_b64 = ref_src.split(",", 1)[1]
+
+            logger.info("AirChina: captcha image b64 size=%d, ref b64 size=%d",
+                        len(img_b64), len(ref_b64) if ref_b64 else 0)
+
+            # Build instruction text including reference image
+            captcha_text = captcha_info.get("instruction", "")
+            if not captcha_text:
+                captcha_text = "请点击图中的目标物体"
+
+            if ref_b64:
+                prompt_text = (
+                    f'This is a visual click captcha from Air China.\n'
+                    f'IMAGE 1 (first image): The main captcha scene showing multiple objects.\n'
+                    f'IMAGE 2 (second image): A small reference image showing the TARGET object to click.\n\n'
+                    f'The instruction says: "{captcha_text}"\n\n'
+                    f'Find the object in IMAGE 1 that matches IMAGE 2 (the reference/target).\n'
+                    f'Return the click coordinates within IMAGE 1 as a JSON object:\n'
+                    f'{{"x": 0.XX, "y": 0.YY}}\n'
+                    f'where x,y are percentages of IMAGE 1 width/height (0.0 to 1.0).\n'
+                    f'Example: center = {{"x": 0.5, "y": 0.5}}'
+                )
+            else:
+                prompt_text = (
+                    f'This is a visual captcha from Air China\'s website.\n'
+                    f'The instruction says: "{captcha_text}"\n\n'
+                    f'Look at the image and identify where to click to solve this captcha.\n'
+                    f'Return ONLY a JSON object with the x,y coordinates '
+                    f'(as percentage of image width/height from top-left):\n'
+                    f'{{"x": 0.XX, "y": 0.YY}}\n\n'
+                    f'For example, if the target is in the center, return: {{"x": 0.5, "y": 0.5}}'
+                )
+
+            # Try solvers in priority order
+            coords = None
+            if letsfg_key and not coords:
+                logger.info("AirChina: Solving captcha via LetsFG backend (attempt %d): %s", attempt + 1, captcha_text)
+                coords = await _solve_captcha_via_backend(img_b64, captcha_text, letsfg_key, ref_b64)
+            if gemini_key and not coords:
+                logger.info("AirChina: Solving captcha via Gemini (attempt %d): %s", attempt + 1, captcha_text)
+                coords = await _solve_captcha_via_gemini(img_b64, prompt_text, gemini_key, ref_b64)
+            if openai_key and not coords:
+                logger.info("AirChina: Solving captcha via OpenAI (attempt %d): %s", attempt + 1, captcha_text)
+                coords = await _solve_captcha_via_openai(img_b64, prompt_text, openai_key, ref_b64)
+
+            if not coords:
+                logger.warning("AirChina: All captcha solvers failed (attempt %d), retrying...", attempt + 1)
+                await asyncio.sleep(2.0)
+                continue
+
+            x_pct, y_pct = coords
+
+            # Map coordinates to the captcha IMAGE bounds (not modal, not page)
+            img_box = captcha_info
+            click_x = img_box['x'] + img_box['w'] * x_pct
+            click_y = img_box['y'] + img_box['h'] * y_pct
+
+            logger.info("AirChina: clicking captcha at (%.0f, %.0f) — image at (%d,%d %dx%d), pct=(%.2f,%.2f)",
+                        click_x, click_y, int(img_box['x']), int(img_box['y']),
+                        int(img_box['w']), int(img_box['h']), x_pct, y_pct)
+            await page.mouse.click(click_x, click_y)
+            await asyncio.sleep(2.5)
+
+            still_captcha = await page.evaluate("""() => document.body.innerText.includes('安全验证')""")
+            if not still_captcha:
+                logger.info("AirChina: Captcha solved on attempt %d!", attempt + 1)
+                return True
+            else:
+                logger.warning("AirChina: Captcha click missed (attempt %d), retrying...", attempt + 1)
+                # Captcha refreshes after wrong click, wait for new image
+                await asyncio.sleep(1.5)
+
+        except Exception as e:
+            logger.warning("AirChina: LLM captcha solve error (attempt %d): %s", attempt + 1, e)
+
+    logger.warning("AirChina: Captcha not solved after 5 attempts")
+    return False
+
 _browser = None
 _context = None
 _pw_instance = None
 _chrome_proc = None
 _browser_lock: Optional[asyncio.Lock] = None
+
+
+# ── Human-like behavior helpers ──
+def _bezier_curve(p0: tuple, p1: tuple, p2: tuple, p3: tuple, steps: int = 30) -> list:
+    """Generate points along cubic bezier curve for human-like mouse movement."""
+    pts = []
+    for i in range(steps + 1):
+        t = i / steps
+        s = 1 - t
+        x = s**3 * p0[0] + 3*s**2*t * p1[0] + 3*s*t**2 * p2[0] + t**3 * p3[0]
+        y = s**3 * p0[1] + 3*s**2*t * p1[1] + 3*s*t**2 * p2[1] + t**3 * p3[1]
+        pts.append((x, y))
+    return pts
+
+
+async def _human_mouse_move(page, start_x: float, start_y: float, end_x: float, end_y: float):
+    """Move mouse from start to end using bezier curve with micro-variations."""
+    dx = end_x - start_x
+    dy = end_y - start_y
+    ctrl1 = (start_x + dx * random.uniform(0.2, 0.4), start_y + dy * random.uniform(-0.3, 0.3))
+    ctrl2 = (start_x + dx * random.uniform(0.6, 0.8), end_y + random.uniform(-15, 15))
+    pts = _bezier_curve((start_x, start_y), ctrl1, ctrl2, (end_x, end_y), steps=random.randint(20, 35))
+    for px, py in pts:
+        px += random.uniform(-1.5, 1.5)
+        py += random.uniform(-1.5, 1.5)
+        await page.mouse.move(px, py)
+        await asyncio.sleep(random.uniform(0.003, 0.010))
+
+
+async def _human_click(page, x: float, y: float, start_x: float = 100, start_y: float = 100):
+    """Human-like click: move mouse with bezier curve, then click."""
+    await _human_mouse_move(page, start_x, start_y, x, y)
+    await asyncio.sleep(random.uniform(0.05, 0.15))
+    await page.mouse.click(x, y)
+    await asyncio.sleep(random.uniform(0.1, 0.3))
+
+
+async def _human_type(page, text: str, slow: bool = False):
+    """Type text with human-like delays between keys."""
+    for char in text:
+        await page.keyboard.type(char, delay=0)
+        delay = random.uniform(0.08, 0.18) if slow else random.uniform(0.05, 0.12)
+        await asyncio.sleep(delay)
+
+
+async def _random_scroll(page):
+    """Random small scroll to simulate human behavior."""
+    await page.mouse.wheel(0, random.randint(-50, 150))
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+
+
+async def _click_calendar_date(page, target_day: int) -> bool:
+    """Click on a specific day in the calendar to change date without URL navigation."""
+    try:
+        # Find and click the date picker to open calendar
+        date_input = await page.query_selector('input[name="DepartureDate"], input#DepartureDate, .date-picker input')
+        if not date_input:
+            # Try clicking on visible date element
+            date_el = await page.query_selector('.travel-date, .departure-date, [class*="date"]')
+            if date_el:
+                box = await date_el.bounding_box()
+                if box:
+                    await _human_click(page, box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                    await asyncio.sleep(0.5)
+        else:
+            await date_input.click()
+            await asyncio.sleep(0.5)
+        
+        # Look for day cells in calendar
+        # Air China uses various calendar implementations
+        day_selectors = [
+            f'td[data-day="{target_day}"]',
+            f'.calendar-day:has-text("{target_day}")',
+            f'.ant-calendar-cell:has-text("{target_day}")',
+            f'.day-cell:has-text("{target_day}")',
+        ]
+        
+        for selector in day_selectors:
+            try:
+                day_el = await page.query_selector(selector)
+                if day_el:
+                    box = await day_el.bounding_box()
+                    if box:
+                        logger.info(f"AirChina: clicking calendar day {target_day}")
+                        await _human_click(page, box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                        await asyncio.sleep(1.0)
+                        return True
+            except Exception:
+                continue
+        
+        # Fallback: find any clickable element containing the day number
+        all_cells = await page.query_selector_all('td, div.day, span.day, button')
+        for cell in all_cells:
+            try:
+                text = await cell.inner_text()
+                if text.strip() == str(target_day):
+                    box = await cell.bounding_box()
+                    if box and box['width'] > 10 and box['height'] > 10:
+                        logger.info(f"AirChina: found day {target_day} cell, clicking")
+                        await _human_click(page, box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                        await asyncio.sleep(1.0)
+                        return True
+            except Exception:
+                continue
+        
+        logger.warning(f"AirChina: could not find calendar day {target_day}")
+        return False
+        
+    except Exception as e:
+        logger.warning(f"AirChina: calendar click failed: {e}")
+        return False
 
 
 def _get_lock() -> asyncio.Lock:
@@ -103,7 +517,7 @@ async def _get_context():
                 *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
-                "--window-position=-2400,-2400",
+                "--window-position=50,50",  # Visible for manual captcha solving
                 "--window-size=1400,900",
                 "about:blank",
             ]
@@ -171,8 +585,11 @@ class AirChinaConnectorClient:
     IATA = "CA"
     AIRLINE_NAME = "Air China"
     SOURCE = "airchina_direct"
-    HOMEPAGE = "https://www.airchina.com"
-    HOMEPAGE_HTTP = "http://www.airchina.com"
+    HOMEPAGE = "https://www.airchina.com.cn"
+    HOMEPAGE_FALLBACKS = [
+        "http://www.airchina.com",
+        "https://www.airchina.com",
+    ]
     DEFAULT_CURRENCY = "CNY"
 
     def __init__(self, timeout: float = 55.0):
@@ -184,8 +601,28 @@ class AirChinaConnectorClient:
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
         context = await _get_context()
-        page = await context.new_page()
+        
+        # Reuse existing page if available (preserves session/cookies, avoids captcha)
+        existing_pages = context.pages
+        if existing_pages:
+            page = existing_pages[0]
+            logger.debug("AirChina: reusing existing page")
+        else:
+            page = await context.new_page()
+            logger.debug("AirChina: created new page")
+        
         await auto_block_if_proxied(page)
+
+        # Apply stealth to evade bot detection
+        try:
+            from playwright_stealth import Stealth
+            stealth = Stealth()
+            await stealth.apply_stealth_async(page)
+            logger.debug("AirChina: stealth applied")
+        except ImportError:
+            logger.debug("AirChina: playwright_stealth not available")
+        except Exception as e:
+            logger.debug("AirChina: stealth error: %s", e)
 
         search_data: dict = {}
         api_event = asyncio.Event()
@@ -217,16 +654,125 @@ class AirChinaConnectorClient:
                 pass
 
         page.on("response", _on_response)
+        
+        needs_form_fill = True  # Flag to track if we need form fill
 
         try:
-            logger.info("AirChina: loading homepage for %s→%s", req.origin, req.destination)
+            # Format search date
             try:
-                await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=20000)
-            except Exception:
-                logger.info("AirChina: HTTPS unreachable, falling back to HTTP")
-                await page.goto(self.HOMEPAGE_HTTP, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(5.0)
+                dt = req.date_from if isinstance(req.date_from, (datetime, date)) else datetime.strptime(str(req.date_from), "%Y-%m-%d")
+                date_str = dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt)
+                target_day = dt.day if isinstance(dt, datetime) else int(str(dt).split("-")[-1])
+            except (ValueError, TypeError):
+                date_str = str(req.date_from)
+                target_day = int(date_str.split("-")[-1])
+            
+            current_url = page.url
+            target_route = f"{req.origin.lower()}-{req.destination.lower()}"
+            
+            # Check if we're already on a search results page (avoids navigation = avoids captcha)
+            if "airchina.com.cn/flight" in current_url and not current_url.endswith("about:blank"):
+                logger.info("AirChina: already on search page, checking if we can use calendar click")
+                
+                # Check page state without navigation
+                page_state = await page.evaluate("""() => {
+                    const text = document.body ? document.body.innerText : '';
+                    const hasCaptcha = text.includes('安全验证') || text.includes('请点击');
+                    const hasFlightNumbers = /CA\\d{3,4}/.test(text);
+                    const hasPrices = /[￥¥]\\d{3,}/.test(text);
+                    return { hasCaptcha, hasFlights: hasFlightNumbers && hasPrices };
+                }""")
+                
+                if not page_state['hasCaptcha'] and page_state['hasFlights']:
+                    # We have a working session! Check if route matches
+                    if target_route in current_url.lower():
+                        logger.info("AirChina: session active, using calendar click for date change")
+                        needs_form_fill = False
+                        
+                        # Click on calendar date instead of navigating
+                        clicked = await _click_calendar_date(page, target_day)
+                        if clicked:
+                            await asyncio.sleep(3.0)  # Wait for results to load
+                            
+                            # Scrape results
+                            offers = await self._scrape_dom(page, req)
+                            offers.sort(key=lambda o: o.price)
+                            elapsed = time.monotonic() - t0
+                            logger.info("AirChina %s→%s: %d offers in %.1fs (calendar click)", 
+                                       req.origin, req.destination, len(offers), elapsed)
+                            
+                            search_hash = hashlib.md5(
+                                f"airchina{req.origin}{req.destination}{req.date_from}".encode()
+                            ).hexdigest()[:12]
+                            currency = offers[0].currency if offers else self.DEFAULT_CURRENCY
+                            return FlightSearchResponse(
+                                search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
+                                currency=currency, offers=offers, total_results=len(offers),
+                            )
+                    else:
+                        logger.info("AirChina: different route requested, need form fill")
+            
+            # Form fill approach - more reliable than direct URL (avoids captcha triggers)
+            if needs_form_fill:
+                loaded = False
+                for url in [self.HOMEPAGE] + self.HOMEPAGE_FALLBACKS:
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=18000)
+                        loaded = True
+                        logger.info("AirChina: loaded %s", url)
+                        break
+                    except Exception:
+                        logger.info("AirChina: %s unreachable, trying next", url)
+                        try:
+                            await page.goto("about:blank", wait_until="load", timeout=5000)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.5)
+                if not loaded:
+                    logger.warning("AirChina: all URLs unreachable")
+                    return self._empty(req)
+                await asyncio.sleep(random.uniform(4.0, 6.0))
+                
+                # Check for captcha on homepage
+                has_captcha = await page.evaluate(
+                    """() => document.body.innerText.includes('安全验证') || document.body.innerText.includes('请点击')"""
+                )
+                if has_captcha:
+                    logger.warning("AirChina: CAPTCHA detected on homepage - attempting auto-solve...")
+                    solved = await _solve_captcha_with_llm(page)
+                    if not solved:
+                        print("\n" + "="*60)
+                        print("AIR CHINA CAPTCHA DETECTED")
+                        print("Please solve the image captcha in the browser window.")
+                        print("(Set OPENAI_API_KEY for auto-solve)")
+                        print("="*60 + "\n")
+                        
+                        captcha_start = time.monotonic()
+                        while time.monotonic() - captcha_start < 60:
+                            still_has = await page.evaluate("""() => document.body.innerText.includes('安全验证')""")
+                            if not still_has:
+                                logger.info("AirChina: Captcha solved! Continuing...")
+                                await asyncio.sleep(2.0)
+                                break
+                            await asyncio.sleep(2.0)
+                        else:
+                            logger.warning("AirChina: Captcha timeout after 60s")
+                            return self._empty(req)
+                
+                # Human-like initial page interaction - simulate reading the page
+                for _ in range(random.randint(2, 4)):
+                    await _random_scroll(page)
+                    await asyncio.sleep(random.uniform(0.5, 1.2))
+            
+            # Move mouse around randomly
+            for _ in range(random.randint(3, 6)):
+                x = random.randint(150, 800)
+                y = random.randint(150, 600)
+                await page.mouse.move(x, y, steps=random.randint(8, 15))
+                await asyncio.sleep(random.uniform(0.2, 0.6))
+            
             await _dismiss_overlays(page)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
             # One-way toggle
             await page.evaluate("""() => {
@@ -237,10 +783,11 @@ class AirChinaConnectorClient:
                 for (const el of cssEls) {
                     if (el.offsetHeight > 0) { el.click(); return; }
                 }
-                const textEls = document.querySelectorAll('label, li, a, button, span, div[class*="trip"], mat-radio-button');
+                const textEls = document.querySelectorAll('label, li, a, button, span, div, mat-radio-button');
                 for (const el of textEls) {
-                    const t = (el.textContent || '').trim().toLowerCase();
-                    if ((t === 'one way' || t === 'one-way' || t === 'one way trip' || t.includes('one way')) && el.offsetHeight > 0) {
+                    const t = (el.textContent || '').trim();
+                    const tl = t.toLowerCase();
+                    if ((t === '单程' || tl === 'one way' || tl === 'one-way') && el.offsetHeight > 0) {
                         el.click(); return;
                     }
                 }
@@ -250,29 +797,119 @@ class AirChinaConnectorClient:
             ok = await self._fill_airport(page, "origin", req.origin)
             if not ok:
                 return self._empty(req)
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(random.uniform(0.8, 1.2))
+            
+            # Close any open dropdown before filling destination
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
 
             ok = await self._fill_airport(page, "destination", req.destination)
             if not ok:
                 return self._empty(req)
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(random.uniform(0.8, 1.2))
+            
+            # Close any open dropdown before clicking search
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+            
+            # Verify airports are correctly set (debug)
+            form_state = await page.evaluate("""() => {
+                const inputs = document.querySelectorAll('input');
+                const result = {};
+                for (const i of inputs) {
+                    if (i.offsetHeight > 0) {
+                        const p = (i.placeholder || '').toLowerCase();
+                        const v = i.value || '';
+                        // Check for 机场 (airport) in placeholder - NOT just 出发/到达 
+                        // because date field also has 出发
+                        if (p.includes('出发') && p.includes('机场')) result.origin = v;
+                        else if (p.includes('到达') && p.includes('机场')) result.dest = v;
+                        else if (p.includes('出发机场')) result.origin = v;
+                        else if (p.includes('到达机场')) result.dest = v;
+                    }
+                }
+                return result;
+            }""")
+            logger.info("AirChina: form verification - origin=%s dest=%s", 
+                       form_state.get('origin', '?'), form_state.get('dest', '?'))
+            await asyncio.sleep(random.uniform(0.8, 1.5))
 
             ok = await self._fill_date(page, req)
             if not ok:
                 return self._empty(req)
 
-            # Click search
-            await page.evaluate("""() => {
+            # Human-like pause before search
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await _random_scroll(page)
+
+            # Click search - try to use human mouse movement to the button
+            search_btn_box = await page.evaluate("""() => {
+                const acBtn = document.querySelector('.searchCore_searchButton__sxBzy, [class*="searchButton"]');
+                if (acBtn && acBtn.offsetHeight > 0) {
+                    const r = acBtn.getBoundingClientRect();
+                    return {x: r.x + r.width/2, y: r.y + r.height/2};
+                }
                 const btns = document.querySelectorAll('button, input[type="submit"], a');
                 for (const b of btns) {
                     const t = (b.textContent || b.value || '').trim().toLowerCase();
                     if ((t.includes('search') || t.includes('find') || t.includes('查询') || t.includes('搜索'))
                         && b.offsetHeight > 0) {
-                        b.click(); return;
+                        const r = b.getBoundingClientRect();
+                        return {x: r.x + r.width/2, y: r.y + r.height/2};
                     }
                 }
+                return null;
             }""")
+            
+            # Click search - try Playwright locator first (most reliable), then human click, then JS
+            search_clicked = False
+            try:
+                btn = page.locator('.searchCore_searchButton__sxBzy, [class*="searchButton"]').first
+                if await btn.is_visible(timeout=3000):
+                    await btn.click(timeout=5000)
+                    search_clicked = True
+                    logger.info("AirChina: search clicked via locator")
+            except Exception as e:
+                logger.debug("AirChina: locator click failed: %s", e)
+            
+            if not search_clicked and search_btn_box:
+                # Use human mouse movement to click
+                await _human_click(page, search_btn_box['x'], search_btn_box['y'], 
+                                   random.randint(300, 600), random.randint(200, 400))
+                search_clicked = True
+            if not search_clicked:
+                # Fallback to JS click
+                await page.evaluate("""() => {
+                    const acBtn = document.querySelector('.searchCore_searchButton__sxBzy, [class*="searchButton"]');
+                    if (acBtn && acBtn.offsetHeight > 0) { acBtn.click(); return; }
+                    const btns = document.querySelectorAll('button, input[type="submit"], a');
+                    for (const b of btns) {
+                        const t = (b.textContent || b.value || '').trim().toLowerCase();
+                        if ((t.includes('search') || t.includes('find') || t.includes('查询') || t.includes('搜索'))
+                            && b.offsetHeight > 0) { b.click(); return; }
+                    }
+                }""")
+                
             logger.info("AirChina: search clicked")
+            await asyncio.sleep(random.uniform(3.0, 4.5))  # Wait for page navigation
+
+            # Check for error dialog
+            error = await page.evaluate("""() => {
+                const dialog = document.querySelector('[class*="dialog_content"], [class*="dialogContent"]');
+                if (dialog && dialog.offsetWidth > 0) {
+                    const text = dialog.textContent || '';
+                    // Close the dialog
+                    const close = document.querySelector('[class*="dialog_closeIcon"], [class*="closeIcon"]');
+                    if (close) close.click();
+                    const ok = document.querySelector('[class*="dialog_primaryBtn"], [class*="confirm"]');
+                    if (ok) ok.click();
+                    return text;
+                }
+                return null;
+            }""")
+            if error:
+                logger.warning("AirChina: form validation error: %s", error[:100])
+                return self._empty(req)
 
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + remaining
@@ -291,11 +928,67 @@ class AirChinaConnectorClient:
                 except asyncio.TimeoutError:
                     pass
 
+            # Check for captcha AFTER page has loaded (captcha appears after navigation)
+            has_captcha = await page.evaluate("""() => {
+                const text = (document.body && document.body.innerText) || '';
+                return text.includes('安全验证') || text.includes('请点击');
+            }""")
+            if has_captcha:
+                logger.warning("AirChina: CAPTCHA detected on results page — attempting auto-solve...")
+                solved = await _solve_captcha_with_llm(page)
+                if solved:
+                    logger.info("AirChina: Captcha auto-solved! Waiting for results to load...")
+                    # After captcha solve, wait for flight data to load (SPA needs time)
+                    for wait_round in range(6):  # Up to 30 seconds
+                        await asyncio.sleep(5.0)
+                        # Check if flight data appeared
+                        has_data = await page.evaluate(r"""() => {
+                            const text = document.body.innerText || '';
+                            return /CA\d{3,4}/.test(text) && /[￥¥]\d{3,}/.test(text);
+                        }""")
+                        if has_data:
+                            logger.info("AirChina: Flight data loaded after captcha solve (%ds)", (wait_round + 1) * 5)
+                            break
+                        # Check for second captcha
+                        still_captcha = await page.evaluate("""() => {
+                            return (document.body.innerText || '').includes('安全验证');
+                        }""")
+                        if still_captcha:
+                            logger.warning("AirChina: Second captcha appeared, attempting solve...")
+                            solved2 = await _solve_captcha_with_llm(page)
+                            if not solved2:
+                                break
+                        if api_event.is_set():
+                            logger.info("AirChina: API data captured after captcha solve")
+                            break
+                else:
+                    logger.warning("AirChina: Captcha auto-solve failed, falling back to manual wait...")
+                    # Wait for manual solve
+                    manual_start = time.monotonic()
+                    while time.monotonic() - manual_start < 45:
+                        still = await page.evaluate("""() => (document.body.innerText || '').includes('安全验证')""")
+                        if not still:
+                            logger.info("AirChina: Captcha resolved (manual), continuing...")
+                            await asyncio.sleep(2.0)
+                            break
+                        await asyncio.sleep(2.0)
+
             offers = []
             if search_data:
                 offers = self._parse_api_response(search_data, req)
             if not offers:
                 offers = await self._scrape_dom(page, req)
+            
+            # Debug: save screenshot if no offers found
+            if not offers:
+                try:
+                    debug_path = os.path.join(os.path.dirname(__file__), "_airchina_debug.png")
+                    await page.screenshot(path=debug_path)
+                    logger.info("AirChina: debug screenshot saved to %s", debug_path)
+                    # Also log the page URL and title
+                    logger.info("AirChina: final URL=%s title=%s", page.url, await page.title())
+                except Exception as e:
+                    logger.debug("AirChina: screenshot error: %s", e)
 
             offers.sort(key=lambda o: o.price)
             elapsed = time.monotonic() - t0
@@ -317,59 +1010,74 @@ class AirChinaConnectorClient:
                 page.remove_listener("response", _on_response)
             except Exception:
                 pass
-            try:
-                await page.close()
-            except Exception:
-                pass
+            # Don't close page - preserve session for subsequent searches
+            # This avoids re-triggering captcha on each search
 
     async def _fill_airport(self, page, direction: str, iata: str) -> bool:
+        logger.debug("AirChina: _fill_airport called - direction=%s iata=%s", direction, iata)
         try:
-            sel = await page.evaluate("""(args) => {
-                const [dir, iata] = args;
-                const selectors = dir === 'origin'
-                    ? ['#fromCity', '#departCity', '#origin', 'input[name*="from"]',
-                       'input[name*="origin"]', 'input[name*="depart"]',
-                       'input[placeholder*="From"]', 'input[placeholder*="Depart"]',
-                       'input[placeholder*="出发"]']
-                    : ['#toCity', '#arriveCity', '#destination', 'input[name*="to"]',
-                       'input[name*="dest"]', 'input[name*="arriv"]',
-                       'input[placeholder*="To"]', 'input[placeholder*="Arriv"]',
-                       'input[placeholder*="到达"]'];
-                for (const s of selectors) {
-                    const el = document.querySelector(s);
-                    if (el && el.offsetHeight > 0) return s;
+            # Use index-based selection (more reliable than placeholder detection)
+            # Index 0 = origin, Index 1 = destination
+            target_index = 0 if direction == "origin" else 1
+            
+            # Focus and clear the target input field
+            focused = await page.evaluate("""(args) => {
+                const [targetIdx, iata] = args;
+                const inputs = [...document.querySelectorAll('input')].filter(i => i.offsetHeight > 0);
+                if (inputs[targetIdx]) {
+                    const el = inputs[targetIdx];
+                    // Check if already has correct value
+                    if (el.value && el.value.toUpperCase().includes(iata)) {
+                        return {alreadyFilled: true, value: el.value};
+                    }
+                    el.click();
+                    el.focus();
+                    el.value = '';
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    return {focused: true, placeholder: el.placeholder};
                 }
-                return null;
-            }""", [direction, iata])
-            if not sel:
+                return {focused: false};
+            }""", [target_index, iata])
+            
+            if focused.get('alreadyFilled'):
+                logger.info("AirChina: %s already has %s", direction, iata)
+                return True
+            
+            if not focused.get('focused'):
+                logger.warning("AirChina: could not focus %s field (index %d)", direction, target_index)
                 return False
+            
+            logger.debug("AirChina: focused %s field (placeholder=%s)", direction, focused.get('placeholder'))
+            await asyncio.sleep(random.uniform(0.4, 0.8))
+            
+            # Human-like typing
+            await _human_type(page, iata)
+            await asyncio.sleep(random.uniform(1.8, 3.0))
 
-            field = page.locator(sel).first
-            await field.click(timeout=5000)
-            await asyncio.sleep(0.5)
-            await page.keyboard.press("Control+a")
-            await page.keyboard.press("Backspace")
-            await field.type(iata, delay=120)
-            await asyncio.sleep(2.0)
-
+            # Move mouse randomly before clicking suggestion (human-like)
+            await _random_scroll(page)
+            
+            # Select from dropdown - Air China uses CitySelector_airportItem class
             selected = await page.evaluate("""(iata) => {
-                const opts = document.querySelectorAll(
-                    '[role="option"], [class*="suggest"] li, [class*="dropdown"] li, ' +
-                    '[class*="autocomplete"] li, .search-result-item, [class*="city-item"]'
-                );
-                for (const o of opts) {
-                    if (o.textContent.includes(iata) && o.offsetHeight > 0) {
-                        o.click(); return true;
+                const items = document.querySelectorAll('[class*="airportItem"]');
+                for (const item of items) {
+                    if (item.textContent.includes(iata) && item.offsetHeight > 0) {
+                        item.click();
+                        return true;
                     }
                 }
+                // Fallback to ArrowDown + Enter if no dropdown
                 return false;
             }""", iata)
+            
             if not selected:
+                # Use keyboard navigation as fallback
+                await asyncio.sleep(random.uniform(0.2, 0.4))
                 await page.keyboard.press("ArrowDown")
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(random.uniform(0.15, 0.3))
                 await page.keyboard.press("Enter")
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(0.3, 0.7))
             logger.info("AirChina: airport %s → %s", direction, iata)
             return True
         except Exception as e:
@@ -382,51 +1090,141 @@ class AirChinaConnectorClient:
         except (ValueError, TypeError):
             return False
         target_day = str(dt.day)
-        target_ym = dt.strftime("%Y-%m")
+        target_year = dt.year
+        target_month = dt.month
+        target_date_str = f"{target_year}-{target_month:02d}-{dt.day:02d}"
+        
         try:
-            await page.evaluate("""() => {
-                const inputs = document.querySelectorAll(
-                    'input[name*="date"], input[name*="Date"], input[placeholder*="Date"], ' +
-                    'input[placeholder*="日期"], input[class*="date"], #departDate, #goDate, ' +
-                    '[class*="depart-date"], [class*="departure-date"]'
-                );
-                for (const i of inputs) { if (i.offsetHeight > 0) { i.click(); return; } }
+            # First check if date is already correct (Chrome autofill)
+            current_date = await page.evaluate("""() => {
+                const inputs = document.querySelectorAll('input');
+                for (const i of inputs) {
+                    if (i.placeholder && i.placeholder.includes('日期') && i.offsetHeight > 0) {
+                        return i.value || '';
+                    }
+                }
+                return '';
             }""")
-            await asyncio.sleep(1.5)
-
-            for _ in range(12):
-                month_text = await page.evaluate("""() => {
-                    const h = document.querySelectorAll(
-                        '[class*="calendar"] [class*="month"], [class*="calendar"] [class*="title"], ' +
-                        '.month-title, .calendar-title, th[colspan]'
-                    );
-                    return [...h].map(e => e.textContent.trim()).join('|');
-                }""")
-                if target_ym in month_text or dt.strftime("%B %Y").lower() in month_text.lower() or f"{dt.year}年{dt.month}月" in month_text:
-                    break
-                await page.evaluate("""() => {
-                    const n = document.querySelector(
-                        '[class*="next"], [aria-label*="next"], [class*="forward"], ' +
-                        'button[class*="arrow-right"], .next-month, [class*="right-arrow"]'
-                    );
-                    if (n && n.offsetHeight > 0) n.click();
-                }""")
-                await asyncio.sleep(0.5)
-
-            clicked = await page.evaluate("""(day) => {
-                const cells = document.querySelectorAll(
-                    'td[class*="day"], td[role="gridcell"], [class*="calendar-day"], ' +
-                    '[class*="date-cell"], .day, td.available'
-                );
-                for (const c of cells) {
-                    const text = c.textContent.trim();
-                    if (text === day && !c.classList.contains('disabled') &&
-                        c.getAttribute('aria-disabled') !== 'true' && c.offsetHeight > 0) {
-                        c.click(); return true;
+            if current_date == target_date_str:
+                logger.info("AirChina: date already set to %s", target_date_str)
+                return True
+            
+            # Click date input to open calendar
+            await page.evaluate("""() => {
+                const inputs = document.querySelectorAll('input');
+                for (const i of inputs) {
+                    if (i.placeholder && i.placeholder.includes('日期') && i.offsetHeight > 0) {
+                        i.click();
+                        return true;
                     }
                 }
                 return false;
-            }""", target_day)
+            }""")
+            await asyncio.sleep(random.uniform(1.2, 2.0))
+
+            # Air China calendar navigation - uses 2026年/6月 format
+            for _ in range(24):  # up to 2 years navigation
+                month_info = await page.evaluate("""() => {
+                    // Air China uses styles_calendarHeaderView__xmR28 which contains "2026年/9月"
+                    const headers = document.querySelectorAll('[class*="calendarHeaderView"], [class*="calendarHeader"]');
+                    const months = [];
+                    for (const h of headers) {
+                        const text = h.textContent || '';
+                        // Match patterns like "2026年/6月" or "2026年6月"
+                        const match = text.match(/(\\d{4})年\\/?\\s*(\\d{1,2})月/);
+                        if (match) {
+                            months.push({ year: parseInt(match[1]), month: parseInt(match[2]) });
+                        }
+                    }
+                    return months;
+                }""")
+                
+                if month_info:
+                    # Check if target month is visible
+                    for m in month_info:
+                        if m['year'] == target_year and m['month'] == target_month:
+                            # Found target month
+                            break
+                    else:
+                        # Need to navigate
+                        current = month_info[0]
+                        current_val = current['year'] * 12 + current['month']
+                        target_val = target_year * 12 + target_month
+                        
+                        if target_val < current_val:
+                            # Go backwards
+                            await page.evaluate("""() => {
+                                const prev = document.querySelector('[class*="calendarHeaderPrevBtn"]');
+                                if (prev && prev.offsetHeight > 0) prev.click();
+                            }""")
+                        else:
+                            # Go forwards
+                            await page.evaluate("""() => {
+                                const next = document.querySelector('[class*="calendarHeaderNextBtn"]');
+                                if (next && next.offsetHeight > 0) next.click();
+                            }""")
+                        await asyncio.sleep(random.uniform(0.3, 0.6))
+                        continue
+                    break
+                else:
+                    # Fallback: try generic next button
+                    await page.evaluate("""() => {
+                        const n = document.querySelector('[class*="next"], [aria-label*="next"]');
+                        if (n && n.offsetHeight > 0) n.click();
+                    }""")
+                    await asyncio.sleep(random.uniform(0.3, 0.6))
+
+            # Click the target day - Air China uses SPAN for day number, parent DIV for click
+            # NOTE: Don't check ancestor classes - Air China marks all cells with "Other" class
+            # but they ARE clickable. Just click span.parentElement directly.
+            clicked = await page.evaluate("""(args) => {
+                const [targetDay, targetMonth] = args;
+                // Find the correct month panel first
+                const panels = document.querySelectorAll('[class*="calendarPanel"]');
+                for (const panel of panels) {
+                    const header = panel.querySelector('[class*="calendarHeaderView"]');
+                    const monthText = header ? header.textContent : '';
+                    // Check if this panel shows our target month (e.g., "6月" for June)
+                    if (monthText.includes(targetMonth + '月')) {
+                        // Find day spans in this panel
+                        const spans = panel.querySelectorAll('span[class*="calendarInnerBodyDate"]');
+                        for (const span of spans) {
+                            const text = span.textContent.trim();
+                            if (text === targetDay) {
+                                // Only check immediate parent for disabled - don't walk up ancestors
+                                const parentCls = (span.parentElement?.className || '').toLowerCase();
+                                const isDisabled = parentCls.includes('disabled');
+                                if (!isDisabled && span.parentElement && span.parentElement.offsetHeight > 0) {
+                                    span.parentElement.click();
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fallback: try clicking any matching day that's not disabled
+                const spans = document.querySelectorAll('span[class*="calendarInnerBodyDate"]');
+                for (const span of spans) {
+                    const text = span.textContent.trim();
+                    if (text === targetDay && span.parentElement) {
+                        let el = span.parentElement;
+                        let isDisabled = false;
+                        while (el && el !== document.body) {
+                            const cls = (el.className || '').toLowerCase();
+                            if (cls.includes('disabled') || cls.includes('other')) {
+                                isDisabled = true;
+                                break;
+                            }
+                            el = el.parentElement;
+                        }
+                        if (!isDisabled && span.parentElement.offsetHeight > 0) {
+                            span.parentElement.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }""", [target_day, str(target_month)])
             if clicked:
                 logger.info("AirChina: date selected %s", dt.strftime("%Y-%m-%d"))
             await asyncio.sleep(1.0)
@@ -560,37 +1358,82 @@ class AirChinaConnectorClient:
         return datetime.now()
 
     async def _scrape_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
+        
+        # Air China renders flights in a table/card format
+        # Parse the visible flight data using body text parsing
         flights = await page.evaluate(r"""(params) => {
             const [origin, destination] = params;
             const results = [];
-            const cards = document.querySelectorAll(
-                '[class*="flight-card"], [class*="flight-row"], [class*="itinerary"], ' +
-                '[class*="result-card"], [class*="bound"], [class*="flight-item"], ' +
-                '[class*="flightInfo"], [class*="flight_item"]'
-            );
-            for (const card of cards) {
-                const text = card.innerText || '';
-                if (text.length < 20) continue;
-                const times = text.match(/\b(\d{1,2}:\d{2})\b/g) || [];
-                if (times.length < 2) continue;
-                const priceMatch = text.match(/(CNY|USD|EUR|¥|\$|€)\s*[\d,]+\.?\d*/i) ||
-                                   text.match(/[\d,]+\.?\d*\s*(CNY|USD|EUR|¥|\$|€)/i);
-                if (!priceMatch) continue;
-                const priceStr = priceMatch[0].replace(/[^0-9.]/g, '');
-                const price = parseFloat(priceStr);
-                if (!price || price <= 0) continue;
-                let currency = 'CNY';
-                if (/USD|\$/.test(priceMatch[0])) currency = 'USD';
-                else if (/EUR|€/.test(priceMatch[0])) currency = 'EUR';
-                const fnMatch = text.match(/\b(CA\s*\d{2,4})\b/i);
-                results.push({
-                    depTime: times[0], arrTime: times[1], price, currency,
-                    flightNo: fnMatch ? fnMatch[1].replace(/\s/g, '') : 'CA',
-                });
+            const bodyText = document.body.innerText || '';
+            
+            // Air China flight pattern: CA1359\n33A\n07:00\n10:25\nPEK T3\nCAN T1\n3h25m\n...
+            // Prices appear as multiple fare classes, with economy being the LAST price shown
+            const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            
+            let i = 0;
+            while (i < lines.length) {
+                const line = lines[i];
+                
+                // Look for CA flight number
+                const flightMatch = line.match(/^(CA\d{3,4})$/);
+                if (flightMatch) {
+                    const flightNo = flightMatch[1];
+                    
+                    // Scan next 25 lines for flight details
+                    let depTime = null, arrTime = null, duration = null;
+                    let prices = [];  // Collect ALL prices, economy is last
+                    
+                    for (let j = i + 1; j < Math.min(i + 25, lines.length); j++) {
+                        const nextLine = lines[j];
+                        
+                        // Look for time pattern HH:MM
+                        const timeMatch = nextLine.match(/^(\d{1,2}:\d{2})$/);
+                        if (timeMatch) {
+                            if (!depTime) {
+                                depTime = timeMatch[1];
+                            } else if (!arrTime) {
+                                arrTime = timeMatch[1];
+                            }
+                        }
+                        
+                        // Look for duration pattern XhYm
+                        const durMatch = nextLine.match(/^(\d+)h(\d+)m$/);
+                        if (durMatch) {
+                            duration = parseInt(durMatch[1]) * 60 + parseInt(durMatch[2]);
+                        }
+                        
+                        // Collect ALL prices ￥XXX or ¥XXX (economy comes last)
+                        const priceMatch = nextLine.match(/^[￥¥](\d+)$/);
+                        if (priceMatch) {
+                            prices.push(parseInt(priceMatch[1]));
+                        }
+                        
+                        // Stop if we hit next flight number
+                        if (nextLine.match(/^CA\d{3,4}$/)) break;
+                    }
+                    
+                    // Use LAST price (economy class) as the main price
+                    const economyPrice = prices.length > 0 ? prices[prices.length - 1] : 0;
+                    
+                    if (depTime && arrTime && economyPrice && economyPrice > 0) {
+                        results.push({
+                            flightNo: flightNo,
+                            depTime: depTime,
+                            arrTime: arrTime,
+                            duration: duration || 0,
+                            price: economyPrice,
+                            currency: 'CNY'
+                        });
+                    }
+                }
+                i++;
             }
+            
             return results;
         }""", [req.origin, req.destination])
+        
+        logger.info("AirChina DOM scraper found %d flights", len(flights or []))
 
         offers = []
         for f in (flights or []):

@@ -846,7 +846,11 @@ class TurkishConnectorClient:
     # ------------------------------------------------------------------
 
     async def _fill_form(self, page, req: FlightSearchRequest) -> bool:
-        """Fill TK search form: origin, destination, date."""
+        """Fill TK search form: origin, destination, date.
+        
+        Note: Date fill is optional — the route interceptor will fix the date
+        in the API request regardless of what's shown in the UI.
+        """
         # Origin
         ok = await self._fill_airport(page, "#fromPort", req.origin)
         if not ok:
@@ -859,10 +863,11 @@ class TurkishConnectorClient:
             return False
         await asyncio.sleep(0.8)
 
-        # Date
+        # Date — optional, route interceptor will fix it in API request anyway
         ok = await self._fill_date(page, req.date_from)
         if not ok:
-            return False
+            logger.warning("TK: date fill failed — route interceptor will fix the date")
+            # Don't return False — airports are filled, search can proceed
         await asyncio.sleep(0.5)
         return True
 
@@ -1174,8 +1179,8 @@ class TurkishConnectorClient:
             return True  # Optimistically proceed — let search button attempt reveal issues
 
         except Exception as e:
-            logger.warning("TK: date fill error: %s", e)
-            return False
+            logger.warning("TK: date fill error: %s — route interceptor will fix date", e)
+            return True  # Route interceptor handles date, so proceed anyway
 
     async def _navigate_calendar_and_click_day(
         self, page, target_day, target_month, target_year, date_iso

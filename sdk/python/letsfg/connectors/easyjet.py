@@ -40,7 +40,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, proxy_chrome_args, auto_block_if_proxied
+from .browser import find_chrome, stealth_popen_kwargs, proxy_chrome_args, auto_block_if_proxied, inject_stealth_js, disable_background_networking_args
 from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,7 @@ async def _get_browser():
             f"--user-data-dir={_USER_DATA_DIR}",
             "--no-first-run",
             *proxy_chrome_args(),
+            *disable_background_networking_args(),
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
             "--disable-http2",
@@ -227,7 +228,7 @@ class EasyjetConnectorClient:
         "AMS", "BER", "MXP", "FCO", "NAP", "VCE", "PSA", "BRI",
         "BCN", "MAD", "AGP", "ALC", "PMI", "IBZ", "SVQ", "FUE",
         "ACE", "LPA", "TFS", "FAO", "LIS", "OPO", "GVA", "BSL",
-        "CPH", "PRG", "BUD", "KRK", "GDN", "WRO", "VIE",
+        "CPH", "PRG", "BUD", "KRK", "WRO", "VIE",  # GDN dropped by easyJet (Mar 2026)
         "ATH", "HER", "CFU", "RHO", "JTR", "ZTH", "SKG",
         "SPU", "DBV", "ZAG", "LJU", "TLV", "IST", "SAW",
         "ESB", "ADB", "AYT", "DLM", "BJV", "HRG", "SSH",
@@ -304,6 +305,7 @@ class EasyjetConnectorClient:
 
         context = await _get_context()
         page = await context.new_page()
+        await inject_stealth_js(page)
         await auto_block_if_proxied(page)
 
         # Set up response interception BEFORE navigating
@@ -478,7 +480,7 @@ class EasyjetConnectorClient:
         "MXP": "Milan Malpensa", "NAP": "Naples", "VCE": "Venice",
         "GVA": "Geneva", "BSL": "Basel", "CPH": "Copenhagen",
         "PRG": "Prague", "BUD": "Budapest", "KRK": "Krakow",
-        "GDN": "Gdansk", "WRO": "Wroclaw", "VIE": "Vienna",
+        "WRO": "Wroclaw", "VIE": "Vienna",
         "ATH": "Athens", "IST": "Istanbul", "AGP": "Malaga",
         "ALC": "Alicante", "PMI": "Palma de Mallorca", "FAO": "Faro",
         "NCE": "Nice", "LYS": "Lyon", "TLS": "Toulouse",

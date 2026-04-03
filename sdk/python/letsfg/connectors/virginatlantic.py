@@ -250,10 +250,8 @@ class VirginAtlanticConnectorClient:
             for fare in route.get("fares") or []:
                 orig = (fare.get("originAirportCode") or route.get("origin") or "").upper()
                 dest = (fare.get("destinationAirportCode") or route.get("destination") or "").upper()
-                if orig not in origin_set and dest not in dest_set:
-                    continue
-                # Accept if destination matches (VS is hub-based, origin may be LHR when user searches LON)
-                if dest not in dest_set and orig not in origin_set:
+                # Filter by correct route - BOTH origin AND destination must match
+                if orig not in origin_set or dest not in dest_set:
                     continue
 
                 price = fare.get("totalPrice") or fare.get("usdTotalPrice")

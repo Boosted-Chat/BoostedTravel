@@ -336,9 +336,20 @@ _BLOCKED_RESOURCE_TYPES = frozenset({
 # URL patterns to block (analytics, tracking, ads, social widgets)
 # These are regex-like globs matched against full URL
 _BLOCKED_URL_PATTERNS = (
-    # Google
+    # ── Chrome background data hogs (7.5GB+ observed!) ──
+    "*optimizationguide-pa.googleapis.com*",
+    "*edgedl.me.gvt1.com*",
+    "*safebrowsing.googleapis.com*",
+    "*clients2.googleusercontent.com*",
+    "*clients2.google.com*",
+    "*update.googleapis.com*",
+    "*accounts.google.com*",
+    "*content-autofill.googleapis.com*",
+    "*clientservices.googleapis.com*",
+    # Google analytics/ads
     "*google-analytics.com*",
     "*googletagmanager.com*",
+    "*www.googletagmanager.com*",
     "*googlesyndication.com*",
     "*googleadservices.com*",
     "*doubleclick.net*",
@@ -440,58 +451,197 @@ async def block_all_heavy_resources(page) -> None:
 
 
 async def auto_block_if_proxied(page) -> None:
-    """Aggressively block heavy resources when a global proxy is configured.
+    """Block heavy resources and bandwidth hogs on every page.
 
-    No-op when ``LETSFG_PROXY`` is not set (local mode — bandwidth is free).
-    Use this in connectors instead of ``block_heavy_resources`` to auto-detect.
-    
-    Blocks: images, video, fonts, websockets, analytics, tracking, ads, social widgets.
+    Always blocks Chrome background domains (optimizationguide, safebrowsing,
+    edgedl, googletagmanager, etc.) which burn gigabytes of proxy bandwidth.
+    Also blocks images, video, fonts, analytics, tracking, ads, and social widgets.
     """
-    if proxy_is_configured():
-        await page.route("**/*", _aggressive_block_handler)
+    await page.route("**/*", _aggressive_block_handler)
 
 
 # ── Anti-bot stealth injection ──────────────────────────────────────────────────
 
 _STEALTH_INIT_SCRIPT = """\
-// Hide navigator.webdriver (set by CDP/Playwright)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Anti-bot stealth script — patches CDP/Playwright detection vectors
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// 1. Hide navigator.webdriver (primary automation tell)
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 
-// Ensure window.chrome exists (missing in headless/automation)
+// 2. Ensure window.chrome exists with realistic API surface
 if (!window.chrome) {
-  window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+  window.chrome = {
+    runtime: {
+      connect: function() {},
+      sendMessage: function() {},
+      onMessage: {addListener: function() {}},
+    },
+    loadTimes: function() {
+      return {
+        requestTime: Date.now() / 1000,
+        startLoadTime: Date.now() / 1000,
+        commitLoadTime: Date.now() / 1000,
+        finishDocumentLoadTime: Date.now() / 1000,
+        finishLoadTime: Date.now() / 1000,
+        firstPaintTime: Date.now() / 1000,
+      };
+    },
+    csi: function() {
+      return {
+        pageT: Date.now(),
+        startE: Date.now(),
+        onloadT: Date.now(),
+        tran: 15,
+      };
+    },
+    app: {
+      getIsInstalled: function() { return false; },
+      isInstalled: false,
+      InstallState: {DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed'},
+      RunningState: {CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running'},
+    },
+  };
 }
 
-// Fake plugins array (headless has empty plugins)
+// 3. Fake plugins array (headless has empty plugins)
 Object.defineProperty(navigator, 'plugins', {
   get: () => {
     const arr = [
-      {name:'Chrome PDF Plugin', filename:'internal-pdf-viewer'},
-      {name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
-      {name:'Native Client', filename:'internal-nacl-plugin'},
+      {name:'Chrome PDF Plugin', filename:'internal-pdf-viewer', description:'Portable Document Format'},
+      {name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai', description:''},
+      {name:'Native Client', filename:'internal-nacl-plugin', description:''},
+      {name:'Chromium PDF Viewer', filename:'internal-pdf-viewer', description:''},
     ];
     arr.item = i => arr[i];
     arr.namedItem = n => arr.find(p => p.name === n);
     arr.refresh = () => {};
+    Object.defineProperty(arr, 'length', {value: 4, writable: false});
     return arr;
   }
 });
 
-// Fix languages (automation sometimes misses this)
+// 4. Fix mimeTypes
+Object.defineProperty(navigator, 'mimeTypes', {
+  get: () => {
+    const arr = [
+      {type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format'},
+      {type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format'},
+    ];
+    arr.item = i => arr[i];
+    arr.namedItem = n => arr.find(m => m.type === n);
+    arr.refresh = () => {};
+    Object.defineProperty(arr, 'length', {value: 2, writable: false});
+    return arr;
+  }
+});
+
+// 5. Fix languages (automation sometimes misses this)
 Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+Object.defineProperty(navigator, 'language', {get: () => 'en-US'});
 
-// Remove Playwright/CDP tell-tales from Error stack traces
-const _Error = Error;
-Object.defineProperty(globalThis, 'Error', {value: _Error, configurable: true, writable: true});
+// 6. Remove automation properties
+delete navigator.__proto__.webdriver;
+delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
 
-// Mask permissions query (Notification permission check used by PX/Akamai)
+// 7. Mask permissions query (Notification permission check used by PX/Akamai)
 const origQuery = window.navigator.permissions?.query;
 if (origQuery) {
   window.navigator.permissions.query = (params) =>
     params.name === 'notifications'
-      ? Promise.resolve({state: Notification.permission})
+      ? Promise.resolve({state: Notification.permission || 'default'})
       : origQuery.call(window.navigator.permissions, params);
 }
+
+// 8. Canvas fingerprint randomization (add subtle noise)
+const _getContext = HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext = function(type, attrs) {
+  const ctx = _getContext.call(this, type, attrs);
+  if (type === '2d' && ctx) {
+    const _getImageData = ctx.getImageData.bind(ctx);
+    ctx.getImageData = function(x, y, w, h) {
+      const data = _getImageData(x, y, w, h);
+      // Add minimal noise to every 10th pixel to defeat fingerprinting
+      for (let i = 0; i < data.data.length; i += 40) {
+        data.data[i] = data.data[i] ^ 1;
+      }
+      return data;
+    };
+  }
+  return ctx;
+};
+
+// 9. WebGL fingerprint randomization
+const _getParameter = WebGLRenderingContext?.prototype?.getParameter;
+if (_getParameter) {
+  WebGLRenderingContext.prototype.getParameter = function(param) {
+    // Randomize renderer/vendor strings slightly
+    if (param === 37445) return 'Intel Inc.';  // UNMASKED_VENDOR_WEBGL
+    if (param === 37446) return 'Intel Iris OpenGL Engine';  // UNMASKED_RENDERER_WEBGL
+    return _getParameter.call(this, param);
+  };
+  const _getParameter2 = WebGL2RenderingContext?.prototype?.getParameter;
+  if (_getParameter2) {
+    WebGL2RenderingContext.prototype.getParameter = function(param) {
+      if (param === 37445) return 'Intel Inc.';
+      if (param === 37446) return 'Intel Iris OpenGL Engine';
+      return _getParameter2.call(this, param);
+    };
+  }
+}
+
+// 10. Hardware concurrency (consistent value)
+Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+
+// 11. Device memory (consistent value)
+Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+
+// 12. Connection type (realistic defaults)
+if (navigator.connection) {
+  Object.defineProperty(navigator.connection, 'rtt', {get: () => 100});
+  Object.defineProperty(navigator.connection, 'downlink', {get: () => 10});
+  Object.defineProperty(navigator.connection, 'effectiveType', {get: () => '4g'});
+}
+
+// 13. Battery API (if present, return realistic values)
+if (navigator.getBattery) {
+  const origGetBattery = navigator.getBattery.bind(navigator);
+  navigator.getBattery = async function() {
+    const battery = await origGetBattery();
+    Object.defineProperty(battery, 'charging', {get: () => true});
+    Object.defineProperty(battery, 'level', {get: () => 0.95});
+    return battery;
+  };
+}
+
+// 14. Hide Playwright/CDP stack traces
+const _Error = Error;
+const _captureStackTrace = Error.captureStackTrace;
+Error.captureStackTrace = function(obj, fn) {
+  _captureStackTrace(obj, fn);
+  if (obj.stack) {
+    obj.stack = obj.stack.replace(/playwright|__puppeteer_utility_world__|CDP|DevTools/gi, 'native');
+  }
+};
+
+// 15. Prevent iframe detection
+try {
+  Object.defineProperty(window, 'top', {get: () => window});
+  Object.defineProperty(window, 'parent', {get: () => window});
+  Object.defineProperty(window, 'frameElement', {get: () => null});
+} catch(e) {}
+
+// 16. Touch support (simulate no touch for desktop)
+Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
+
+// 17. Platform consistency
+Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+Object.defineProperty(navigator, 'oscpu', {get: () => undefined});
+
+console.log('[stealth] Anti-detection patches applied');
 """
 
 
@@ -547,6 +697,102 @@ def stealth_position_arg() -> list[str]:
     if _is_visible():
         return []
     return ["--headless=new", "--disable-http2", "--window-position=-2400,-2400"]
+
+
+def disable_background_networking_args() -> list[str]:
+    """
+    Chrome args to disable ALL background networking.
+
+    This prevents Chrome from burning proxy bandwidth on:
+    - optimizationguide-pa.googleapis.com (5.5GB+!)
+    - safebrowsing.googleapis.com
+    - edgedl.me.gvt1.com (component updates)
+    - update.googleapis.com
+    - clients2.google.com
+    """
+    # IMPORTANT: Only ONE --disable-features flag! Chrome ignores duplicates.
+    disabled_features = [
+        # Optimization Guide (optimizationguide-pa.googleapis.com — 5GB+ culprit!)
+        "OptimizationHints",
+        "OptimizationGuideModelDownloading",
+        "OptimizationHintsFetching",
+        "OptimizationGuideMetadataValidation",
+        "OptimizationGuideOnDeviceModel",
+        "OptimizationGuidePredictionModel",
+        # Safe Browsing (safebrowsing.googleapis.com)
+        "SafeBrowsingAsyncRealTimeCheck",
+        "SafeBrowsingOnUIThread",
+        # Component updater (edgedl.me.gvt1.com)
+        "AutofillServerCommunication",
+        # Other telemetry
+        "ChromeWhatsNewUI",
+        "MediaRouter",
+        "DialMediaRouteProvider",
+        "Translate",
+        "TranslateUI",
+        "NetworkTimeServiceQuerying",
+        "WebRtcHideLocalIpsWithMdns",
+    ]
+    return [
+        # Disable background networking entirely
+        "--disable-background-networking",
+        # Disable component updates (edgedl.me.gvt1.com)
+        "--disable-component-update",
+        # Disable Safe Browsing (safebrowsing.googleapis.com)
+        "--safebrowsing-disable-download-protection",
+        "--disable-client-side-phishing-detection",
+        "--safebrowsing-disable-auto-update",
+        # Disable domain reliability (metrics)
+        "--disable-domain-reliability",
+        # Disable ping tracking
+        "--no-pings",
+        # Disable crash reporting
+        "--disable-breakpad",
+        # Disable background extensions
+        "--disable-component-extensions-with-background-pages",
+        # Disable sync
+        "--disable-sync",
+        # Disable metrics upload but still record (so Chrome doesn't error)
+        "--metrics-recording-only",
+        # Disable default apps
+        "--disable-default-apps",
+        # Disable translate
+        "--disable-translate",
+        # Disable preconnects/prefetch
+        "--dns-prefetch-disable",
+        # Disable field trials that phone home
+        "--disable-field-trial-config",
+        # No first-run tasks
+        "--no-first-run",
+        # Disable all the features that phone home (SINGLE flag!)
+        f"--disable-features={','.join(disabled_features)}",
+        # Explicitly disable optimization guide fetching
+        "--optimization-guide-hints-processing=none",
+        "--optimization-guide-model-override=",
+        # Disable UMA (metrics)
+        "--disable-crash-reporter",
+        # Don't fetch CRLSets
+        "--disable-crl-sets",
+        # Disable background tasks
+        "--disable-background-timer-throttling",
+        # Disable device discovery
+        "--disable-device-discovery-notifications",
+        # ── Nuclear option: block bandwidth-hogging domains at DNS level ──
+        # These domains burn GB+ of proxy bandwidth even with --disable-background-networking
+        "--host-rules="
+        "MAP optimizationguide-pa.googleapis.com 0.0.0.0,"
+        "MAP edgedl.me.gvt1.com 0.0.0.0,"
+        "MAP safebrowsing.googleapis.com 0.0.0.0,"
+        "MAP www.googletagmanager.com 0.0.0.0,"
+        "MAP clients2.googleusercontent.com 0.0.0.0,"
+        "MAP clients2.google.com 0.0.0.0,"
+        "MAP update.googleapis.com 0.0.0.0,"
+        "MAP content-autofill.googleapis.com 0.0.0.0,"
+        "MAP clientservices.googleapis.com 0.0.0.0,"
+        "MAP accounts.google.com 0.0.0.0,"
+        "MAP sb-ssl.google.com 0.0.0.0,"
+        "MAP ssl.gstatic.com 0.0.0.0",
+    ]
 
 
 def stealth_popen_kwargs() -> dict:
@@ -611,6 +857,7 @@ async def launch_cdp_chrome(
         "--disable-blink-features=AutomationControlled",
         *stealth_args(),
         *proxy_chrome_args(),
+        *disable_background_networking_args(),
         *(extra_args or []),
         start_url,
     ]

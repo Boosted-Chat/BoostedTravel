@@ -1,11 +1,11 @@
 """
-eDreams connector — Playwright browser + GraphQL API interception.
+eDreams connector — CDP Chrome + GraphQL API interception.
 
 eDreams (eDreams ODIGEO group) is a major European OTA covering 600+ airlines.
 Also powers Opodo, GoVoyages, Liligo.
 
 Strategy:
-1.  Launch Playwright browser (non-headless for anti-bot).
+1.  Launch REAL system Chrome via CDP (not bundled Chromium) to bypass bot detection.
 2.  Navigate to direct results URL.
 3.  Intercept GraphQL searchItinerary response (145+ itineraries).
 4.  Parse structured data: itineraries → segments → sections → carriers/locations.
@@ -17,6 +17,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
+import shutil
+import subprocess
 import time
 from datetime import datetime, date as date_type
 from typing import Any, Optional
@@ -31,6 +34,13 @@ from ..models.flights import (
 
 logger = logging.getLogger(__name__)
 
+# ── CDP Chrome singleton ──
+_DEBUG_PORT = 9451
+_USER_DATA_DIR = os.path.join(os.getcwd(), ".edreams_chrome_data")
+_browser = None
+_chrome_proc = None
+_pw_instance = None
+
 
 def _parse_dt(s: Any) -> datetime:
     if not s:
@@ -43,6 +53,93 @@ def _parse_dt(s: Any) -> datetime:
         return datetime.fromisoformat(clean)
     except (ValueError, AttributeError):
         return datetime(2000, 1, 1)
+
+
+async def _get_browser():
+    """Get or launch CDP Chrome browser (singleton)."""
+    global _browser, _chrome_proc, _pw_instance
+
+    # Reuse existing connection
+    if _browser:
+        try:
+            if _browser.is_connected():
+                return _browser
+        except Exception:
+            pass
+
+    from playwright.async_api import async_playwright
+    from .browser import (
+        find_chrome,
+        stealth_popen_kwargs,
+        proxy_chrome_args,
+        disable_background_networking_args,
+        _launched_procs,
+    )
+
+    # Try connecting to existing Chrome on the port first
+    pw = None
+    try:
+        pw = await async_playwright().start()
+        _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+        _pw_instance = pw
+        logger.info("eDreams: connected to existing Chrome on port %d", _DEBUG_PORT)
+        return _browser
+    except Exception:
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
+    # Launch Chrome HEADED (no --headless) — bot protection detects headless Chrome
+    chrome = find_chrome()
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    args = [
+        chrome,
+        f"--remote-debugging-port={_DEBUG_PORT}",
+        f"--user-data-dir={_USER_DATA_DIR}",
+        "--no-first-run",
+        *proxy_chrome_args(),
+        *disable_background_networking_args(),
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-http2",
+        "--window-position=-2400,-2400",
+        "--window-size=1366,768",
+        "about:blank",
+    ]
+    _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
+    _launched_procs.append(_chrome_proc)
+    await asyncio.sleep(2.0)
+
+    pw = await async_playwright().start()
+    _pw_instance = pw
+    _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+    logger.info("eDreams: Chrome launched headed on CDP port %d (pid %d)", _DEBUG_PORT, _chrome_proc.pid)
+    return _browser
+
+
+async def _reset_chrome_profile():
+    """Kill Chrome and wipe user-data-dir to clear flagged sessions."""
+    global _browser, _chrome_proc
+    try:
+        if _browser:
+            await _browser.close()
+    except Exception:
+        pass
+    _browser = None
+    if _chrome_proc:
+        try:
+            _chrome_proc.terminate()
+        except Exception:
+            pass
+        _chrome_proc = None
+    if os.path.isdir(_USER_DATA_DIR):
+        try:
+            shutil.rmtree(_USER_DATA_DIR)
+            logger.info("eDreams: deleted stale Chrome profile %s", _USER_DATA_DIR)
+        except Exception as e:
+            logger.warning("eDreams: failed to delete Chrome profile: %s", e)
 
 
 class EdreamsConnectorClient:
@@ -90,14 +187,19 @@ class EdreamsConnectorClient:
     async def _do_search(
         self, req: FlightSearchRequest
     ) -> list[FlightOffer] | None:
-        from playwright.async_api import async_playwright
+        from .browser import inject_stealth_js, auto_block_if_proxied
 
         graphql_data: list[dict] = []
+        blocked = False
 
         async def on_response(response):
+            nonlocal blocked
             if "graphql" not in response.url:
                 return
             try:
+                if response.status == 403:
+                    blocked = True
+                    return
                 if response.status == 200:
                     body = await response.text()
                     if len(body) > 50000:
@@ -108,21 +210,8 @@ class EdreamsConnectorClient:
             except Exception:
                 pass
 
-        pw = await async_playwright().start()
         try:
-            from .browser import get_proxy
-            proxy = get_proxy("EDREAMS_PROXY") or get_proxy("ODIGEO_PROXY")
-            launch_kw: dict = {
-                "headless": False,
-                "args": [
-                    "--window-position=-2400,-2400",
-                    "--window-size=1366,768",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            }
-            if proxy:
-                launch_kw["proxy"] = proxy
-            browser = await pw.chromium.launch(**launch_kw)
+            browser = await _get_browser()
             ctx = await browser.new_context(
                 viewport={"width": 1366, "height": 768},
                 user_agent=(
@@ -132,9 +221,8 @@ class EdreamsConnectorClient:
                 ),
             )
             page = await ctx.new_page()
-            if proxy:
-                from .browser import block_heavy_resources
-                await block_heavy_resources(page)
+            await inject_stealth_js(page)
+            await auto_block_if_proxied(page)
             page.on("response", on_response)
 
             # Direct URL to results — avoids form fill
@@ -173,20 +261,19 @@ class EdreamsConnectorClient:
             # Wait for GraphQL response (up to 30s)
             for _ in range(6):
                 await page.wait_for_timeout(5000)
-                if graphql_data:
+                if graphql_data or blocked:
                     break
 
             await page.close()
             await ctx.close()
-            await browser.close()
         except Exception as e:
             logger.error("EDREAMS browser error: %s", e)
             return None
-        finally:
-            try:
-                await pw.stop()
-            except Exception:
-                pass
+
+        if blocked:
+            logger.warning("EDREAMS: bot protection blocked, resetting profile")
+            await _reset_chrome_profile()
+            return None
 
         if not graphql_data:
             logger.warning("EDREAMS: no GraphQL searchItinerary captured")

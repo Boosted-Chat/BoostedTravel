@@ -33,14 +33,15 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
-from connectors.browser import find_chrome, stealth_popen_kwargs
+from .browser import find_chrome, stealth_popen_kwargs, proxy_chrome_args, auto_block_if_proxied, inject_stealth_js, disable_background_networking_args
+from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ async def _get_browser():
                 pass
 
         from playwright.async_api import async_playwright
-        from connectors.browser import find_chrome, stealth_popen_kwargs, _launched_procs
+        from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
 
         # Try connecting to existing Chrome on the port first
         pw = None
@@ -130,6 +131,8 @@ async def _get_browser():
             f"--remote-debugging-port={_DEBUG_PORT}",
             f"--user-data-dir={_USER_DATA_DIR}",
             "--no-first-run",
+            *proxy_chrome_args(),
+            *disable_background_networking_args(),
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
             "--disable-http2",
@@ -214,21 +217,96 @@ class EasyjetConnectorClient:
     async def close(self):
         pass  # Browser is shared singleton
 
+    # easyJet airports — used to skip airports easyJet doesn't serve
+    # (e.g. LHR, LCY, SEN) so the fan-out only tries relevant ones.
+    _EASYJET_AIRPORTS: frozenset[str] = frozenset({
+        # UK
+        "LGW", "LTN", "STN", "BRS", "MAN", "EDI", "GLA", "LPL",
+        "BHX", "NCL", "BFS", "ABZ", "INV", "EMA", "SOU",
+        # Europe hubs
+        "CDG", "ORY", "LYS", "NCE", "TLS", "BOD", "NTE", "MRS",
+        "AMS", "BER", "MXP", "FCO", "NAP", "VCE", "PSA", "BRI",
+        "BCN", "MAD", "AGP", "ALC", "PMI", "IBZ", "SVQ", "FUE",
+        "ACE", "LPA", "TFS", "FAO", "LIS", "OPO", "GVA", "BSL",
+        "CPH", "PRG", "BUD", "KRK", "WRO", "VIE",  # GDN dropped by easyJet (Mar 2026)
+        "ATH", "HER", "CFU", "RHO", "JTR", "ZTH", "SKG",
+        "SPU", "DBV", "ZAG", "LJU", "TLV", "IST", "SAW",
+        "ESB", "ADB", "AYT", "DLM", "BJV", "HRG", "SSH",
+        "MRK", "RAK",
+    })
+
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
-        Search easyJet using CDP Chrome + homepage form + API response interception.
+        Search easyJet with city-code fan-out (parallel).
 
-        1. Get persistent browser context (cookies carry over)
-        2. Open new page, set up response interception for POST /funnel/api/query
-        3. Navigate to homepage, fill search form
-        4. Click "Show flights" → capture intercepted API response
-        5. Parse journeyPairs → FlightOffers
-        6. Close page (context stays alive for next search)
+        If origin/dest is a city code (e.g. LON), expand to individual airports
+        and search each one in parallel, merging results.  easyJet does NOT fly
+        from LHR so city expansion is critical for London searches.
+        """
+        origins = get_city_airports(req.origin)
+        dests = get_city_airports(req.destination)
+
+        # Filter to only easyJet-served airports to avoid wasting time
+        origins = [a for a in origins if a in self._EASYJET_AIRPORTS] or origins
+        dests = [a for a in dests if a in self._EASYJET_AIRPORTS] or dests
+
+        all_offers: list[FlightOffer] = []
+        seen_hashes: set[str] = set()
+        currency = "GBP"
+
+        pairs = [(o, d) for o in origins for d in dests if o != d]
+        if not pairs:
+            return self._empty(req)
+
+        # Run all airport pairs in parallel (max 3 concurrent browser pages)
+        _sem = asyncio.Semaphore(3)
+
+        async def _search_pair(orig: str, dest: str) -> FlightSearchResponse | None:
+            async with _sem:
+                sub_req = req.model_copy(update={"origin": orig, "destination": dest})
+                return await self._search_single(sub_req)
+
+        results = await asyncio.gather(
+            *[_search_pair(o, d) for o, d in pairs],
+            return_exceptions=True,
+        )
+
+        for resp in results:
+            if isinstance(resp, BaseException) or not resp or not resp.offers:
+                continue
+            currency = resp.currency or currency
+            for o in resp.offers:
+                segs = o.outbound.segments if o.outbound else []
+                route = "-".join(s.origin for s in segs) if segs else ""
+                h = f"{o.price}-{route}"
+                if h not in seen_hashes:
+                    seen_hashes.add(h)
+                    all_offers.append(o)
+
+        all_offers.sort(key=lambda o: o.price)
+        search_hash = hashlib.md5(
+            f"easyjet{req.origin}{req.destination}{req.date_from}".encode()
+        ).hexdigest()[:12]
+
+        return FlightSearchResponse(
+            search_id=f"fs_{search_hash}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=currency,
+            offers=all_offers,
+            total_results=len(all_offers),
+        )
+
+    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        """
+        Search easyJet for a single origin→dest pair using CDP Chrome.
         """
         t0 = time.monotonic()
 
         context = await _get_context()
         page = await context.new_page()
+        await inject_stealth_js(page)
+        await auto_block_if_proxied(page)
 
         # Set up response interception BEFORE navigating
         search_data: dict = {}
@@ -258,6 +336,7 @@ class EasyjetConnectorClient:
                         logger.warning("easyJet: failed to parse API response: %s", e)
 
         page.on("response", _on_response)
+        results_page = None
 
         try:
             logger.info("easyJet: loading homepage for %s→%s", req.origin, req.destination)
@@ -279,20 +358,43 @@ class EasyjetConnectorClient:
                 logger.warning("easyJet: form fill failed, aborting")
                 return self._empty(req)
 
+            # Listen for new tab BEFORE clicking (easyJet opens results in new tab)
+            new_page_event = asyncio.Event()
+            new_page_ref: list = [None]
+
+            def _on_new_page(p):
+                new_page_ref[0] = p
+                new_page_event.set()
+
+            context.on("page", _on_new_page)
+
             # Click "Show flights"
             try:
                 await page.get_by_role("button", name="Show flights").click(timeout=5000)
-                logger.info("easyJet: clicked 'Show flights', waiting for navigation")
+                logger.info("easyJet: clicked 'Show flights', waiting for results")
             except Exception as e:
                 logger.warning("easyJet: could not click 'Show flights': %s", e)
                 return self._empty(req)
 
-            # Wait for navigation to /buy/flights
+            # Wait for new tab (easyJet opens results in a new tab)
             try:
-                await page.wait_for_url("**/buy/flights**", timeout=15000)
-                logger.info("easyJet: navigated to %s", page.url)
-            except Exception:
-                logger.warning("easyJet: didn't navigate to /buy/flights, URL: %s", page.url)
+                await asyncio.wait_for(new_page_event.wait(), timeout=10.0)
+                results_page = new_page_ref[0]
+                if results_page:
+                    results_page.on("response", _on_response)
+                    await auto_block_if_proxied(results_page)
+                    logger.info("easyJet: results tab opened: %s", results_page.url)
+                    try:
+                        await results_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
+            except (asyncio.TimeoutError, Exception):
+                # No new tab — page may have navigated in-place (old behavior)
+                logger.info("easyJet: no new tab, checking current page: %s", page.url)
+                try:
+                    await page.wait_for_url("**/buy/flights**", timeout=5000)
+                except Exception:
+                    pass
 
             # Wait for the intercepted API response (up to remaining timeout)
             remaining = max(self.timeout - (time.monotonic() - t0), 10)
@@ -337,10 +439,12 @@ class EasyjetConnectorClient:
             logger.error("easyJet CDP error: %s", e)
             return self._empty(req)
         finally:
-            try:
-                await page.close()
-            except Exception:
-                pass
+            for p in [results_page, page]:
+                try:
+                    if p:
+                        await p.close()
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Form interaction
@@ -363,8 +467,47 @@ class EasyjetConnectorClient:
             return False
         return True
 
+    # IATA → human-readable name for autocomplete fallback
+    _IATA_NAMES: dict[str, str] = {
+        "LGW": "London Gatwick", "LTN": "London Luton", "STN": "London Stansted",
+        "BRS": "Bristol", "MAN": "Manchester", "EDI": "Edinburgh",
+        "GLA": "Glasgow", "LPL": "Liverpool", "BHX": "Birmingham",
+        "NCL": "Newcastle", "BFS": "Belfast", "ABZ": "Aberdeen",
+        "INV": "Inverness", "EMA": "East Midlands", "SOU": "Southampton",
+        "CDG": "Paris Charles de Gaulle", "ORY": "Paris Orly",
+        "AMS": "Amsterdam", "BER": "Berlin", "BCN": "Barcelona",
+        "MAD": "Madrid", "LIS": "Lisbon", "FCO": "Rome Fiumicino",
+        "MXP": "Milan Malpensa", "NAP": "Naples", "VCE": "Venice",
+        "GVA": "Geneva", "BSL": "Basel", "CPH": "Copenhagen",
+        "PRG": "Prague", "BUD": "Budapest", "KRK": "Krakow",
+        "WRO": "Wroclaw", "VIE": "Vienna",
+        "ATH": "Athens", "IST": "Istanbul", "AGP": "Malaga",
+        "ALC": "Alicante", "PMI": "Palma de Mallorca", "FAO": "Faro",
+        "NCE": "Nice", "LYS": "Lyon", "TLS": "Toulouse",
+        "BOD": "Bordeaux", "NTE": "Nantes", "MRS": "Marseille",
+    }
+
     async def _fill_airport_field(self, page, label: str, iata: str) -> bool:
         """Fill an airport textbox and select the matching suggestion."""
+        # Try IATA code first, then fall back to city name
+        result = await self._try_fill_airport(page, label, iata)
+        if result:
+            return True
+
+        # Fallback: try full airport name (easyJet's autocomplete may prefer names)
+        name = self._IATA_NAMES.get(iata)
+        if name:
+            logger.info("easyJet: retrying %s with name '%s' instead of IATA", label, name)
+            result = await self._try_fill_airport(page, label, name, match_hint=iata)
+            if result:
+                return True
+
+        logger.warning("easyJet: %s field — no matching suggestion found for %s", label, iata)
+        return False
+
+    async def _try_fill_airport(self, page, label: str, query: str, match_hint: str = "") -> bool:
+        """Type a query and try to click the matching suggestion. Returns True on success."""
+        hint = match_hint or query
         try:
             # Remove any overlays that might intercept clicks
             await page.evaluate("""() => {
@@ -389,20 +532,19 @@ class EasyjetConnectorClient:
 
             await field.click(timeout=3000)
             await asyncio.sleep(0.3)
-            await field.fill(iata)
-            logger.info("easyJet: typed '%s' in %s field", iata, label)
-            await asyncio.sleep(2.0)
+            await field.fill(query)
+            logger.info("easyJet: typed '%s' in %s field", query, label)
+            await asyncio.sleep(3.0)  # extra time for autocomplete via proxy
 
-            # Try multiple selector strategies for the autocomplete dropdown
+            # Strategy 1: Playwright role-based selectors
             for role in ("option", "radio", "listitem"):
                 try:
                     option = page.get_by_role(role, name=re.compile(
-                        rf"{re.escape(iata)}", re.IGNORECASE
+                        rf"{re.escape(hint)}", re.IGNORECASE
                     )).first
                     if await option.count() > 0:
                         await option.click(timeout=3000)
-                        logger.info("easyJet: selected %s airport via %s role", iata, role)
-                        # Close any lingering dropdown overlays
+                        logger.info("easyJet: selected %s airport via %s role", hint, role)
                         await asyncio.sleep(0.3)
                         await page.keyboard.press("Escape")
                         await asyncio.sleep(0.3)
@@ -410,17 +552,20 @@ class EasyjetConnectorClient:
                 except Exception:
                     continue
 
+            # Strategy 2: CSS locator selectors
             for sel in (
-                f'[data-testid*="airport"] >> text=/{re.escape(iata)}/i',
-                f'li:has-text("{iata}")',
-                f'[role="listbox"] >> text=/{re.escape(iata)}/i',
-                f'ul li >> text=/{re.escape(iata)}/i',
+                f'[data-testid*="airport"] >> text=/{re.escape(hint)}/i',
+                f'li:has-text("{hint}")',
+                f'[role="listbox"] >> text=/{re.escape(hint)}/i',
+                f'ul li >> text=/{re.escape(hint)}/i',
+                f'button:has-text("{hint}")',
+                f'a:has-text("{hint}")',
             ):
                 try:
                     el = page.locator(sel).first
                     if await el.count() > 0:
                         await el.click(timeout=3000)
-                        logger.info("easyJet: selected %s airport via locator", iata)
+                        logger.info("easyJet: selected %s airport via locator", hint)
                         await asyncio.sleep(0.3)
                         await page.keyboard.press("Escape")
                         await asyncio.sleep(0.3)
@@ -428,6 +573,50 @@ class EasyjetConnectorClient:
                 except Exception:
                     continue
 
+            # Strategy 3: JS-based — find any visible element containing the
+            # IATA code in its text and click it (handles custom components)
+            try:
+                clicked = await page.evaluate("""(term) => {
+                    const walker = document.createTreeWalker(
+                        document.body, NodeFilter.SHOW_ELEMENT, null
+                    );
+                    const regex = new RegExp('\\\\b' + term + '\\\\b', 'i');
+                    const candidates = [];
+                    while (walker.nextNode()) {
+                        const el = walker.currentNode;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        const style = getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        // Only check direct text content (not children)
+                        const directText = Array.from(el.childNodes)
+                            .filter(n => n.nodeType === 3).map(n => n.textContent).join('');
+                        const fullText = el.textContent || '';
+                        if (regex.test(fullText) && (el.tagName === 'LI' || el.tagName === 'BUTTON'
+                            || el.tagName === 'A' || el.getAttribute('role') === 'option'
+                            || el.getAttribute('role') === 'listitem'
+                            || el.classList.toString().match(/airport|result|suggest|item/i))) {
+                            candidates.push(el);
+                        }
+                    }
+                    // Pick the smallest (most specific) element
+                    candidates.sort((a, b) => a.textContent.length - b.textContent.length);
+                    if (candidates.length > 0) {
+                        candidates[0].click();
+                        return true;
+                    }
+                    return false;
+                }""", hint)
+                if clicked:
+                    logger.info("easyJet: selected %s airport via JS tree-walk", hint)
+                    await asyncio.sleep(0.3)
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+                    return True
+            except Exception:
+                pass
+
+            # Strategy 4: Just click the first visible dropdown item (any match)
             for sel in (
                 '[role="listbox"] [role="option"]',
                 '[class*="airport"] li',
@@ -439,7 +628,7 @@ class EasyjetConnectorClient:
                     item = page.locator(sel).first
                     if await item.count() > 0:
                         await item.click(timeout=3000)
-                        logger.info("easyJet: selected first dropdown item for %s", iata)
+                        logger.info("easyJet: selected first dropdown item for %s", hint)
                         await asyncio.sleep(0.3)
                         await page.keyboard.press("Escape")
                         await asyncio.sleep(0.3)
@@ -447,7 +636,6 @@ class EasyjetConnectorClient:
                 except Exception:
                     continue
 
-            logger.warning("easyJet: %s field — no matching suggestion found for %s", label, iata)
             return False
         except Exception as e:
             logger.warning("easyJet: %s field error: %s", label, e)
@@ -456,6 +644,10 @@ class EasyjetConnectorClient:
     async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
         """Open the date picker and select the outbound date."""
         target = req.date_from
+        target_month_name = target.strftime("%B").upper()  # e.g., "MAY"
+        target_year = target.year
+        target_month_year = f"{target_month_name} {target_year}"  # e.g., "MAY 2026"
+
         try:
             try:
                 date_field = page.get_by_role("textbox", name="Clear selected travel date")
@@ -474,7 +666,7 @@ class EasyjetConnectorClient:
             except Exception:
                 logger.warning("easyJet: calendar grid didn't load in time")
                 return False
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
 
             testid = f"{target.day}-{target.month}-{target.year}"
             day_btn = page.locator(f'[data-testid="{testid}"]')
@@ -482,14 +674,78 @@ class EasyjetConnectorClient:
             aria_label = f"{target.strftime('%B')} {target.day}, {target.year}"
             day_btn_fallback = page.get_by_role("button", name=aria_label)
 
-            for attempt in range(12):
+            import calendar
+            month_order = {m.upper(): i for i, m in enumerate(calendar.month_name) if m}
+
+            def parse_month_year(text: str) -> tuple[int, int]:
+                """Parse 'JUNE 2026' to (year, month_idx)."""
+                parts = text.strip().split()
+                if len(parts) >= 2:
+                    return int(parts[1]), month_order.get(parts[0], 0)
+                return (9999, 99)
+
+            target_key = (target_year, target.month)
+
+            # Navigate until target month is visible
+            for attempt in range(24):  # Allow more attempts for backward navigation
+                # Check if day button is already visible
                 if await day_btn.count() > 0 or await day_btn_fallback.count() > 0:
                     break
+
+                # Check which months are currently visible
                 try:
-                    await page.get_by_role("button", name="Next month").click(timeout=2000)
-                    await asyncio.sleep(0.5)
+                    visible_months = await page.evaluate("""() => {
+                        const titles = document.querySelectorAll('[data-testid="month-title"]');
+                        return Array.from(titles).map(t => t.textContent.trim().toUpperCase());
+                    }""")
+
+                    # If target month is already visible, wait a moment for buttons to render
+                    if any(target_month_year in m for m in visible_months):
+                        await asyncio.sleep(0.5)
+                        if await day_btn.count() > 0 or await day_btn_fallback.count() > 0:
+                            break
+                        # Button still not found despite month being visible - try JS click
+                        logger.info("easyJet: month visible but button not found, trying JS")
+                        break
+
+                    # Determine navigation direction
+                    if visible_months:
+                        first_visible = visible_months[0]
+                        first_key = parse_month_year(first_visible)
+
+                        if first_key > target_key:
+                            # We're past the target - navigate backward
+                            try:
+                                prev_btn = page.get_by_role("button", name="Previous month")
+                                if await prev_btn.count() > 0:
+                                    await prev_btn.click(timeout=2000)
+                                    await asyncio.sleep(0.5)
+                                    continue
+                            except Exception:
+                                pass
+                            logger.warning("easyJet: cannot navigate backward to %s from %s",
+                                           target_month_year, first_visible)
+                            break
+                        else:
+                            # Navigate forward
+                            try:
+                                await page.get_by_role("button", name="Next month").click(timeout=2000)
+                                await asyncio.sleep(0.5)
+                            except Exception:
+                                break
+                    else:
+                        # No visible months - try forward
+                        try:
+                            await page.get_by_role("button", name="Next month").click(timeout=2000)
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            break
                 except Exception:
-                    break
+                    try:
+                        await page.get_by_role("button", name="Next month").click(timeout=2000)
+                        await asyncio.sleep(0.5)
+                    except Exception:
+                        break
 
             if await day_btn.count() > 0:
                 await day_btn.click(timeout=5000)
@@ -658,3 +914,372 @@ class EasyjetConnectorClient:
             offers=[],
             total_results=0,
         )
+
+
+# ── Bookable connector (checkout automation) ─────────────────────────────
+
+class EasyjetBookableConnector:
+    """
+    Drive EasyJet checkout up to (not including) payment submission.
+
+    Flow: Navigate to booking URL → Select flights → Select fare →
+          Fill passengers → Skip extras → STOP at payment page.
+
+    Uses Playwright with Akamai-aware headed Chrome. Never submits payment.
+    """
+
+    AIRLINE_NAME = "easyJet"
+    SOURCE_TAG = "easyjet_direct"
+
+    async def start_checkout(
+        self,
+        offer: dict,
+        passengers: list[dict],
+        checkout_token: str,
+        api_key: str,
+        *,
+        base_url: str | None = None,
+    ):
+        from .booking_base import (
+            CheckoutProgress,
+            dismiss_overlays,
+            safe_click,
+            safe_fill,
+            take_screenshot_b64,
+            verify_checkout_token,
+        )
+        import random
+        import time
+
+        t0 = time.monotonic()
+        booking_url = offer.get("booking_url", "")
+        offer_id = offer.get("id", "")
+
+        # Verify checkout token with backend
+        try:
+            verification = verify_checkout_token(offer_id, checkout_token, api_key, base_url)
+            if not verification.get("valid"):
+                return CheckoutProgress(
+                    status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                    offer_id=offer_id, booking_url=booking_url,
+                    message="Checkout token invalid or expired. Call unlock() first.",
+                )
+        except Exception as e:
+            return CheckoutProgress(
+                status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                offer_id=offer_id, booking_url=booking_url,
+                message=f"Token verification failed: {e}",
+            )
+
+        if not booking_url:
+            return CheckoutProgress(
+                status="failed", airline=self.AIRLINE_NAME, source=self.SOURCE_TAG,
+                offer_id=offer_id, message="No booking URL available for this offer.",
+            )
+
+        from playwright.async_api import async_playwright
+
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(
+            headless=False,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--window-position=-2400,-2400",
+                "--window-size=1440,900",
+            ],
+        )
+        _browser_pid = None
+        try:
+            _browser_pid = browser._impl_obj._browser_process.pid
+        except Exception:
+            pass
+        context = await browser.new_context(
+            viewport={"width": random.choice([1366, 1440, 1920]),
+                       "height": random.choice([768, 900, 1080])},
+            locale="en-GB",
+            timezone_id="Europe/London",
+        )
+
+        try:
+            try:
+                from playwright_stealth import stealth_async
+                page = await context.new_page()
+                await auto_block_if_proxied(page)
+                await stealth_async(page)
+            except ImportError:
+                page = await context.new_page()
+                await auto_block_if_proxied(page)
+
+            step = "started"
+            pax = passengers[0] if passengers else {}
+
+            # Step 1: Navigate to EasyJet booking page
+            logger.info("EasyJet checkout: navigating to %s", booking_url)
+            await page.goto(booking_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+
+            # Dismiss EasyJet-specific overlays
+            await dismiss_overlays(page)
+            for sel in [
+                "#ensCloseBanner",
+                "button:has-text('Accept all cookies')",
+                "[class*='cookie-banner'] button",
+            ]:
+                await safe_click(page, sel, timeout=2000, desc="easyjet cookies")
+
+            step = "page_loaded"
+
+            # Step 2: Select flights (EasyJet shows flight cards)
+            try:
+                await page.wait_for_selector(
+                    "[class*='flight-grid'], [class*='flight-card'], [data-testid*='flight']",
+                    timeout=20000,
+                )
+            except Exception:
+                pass
+
+            await dismiss_overlays(page)
+
+            # Try to match by departure time
+            outbound = offer.get("outbound", {})
+            segments = outbound.get("segments", []) if isinstance(outbound, dict) else []
+            if segments:
+                dep = segments[0].get("departure", "")
+                if dep and len(dep) >= 16:
+                    dep_time = dep[11:16]
+                    try:
+                        card = page.locator(f"text='{dep_time}'").first
+                        if await card.is_visible(timeout=3000):
+                            await card.click()
+                    except Exception:
+                        pass
+
+            # Fallback: click first available flight
+            for sel in [
+                "[class*='flight-card']:first-child",
+                "[data-testid*='flight']:first-child",
+                "button:has-text('Select'):first-child",
+            ]:
+                await safe_click(page, sel, timeout=3000, desc="first flight")
+
+            await page.wait_for_timeout(2000)
+            step = "flights_selected"
+
+            # Step 3: Select fare (Standard/Flexi)
+            for sel in [
+                "button:has-text('Standard')",
+                "button:has-text('Continue')",
+                "[class*='fare'] button:first-child",
+                "button:has-text('Select')",
+            ]:
+                if await safe_click(page, sel, timeout=5000, desc="select fare"):
+                    break
+
+            await page.wait_for_timeout(1500)
+            await dismiss_overlays(page)
+            step = "fare_selected"
+
+            # Step 4: Skip login if prompted
+            for sel in [
+                "button:has-text('Continue as guest')",
+                "button:has-text('Skip')",
+                "button:has-text('No thanks')",
+                "[data-testid*='guest'] button",
+            ]:
+                if await safe_click(page, sel, timeout=4000, desc="skip login"):
+                    break
+            await page.wait_for_timeout(1500)
+            await dismiss_overlays(page)
+            step = "login_bypassed"
+
+            # Step 5: Fill passenger details
+            try:
+                await page.wait_for_selector(
+                    "input[name*='name'], [class*='passenger-form'], [data-testid*='passenger']",
+                    timeout=15000,
+                )
+            except Exception:
+                pass
+
+            # Title
+            title = "Mr" if pax.get("gender", "m") == "m" else "Ms"
+            for sel in [
+                f"select option:has-text('{title}')",
+                f"[data-testid*='title'] option:has-text('{title}')",
+            ]:
+                try:
+                    await page.select_option("select[name*='title'], [data-testid*='title'] select",
+                                             label=title, timeout=3000)
+                    break
+                except Exception:
+                    pass
+            # Fallback: click dropdown
+            await safe_click(page, f"button:has-text('{title}')", timeout=2000, desc=f"title {title}")
+
+            # First name
+            for sel in [
+                "input[name*='firstName']",
+                "input[data-testid*='first-name']",
+                "input[placeholder*='First name' i]",
+            ]:
+                if await safe_fill(page, sel, pax.get("given_name", "Test")):
+                    break
+
+            # Last name
+            for sel in [
+                "input[name*='lastName']",
+                "input[data-testid*='last-name']",
+                "input[placeholder*='Last name' i]",
+            ]:
+                if await safe_fill(page, sel, pax.get("family_name", "Traveler")):
+                    break
+
+            # Email
+            for sel in [
+                "input[name*='email']",
+                "input[data-testid*='email']",
+                "input[type='email']",
+            ]:
+                if await safe_fill(page, sel, pax.get("email", "test@example.com")):
+                    break
+
+            # Phone
+            for sel in [
+                "input[name*='phone']",
+                "input[data-testid*='phone']",
+                "input[type='tel']",
+            ]:
+                if await safe_fill(page, sel, pax.get("phone_number", "+441234567890")):
+                    break
+
+            step = "passengers_filled"
+
+            # Continue
+            for sel in [
+                "button:has-text('Continue')",
+                "button:has-text('Next')",
+                "[data-testid*='continue'] button",
+            ]:
+                if await safe_click(page, sel, timeout=5000, desc="continue"):
+                    break
+            await page.wait_for_timeout(2000)
+            await dismiss_overlays(page)
+
+            # Step 6: Skip extras (bags, insurance, seats)
+            for _ in range(5):
+                await dismiss_overlays(page)
+                for sel in [
+                    "button:has-text('No, thanks')",
+                    "button:has-text('Continue')",
+                    "button:has-text('Skip')",
+                    "button:has-text('No hold luggage')",
+                    "button:has-text('Continue without')",
+                    "button:has-text('Next')",
+                ]:
+                    await safe_click(page, sel, timeout=2000, desc="skip extras")
+                await page.wait_for_timeout(1500)
+
+            step = "extras_skipped"
+
+            # Skip seats
+            for sel in [
+                "button:has-text('Skip')",
+                "button:has-text('No thanks')",
+                "button:has-text('Continue without')",
+                "button:has-text('Assign random seats')",
+            ]:
+                if await safe_click(page, sel, timeout=4000, desc="skip seats"):
+                    break
+            await page.wait_for_timeout(1500)
+            for sel in ["button:has-text('OK')", "button:has-text('Continue')"]:
+                await safe_click(page, sel, timeout=3000, desc="confirm skip")
+
+            step = "seats_skipped"
+            await page.wait_for_timeout(2000)
+            await dismiss_overlays(page)
+
+            # Step 7: Payment page reached — STOP HERE
+            step = "payment_page_reached"
+            screenshot = await take_screenshot_b64(page)
+
+            page_price = offer.get("price", 0.0)
+            try:
+                for sel in [
+                    "[class*='total-price']",
+                    "[data-testid*='total']",
+                    "[class*='summary'] [class*='price']",
+                ]:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=2000):
+                        text = await el.text_content()
+                        if text:
+                            import re
+                            nums = re.findall(r"[\d,.]+", text)
+                            if nums:
+                                page_price = float(nums[-1].replace(",", ""))
+                        break
+            except Exception:
+                pass
+
+            elapsed = time.monotonic() - t0
+            return CheckoutProgress(
+                status="payment_page_reached",
+                step=step,
+                step_index=8,
+                airline=self.AIRLINE_NAME,
+                source=self.SOURCE_TAG,
+                offer_id=offer_id,
+                total_price=page_price,
+                currency=offer.get("currency", "EUR"),
+                booking_url=booking_url,
+                screenshot_b64=screenshot,
+                message=(
+                    f"easyJet checkout complete — reached payment page in {elapsed:.0f}s. "
+                    f"Price: {page_price} {offer.get('currency', 'EUR')}. "
+                    f"Payment NOT submitted (safe mode). "
+                    f"Complete manually at: {booking_url}"
+                ),
+                can_complete_manually=True,
+                elapsed_seconds=elapsed,
+            )
+
+        except Exception as e:
+            logger.error("EasyJet checkout error: %s", e, exc_info=True)
+            screenshot = ""
+            try:
+                screenshot = await take_screenshot_b64(page)
+            except Exception:
+                pass
+            return CheckoutProgress(
+                status="error",
+                step=step,
+                airline=self.AIRLINE_NAME,
+                source=self.SOURCE_TAG,
+                offer_id=offer_id,
+                booking_url=booking_url,
+                screenshot_b64=screenshot,
+                message=f"Checkout error at step '{step}': {e}",
+                elapsed_seconds=time.monotonic() - t0,
+            )
+        finally:
+            try:
+                await context.close()
+            except Exception:
+                pass
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+            if _browser_pid:
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(_browser_pid)],
+                        capture_output=True, timeout=5,
+                    )
+                except Exception:
+                    pass

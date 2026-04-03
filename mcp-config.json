@@ -4,7 +4,7 @@
       "command": "npx",
       "args": ["-y", "letsfg-mcp"],
       "env": {
-        "LETSFG_API_KEY": "YOUR_API_KEY_HERE (optional — search works without it via cloud backend)"
+        "LETSFG_API_KEY": "YOUR_API_KEY_HERE (optional — only needed for unlock/book)"
       }
     }
   }

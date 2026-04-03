@@ -1,12 +1,12 @@
 """
-Skyscanner connector — Playwright browser + API response interception.
+Skyscanner connector — CDP Chrome + API response interception.
 
 Skyscanner is the world's #1 flight meta-search engine, aggregating from
 1200+ partners. Direct API access is blocked by PerimeterX, but loading
-the results page in a real browser fires the internal fps3/search API.
+the results page in a REAL Chrome browser fires the internal fps3/search API.
 
 Strategy:
-1.  Launch Playwright browser (non-headless to bypass PerimeterX).
+1.  Launch REAL system Chrome via CDP (not bundled Chromium) to bypass PerimeterX.
 2.  Navigate to Skyscanner search results URL.
 3.  Intercept the fps3/search (or similar) API response with flight data.
 4.  Parse itineraries from the JSON response.
@@ -18,6 +18,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
+import shutil
+import subprocess
 import time
 from datetime import datetime, date as date_type
 from typing import Any, Optional
@@ -32,6 +35,13 @@ from ..models.flights import (
 
 logger = logging.getLogger(__name__)
 
+# ── CDP Chrome singleton ──
+_DEBUG_PORT = 9452
+_USER_DATA_DIR = os.path.join(os.getcwd(), ".skyscanner_chrome_data")
+_browser = None
+_chrome_proc = None
+_pw_instance = None
+
 
 def _parse_dt(s: Any) -> datetime:
     if not s:
@@ -41,6 +51,93 @@ def _parse_dt(s: Any) -> datetime:
         return datetime.fromisoformat(s.replace("Z", "+00:00").split("+")[0])
     except (ValueError, AttributeError):
         return datetime(2000, 1, 1)
+
+
+async def _get_browser():
+    """Get or launch CDP Chrome browser (singleton)."""
+    global _browser, _chrome_proc, _pw_instance
+
+    # Reuse existing connection
+    if _browser:
+        try:
+            if _browser.is_connected():
+                return _browser
+        except Exception:
+            pass
+
+    from playwright.async_api import async_playwright
+    from .browser import (
+        find_chrome,
+        stealth_popen_kwargs,
+        proxy_chrome_args,
+        disable_background_networking_args,
+        _launched_procs,
+    )
+
+    # Try connecting to existing Chrome on the port first
+    pw = None
+    try:
+        pw = await async_playwright().start()
+        _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+        _pw_instance = pw
+        logger.info("Skyscanner: connected to existing Chrome on port %d", _DEBUG_PORT)
+        return _browser
+    except Exception:
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
+    # Launch Chrome HEADED (no --headless) — PerimeterX detects headless Chrome
+    chrome = find_chrome()
+    os.makedirs(_USER_DATA_DIR, exist_ok=True)
+    args = [
+        chrome,
+        f"--remote-debugging-port={_DEBUG_PORT}",
+        f"--user-data-dir={_USER_DATA_DIR}",
+        "--no-first-run",
+        *proxy_chrome_args(),
+        *disable_background_networking_args(),
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-http2",
+        "--window-position=-2400,-2400",
+        "--window-size=1366,768",
+        "about:blank",
+    ]
+    _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
+    _launched_procs.append(_chrome_proc)
+    await asyncio.sleep(2.0)
+
+    pw = await async_playwright().start()
+    _pw_instance = pw
+    _browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{_DEBUG_PORT}")
+    logger.info("Skyscanner: Chrome launched headed on CDP port %d (pid %d)", _DEBUG_PORT, _chrome_proc.pid)
+    return _browser
+
+
+async def _reset_chrome_profile():
+    """Kill Chrome and wipe user-data-dir to clear PerimeterX-flagged sessions."""
+    global _browser, _chrome_proc
+    try:
+        if _browser:
+            await _browser.close()
+    except Exception:
+        pass
+    _browser = None
+    if _chrome_proc:
+        try:
+            _chrome_proc.terminate()
+        except Exception:
+            pass
+        _chrome_proc = None
+    if os.path.isdir(_USER_DATA_DIR):
+        try:
+            shutil.rmtree(_USER_DATA_DIR)
+            logger.info("Skyscanner: deleted stale Chrome profile %s", _USER_DATA_DIR)
+        except Exception as e:
+            logger.warning("Skyscanner: failed to delete Chrome profile: %s", e)
 
 
 class SkyscannerConnectorClient:
@@ -88,12 +185,18 @@ class SkyscannerConnectorClient:
     async def _do_search(
         self, req: FlightSearchRequest
     ) -> list[FlightOffer] | None:
-        from playwright.async_api import async_playwright
+        from .browser import inject_stealth_js, auto_block_if_proxied
 
         api_responses: list[dict] = []
+        px_blocked = False
 
         async def on_response(response):
+            nonlocal px_blocked
             url = response.url
+            # PerimeterX block detection
+            if response.status == 403 or "captcha" in url.lower() or "challenge" in url.lower():
+                px_blocked = True
+                return
             # Skyscanner uses multiple API patterns for search results
             hit = (
                 "fps3/search" in url
@@ -120,21 +223,8 @@ class SkyscannerConnectorClient:
             except Exception:
                 pass
 
-        pw = await async_playwright().start()
         try:
-            from .browser import get_proxy
-            proxy = get_proxy("SKYSCANNER_PROXY")
-            launch_kw: dict = {
-                "headless": False,
-                "args": [
-                    "--window-position=-2400,-2400",
-                    "--window-size=1366,768",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            }
-            if proxy:
-                launch_kw["proxy"] = proxy
-            browser = await pw.chromium.launch(**launch_kw)
+            browser = await _get_browser()
             ctx = await browser.new_context(
                 viewport={"width": 1366, "height": 768},
                 user_agent=(
@@ -144,9 +234,8 @@ class SkyscannerConnectorClient:
                 ),
             )
             page = await ctx.new_page()
-            if proxy:
-                from .browser import block_heavy_resources
-                await block_heavy_resources(page)
+            await inject_stealth_js(page)
+            await auto_block_if_proxied(page)
             page.on("response", on_response)
 
             # Skyscanner URL pattern: /transport/flights/{origin}/{dest}/{YYMMDD}/
@@ -167,22 +256,22 @@ class SkyscannerConnectorClient:
             # Wait for API responses — Skyscanner progressively loads results
             for _ in range(10):
                 await page.wait_for_timeout(3000)
-                if api_responses:
-                    # Give time for progressive loading
-                    await page.wait_for_timeout(8000)
+                if api_responses or px_blocked:
+                    if api_responses:
+                        # Give time for progressive loading
+                        await page.wait_for_timeout(8000)
                     break
 
             await page.close()
             await ctx.close()
-            await browser.close()
         except Exception as e:
             logger.error("SKYSCANNER browser error: %s", e)
             return None
-        finally:
-            try:
-                await pw.stop()
-            except Exception:
-                pass
+
+        if px_blocked:
+            logger.warning("SKYSCANNER: PerimeterX blocked, resetting profile")
+            await _reset_chrome_profile()
+            return None
 
         if not api_responses:
             logger.warning("SKYSCANNER: no flight API response captured")

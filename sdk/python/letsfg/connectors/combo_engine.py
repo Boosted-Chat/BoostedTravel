@@ -94,16 +94,16 @@ def build_combos(
     combos: list[FlightOffer] = []
     seen_combo_keys: set[str] = set()
 
-    # Build cross-source combos: source_a outbound × source_b return (a ≠ b)
+    # Build combos: source_a outbound × source_b return
+    # Allow same-source combos because local connectors return one-way fares,
+    # and the airline's native RT (if any) would be in api_offers not here.
     out_sources = list(out_trimmed.keys())
     ret_sources = list(ret_trimmed.keys())
 
-    # Collect all cross-source pairs, sorted by cheapest potential combo
+    # Collect all pairs, sorted by cheapest potential combo
     cross_pairs: list[tuple[FlightOffer, FlightOffer]] = []
     for src_a in out_sources:
         for src_b in ret_sources:
-            if src_a == src_b:
-                continue
             for ob in out_trimmed[src_a]:
                 for rt in ret_trimmed[src_b]:
                     cross_pairs.append((ob, rt))
