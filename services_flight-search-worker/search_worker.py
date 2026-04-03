@@ -470,8 +470,19 @@ async def _run_round_trip(
     # ── Build cross-airline combos ──────────────────────────────────────
     combos_json: list[dict] = []
     try:
+        # Pre-filter legs when max_stops is specified.
+        # This ensures combos are only built from legs meeting the stops criteria.
+        combo_out = outbound_offers
+        combo_ret = return_offers
+        if max_stops is not None:
+            combo_out = _filter_by_stops(outbound_offers, max_stops)
+            combo_ret = _filter_by_stops(return_offers, max_stops)
+            logger.info("Combo pre-filter: %d out → %d, %d ret → %d",
+                        len(outbound_offers), len(combo_out),
+                        len(return_offers), len(combo_ret))
+
         combos_json = _build_round_trip_combos(
-            outbound_offers, return_offers, currency,
+            combo_out, combo_ret, currency,
         )
         logger.info("Combo engine: %d cross-airline offers", len(combos_json))
     except Exception as exc:
