@@ -69,6 +69,129 @@ def _json_out(data):
     print(json.dumps(data, indent=2, default=str))
 
 
+# ── Airline display helpers ───────────────────────────────────────────────
+
+_IATA_TO_AIRLINE: dict[str, str] = {
+    # Middle East / Arabian Peninsula
+    "EK": "Emirates", "EY": "Etihad Airways", "QR": "Qatar Airways",
+    "FZ": "flydubai", "G9": "Air Arabia", "XY": "flynas", "F3": "flyadeal",
+    "WY": "Oman Air", "OV": "SalamAir", "RJ": "Royal Jordanian",
+    "KU": "Kuwait Airways", "ME": "Middle East Airlines", "SV": "Saudia",
+    # Europe – full-service
+    "BA": "British Airways", "AF": "Air France", "LH": "Lufthansa",
+    "KL": "KLM", "LX": "Swiss", "OS": "Austrian Airlines",
+    "SN": "Brussels Airlines", "AY": "Finnair", "SK": "SAS",
+    "TP": "TAP Air Portugal", "IB": "Iberia", "LY": "El Al",
+    "TK": "Turkish Airlines", "AT": "Royal Air Maroc", "A3": "Aegean Airlines",
+    "OA": "Olympic Air", "GQ": "SKY express", "EI": "Aer Lingus",
+    "JU": "Air Serbia", "BT": "airBaltic", "QS": "Smartwings",
+    "S4": "Azores Airlines", "CY": "Cyprus Airways", "VS": "Virgin Atlantic",
+    "DE": "Condor", "4Y": "Discover Airlines", "J2": "Azerbaijan Airlines",
+    # Europe – LCC
+    "FR": "Ryanair", "W6": "Wizz Air", "U2": "easyJet", "VY": "Vueling",
+    "EW": "Eurowings", "HV": "Transavia", "PC": "Pegasus", "DY": "Norwegian",
+    "I2": "Iberia Express", "V7": "Volotea", "LS": "Jet2", "FI": "Icelandair",
+    "XQ": "SunExpress",
+    # North America
+    "AA": "American Airlines", "DL": "Delta Air Lines", "UA": "United Airlines",
+    "WN": "Southwest Airlines", "AS": "Alaska Airlines", "B6": "JetBlue Airways",
+    "HA": "Hawaiian Airlines", "F9": "Frontier Airlines", "NK": "Spirit Airlines",
+    "G4": "Allegiant", "XP": "Avelo Airlines", "MX": "Breeze Airways",
+    "SY": "Sun Country Airlines",
+    # Canada
+    "AC": "Air Canada", "WS": "WestJet", "PD": "Porter Airlines",
+    "F8": "Flair Airlines", "TS": "Air Transat",
+    # Latin America
+    "LA": "LATAM Airlines", "AV": "Avianca", "CM": "Copa Airlines",
+    "G3": "GOL", "AD": "Azul", "AR": "Aerolíneas Argentinas",
+    "VB": "VivaAerobus", "Y4": "Volaris", "DM": "Arajet", "H2": "Sky Airline",
+    "P5": "Wingo", "JA": "JetSMART", "FO": "Flybondi",
+    # Africa
+    "SA": "South African Airways", "FA": "FlySafair", "4Z": "Airlink", "5Z": "CemAir", "GE": "LIFT",
+    "ET": "Ethiopian Airlines", "KQ": "Kenya Airways",
+    "WB": "RwandAir", "P4": "Air Peace",
+    # Asia – full-service
+    "SQ": "Singapore Airlines", "CX": "Cathay Pacific", "NH": "ANA",
+    "JL": "Japan Airlines", "KE": "Korean Air", "OZ": "Asiana Airlines",
+    "MH": "Malaysia Airlines", "TG": "Thai Airways", "GA": "Garuda Indonesia",
+    "AI": "Air India", "PK": "PIA", "UL": "SriLankan Airlines",
+    "VN": "Vietnam Airlines", "PR": "Philippine Airlines",
+    "CA": "Air China", "MU": "China Eastern Airlines",
+    "CZ": "China Southern Airlines", "CI": "China Airlines",
+    "HU": "Hainan Airlines", "BR": "EVA Air", "JX": "Starlux Airlines",
+    "UX": "Air Europa",
+    # Asia – LCC
+    "AK": "AirAsia", "FD": "Thai AirAsia", "VJ": "VietJet Air",
+    "TR": "Scoot", "MM": "Peach Aviation", "ZG": "ZIPAIR",
+    "7C": "Jeju Air", "TW": "T'way Air", "QG": "Citilink",
+    "OD": "Batik Air", "IU": "Super Air Jet", "8B": "TransNusa",
+    "QP": "Akasa Air", "IX": "Air India Express", "6E": "IndiGo",
+    "SG": "SpiceJet", "PG": "Bangkok Airways", "5J": "Cebu Pacific",
+    "DD": "Nok Air", "8L": "Lucky Air", "9C": "Spring Airlines", "AQ": "9 Air",
+    # Pacific / Oceania
+    "QF": "Qantas", "VA": "Virgin Australia", "ZL": "Rex Airlines",
+    "NZ": "Air New Zealand", "FJ": "Fiji Airways", "PX": "Air Niugini",
+    "TL": "Airnorth", "PH": "Samoa Airways", "CG": "PNG Air",
+    "IE": "Solomon Airlines", "JQ": "Jetstar",
+    # South / Southeast Asia
+    "BS": "US-Bangla Airlines", "BG": "Biman Bangladesh Airlines",
+    # Indian Ocean / Pacific islands
+    "SB": "Aircalin", "TN": "Air Tahiti Nui", "NF": "Air Vanuatu",
+    "HM": "Air Seychelles", "MK": "Air Mauritius", "GL": "Air Greenland",
+    # Caribbean
+    "BW": "Caribbean Airlines",
+    # Central Asia
+    "FS": "FlyArystan",
+    # Eastern Europe / Other
+    "LO": "LOT Polish Airlines", "AZ": "ITA Airways",
+}
+_AIRLINE_TO_IATA: dict[str, str] = {v.lower(): k for k, v in _IATA_TO_AIRLINE.items()}
+
+
+def _fmt_airline(owner: str, airlines: list[str]) -> str:
+    """Return 'CODE-FullName' for the Airline display column."""
+    import re as _re
+
+    if not owner:
+        owner = next((a for a in airlines if a), "")
+    if not owner:
+        return "-"
+
+    # Combo offer — e.g. "Ryanair|Wizz Air" produced by combo_engine
+    if "|" in owner:
+        parts = [p.strip() for p in owner.split("|") if p.strip()]
+        return " + ".join(_fmt_airline(p, []) for p in parts)
+
+    # Pure IATA code (2–3 uppercase letters/digits)
+    if _re.fullmatch(r"[A-Z0-9]{2,3}", owner):
+        code = owner
+        primary_name = _IATA_TO_AIRLINE.get(code)
+        
+        if not primary_name:
+            # Fall back to the first entry in the airlines list that differs from the code
+            name = next((a for a in airlines if a and a.upper() != code), None)
+            # Check if fallback is itself a IATA code
+            if name and _re.fullmatch(r"[A-Z0-9]{2,3}", name):
+                name_mapped = _IATA_TO_AIRLINE.get(name)
+                if name_mapped:
+                    return f"{code}-{name_mapped}"
+            return f"{code}-{name}" if name else code
+        
+        # primary_name exists for this code
+        # Check if airlines list has an entry that's a IATA code we can also map
+        secondary = next((a for a in airlines if a and a.upper() != code), None)
+        if secondary and _re.fullmatch(r"[A-Z0-9]{2,3}", secondary):
+            secondary_mapped = _IATA_TO_AIRLINE.get(secondary)
+            if secondary_mapped:
+                return f"{code}-{primary_name} + {secondary}-{secondary_mapped}"
+        
+        return f"{code}-{primary_name}"
+
+    # Full airline name — attempt reverse lookup for its IATA code
+    code = _AIRLINE_TO_IATA.get(owner.lower())
+    return f"{code}-{owner}" if code else owner
+
+
 # ── Search ────────────────────────────────────────────────────────────────
 
 @app.command()
@@ -241,7 +364,7 @@ def search(
         for i, o in enumerate(offers, 1):
             ob = o.get("outbound", {})
             ib = o.get("inbound")
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             stops = str(ob.get("stopovers", 0))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
@@ -260,7 +383,7 @@ def search(
             cond = o.get("conditions") or {}
             ob_url = cond.get("outbound_booking_url", "")
             ib_url = cond.get("inbound_booking_url", "")
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
             price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
@@ -281,7 +404,7 @@ def search(
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
             price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             ib = o.get("inbound")
             dep = _time_str(ob, "dep")
@@ -468,7 +591,7 @@ def search_local_cmd(
 
         for i, o in enumerate(offers, 1):
             ob = o.get("outbound", {})
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             stops = str(ob.get("stopovers", 0))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
@@ -482,7 +605,7 @@ def search_local_cmd(
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
             price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             dep = _local_time(ob, "dep")
             arr = _local_time(ob, "arr")
@@ -625,7 +748,7 @@ def search_cloud_cmd(
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
             price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", [])) or "-"
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             route = _cloud_route(o)
             dur = _cloud_duration(o)
             stops = _cloud_stops(o)
@@ -637,7 +760,7 @@ def search_cloud_cmd(
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
             price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", [])) or "-"
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             route = _cloud_route(o)
             dur = _cloud_duration(o)
             stops = _cloud_stops(o)
