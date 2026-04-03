@@ -125,10 +125,9 @@ When you're ready to integrate it into your own agent, keep reading.
 
 ```bash
 pip install letsfg
-letsfg star --github your-username   # ⭐ verify your star (one-time)
 ```
 
-Search flights immediately:
+Search flights immediately — **no API key, no registration, no account needed**:
 
 ```bash
 letsfg search-local LHR BCN 2026-06-15
@@ -136,11 +135,20 @@ letsfg search-local LHR BCN 2026-06-15
 
 That single command fires 200 airline connectors on your machine and returns real-time prices. **Free. Unlimited. Zero setup.**
 
-Want enterprise GDS coverage too? One more command:
+Want to star the repo for unlimited access everywhere (including server/API)?
 
 ```bash
+# Step 1: Register (free, instant — gives you an API key)
 letsfg register --name my-agent --email you@example.com
-export LETSFG_API_KEY=trav_...
+export LETSFG_API_KEY=trav_...   # save the key from step 1
+
+# Step 2: Star the repo on GitHub, then verify
+letsfg star --github your-username   # ⭐ verify your star (one-time)
+```
+
+Want enterprise GDS coverage too? Use cloud search (needs the API key from above):
+
+```bash
 letsfg search LHR JFK 2026-04-15
 ```
 

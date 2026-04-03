@@ -842,10 +842,25 @@ def star(
 ):
     """Link your GitHub account — star the repo for FREE unlimited access.
 
-    1. Star https://github.com/LetsFG/LetsFG
-    2. Run: letsfg star --github <your-username>
-    3. Done — unlimited search, unlock, and book forever.
+    1. Register first:  letsfg register --name my-agent --email you@example.com
+    2. Save the key:    export LETSFG_API_KEY=trav_...
+    3. Star the repo:   https://github.com/LetsFG/LetsFG
+    4. Run:             letsfg star --github <your-username>
+
+    Note: search-local works without any API key or registration.
     """
+    key = api_key or os.environ.get("LETSFG_API_KEY", "")
+    if not key:
+        _err(
+            "API key required to link your GitHub star.\n\n"
+            "  You need to register first (it's free and instant):\n\n"
+            "    1. letsfg register --name my-agent --email you@example.com\n"
+            "    2. export LETSFG_API_KEY=trav_...   (save the key from step 1)\n"
+            "    3. Star https://github.com/LetsFG/LetsFG\n"
+            "    4. letsfg star --github your-username\n\n"
+            "  Note: local search works without any API key:\n"
+            "    letsfg search-local LHR BCN 2026-06-15"
+        )
     bt = _get_client(api_key, base_url)
     try:
         result = bt.link_github(github)

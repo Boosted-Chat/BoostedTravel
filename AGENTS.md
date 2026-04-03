@@ -147,16 +147,26 @@ Do NOT use placeholder emails, agent emails, or fake names. The booking will fai
 pip install letsfg
 ```
 
-This gives you the `letsfg` CLI command:
+This gives you the `letsfg` CLI command. **Local search works immediately — no API key needed:**
 
 ```bash
-# Register and get your API key
+# Search flights locally — no API key, no registration, completely free
+letsfg search-local LHR BCN 2026-06-15
+```
+
+To use cloud search (GDS/NDC providers) and the full API, register first:
+
+```bash
+# Step 1: Register and get your API key
 letsfg register --name my-agent --email you@example.com
 
-# Save your key
+# Step 2: Save your key
 export LETSFG_API_KEY=trav_...
 
-# Search flights
+# Step 3: Star the repo and verify (unlocks free access everywhere)
+letsfg star --github your-username
+
+# Cloud search (GDS/NDC — needs API key)
 letsfg search LHR JFK 2026-04-15
 
 # Round trip
