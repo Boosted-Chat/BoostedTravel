@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from typing import Optional
 
@@ -152,8 +153,6 @@ _AIRLINE_TO_IATA: dict[str, str] = {v.lower(): k for k, v in _IATA_TO_AIRLINE.it
 
 def _fmt_airline(owner: str, airlines: list[str]) -> str:
     """Return 'CODE-FullName' for the Airline display column."""
-    import re as _re
-
     if not owner:
         owner = next((a for a in airlines if a), "")
     if not owner:
@@ -165,7 +164,7 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
         return " + ".join(_fmt_airline(p, []) for p in parts)
 
     # Pure IATA code (2–3 uppercase letters/digits)
-    if _re.fullmatch(r"[A-Z0-9]{2,3}", owner):
+    if re.fullmatch(r"[A-Z0-9]{2,3}", owner):
         code = owner
         primary_name = _IATA_TO_AIRLINE.get(code)
         
@@ -173,7 +172,7 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
             # Fall back to the first entry in the airlines list that differs from the code
             name = next((a for a in airlines if a and a.upper() != code), None)
             # Check if fallback is itself a IATA code
-            if name and _re.fullmatch(r"[A-Z0-9]{2,3}", name):
+            if name and re.fullmatch(r"[A-Z0-9]{2,3}", name):
                 name_mapped = _IATA_TO_AIRLINE.get(name)
                 if name_mapped:
                     return f"{code}-{name_mapped}"
@@ -182,7 +181,7 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
         # primary_name exists for this code
         # Check if airlines list has an entry that's a IATA code we can also map
         secondary = next((a for a in airlines if a and a.upper() != code), None)
-        if secondary and _re.fullmatch(r"[A-Z0-9]{2,3}", secondary):
+        if secondary and re.fullmatch(r"[A-Z0-9]{2,3}", secondary):
             secondary_mapped = _IATA_TO_AIRLINE.get(secondary)
             if secondary_mapped:
                 return f"{code}-{primary_name} + {secondary}-{secondary_mapped}"
