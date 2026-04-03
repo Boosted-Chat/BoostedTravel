@@ -21,6 +21,7 @@ The `letsfg` CLI is available via both Python and JavaScript. Same commands, sam
 | Command | Description |
 |---------|-------------|
 | `letsfg register` | Create account and get API key |
+| `letsfg recover --email <email>` | Recover lost API key via email verification |
 | `letsfg search <origin> <dest> <date>` | Search flights (free, requires API key) |
 | `letsfg search-local <origin> <dest> <date>` | Search flights locally (free, **no API key**) |
 | `letsfg system-info` | Show system resources & concurrency tier |
@@ -161,6 +162,20 @@ letsfg system-info --json
 ```
 
 Output includes platform, CPU cores, total/available RAM, tier name, recommended max browsers, and current setting.
+
+### Account Recovery
+
+Lost your API key? Recover it via email verification:
+
+```bash
+# Step 1: Request a recovery code (sent to your registered email)
+letsfg recover --email you@example.com
+
+# Step 2: Enter the 6-digit code from your email
+letsfg recover --email you@example.com --code 123456
+```
+
+The code expires in 15 minutes. Once verified, a new API key is issued and your previous key is invalidated.
 
 ## Environment Variables
 

@@ -264,6 +264,7 @@ for offer in result.offers[:5]:
 | `letsfg search <origin> <dest> <date>` | Search flights (free) |
 | `letsfg search-local <origin> <dest> <date>` | Search locally, no API key |
 | `letsfg register` | Get your API key |
+| `letsfg recover --email <email>` | Recover lost API key via email |
 | `letsfg locations <query>` | Resolve city/airport to IATA codes |
 | `letsfg unlock <offer_id>` | Confirm live price & reserve 30 min |
 | `letsfg book <offer_id>` | Book the flight |

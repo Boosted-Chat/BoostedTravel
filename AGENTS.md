@@ -268,6 +268,7 @@ npx letsfg-mcp
 | Command | Description | Cost |
 |---------|-------------|------|
 | `letsfg register` | Get your API key | Free |
+| `letsfg recover --email <email>` | Recover lost API key via email | Free |
 | `letsfg search <origin> <dest> <date>` | Search flights (star = airline names visible) | Free |
 | `letsfg locations <query>` | Resolve city/airport to IATA | Free |
 | `letsfg unlock <offer_id>` | Reveal airline + confirm price | 1% (min $1) |
