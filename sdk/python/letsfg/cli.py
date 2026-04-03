@@ -72,6 +72,8 @@ def _json_out(data):
 # ── Airline display helpers ───────────────────────────────────────────────
 
 _IATA_TO_AIRLINE: dict[str, str] = {
+    # Alternative Airlines
+    "W2": "FlexFlight",
     # Middle East / Arabian Peninsula
     "EK": "Emirates", "EY": "Etihad Airways", "QR": "Qatar Airways",
     "FZ": "flydubai", "G9": "Air Arabia", "XY": "flynas", "F3": "flyadeal",
