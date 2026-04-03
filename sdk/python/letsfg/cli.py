@@ -406,9 +406,6 @@ def search(
     def _time_str(leg, pos="dep"):
         return _format_leg_time(leg, pos=pos, include_day_offset=(pos == "arr"))
 
-    def _convert_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
-        return _convert_display_price(amount, from_cur, to_cur, eur_rates)
-
     target_currency = currency.upper()
     try:
         eur_rates = asyncio.run(fetch_rates("EUR"))
@@ -436,7 +433,7 @@ def search(
             stops = str(ob.get("stopovers", 0))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             row = [str(i), f"{cur} {price:.2f}", airlines, _route_str(ob), _time_str(ob, "dep"), _time_str(ob, "arr"), _dur_str(ob), stops]
             if has_return:
                 row.append(_route_str(ib))
@@ -454,7 +451,7 @@ def search(
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             offer_id = o.get("id", "")
             id_str = f"  [{offer_id}]" if offer_id else ""
             if ob_url and ib_url:
@@ -471,7 +468,7 @@ def search(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             ib = o.get("inbound")
@@ -609,9 +606,6 @@ def search_local_cmd(
     def _local_time(leg, pos="dep"):
         return _format_leg_time(leg, pos=pos, include_day_offset=(pos == "arr"))
 
-    def _convert_local_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
-        return _convert_display_price(amount, from_cur, to_cur, eur_rates)
-
     target_currency = currency.upper()
     try:
         eur_rates = asyncio.run(fetch_rates("EUR"))
@@ -635,7 +629,7 @@ def search_local_cmd(
             stops = str(ob.get("stopovers", 0))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             table.add_row(str(i), f"{cur} {price:.2f}", airlines, _local_route(ob),
                           _local_time(ob, "dep"), _local_time(ob, "arr"),
                           _local_dur(ob), stops)
@@ -644,7 +638,7 @@ def search_local_cmd(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             dep = _local_time(ob, "dep")
@@ -781,9 +775,6 @@ def search_cloud_cmd(
     def _cloud_leg_arrive(leg: dict) -> str:
         return _format_leg_time(leg, pos="arr", include_day_offset=True)
 
-    def _convert_cloud_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
-        return _convert_display_price(amount, from_cur, to_cur, eur_rates)
-
     target_currency = currency.upper()
     try:
         eur_rates = asyncio.run(fetch_rates("EUR"))
@@ -807,7 +798,7 @@ def search_cloud_cmd(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             route = _cloud_route(o)
             ob = o.get("outbound") or {}
@@ -828,7 +819,7 @@ def search_cloud_cmd(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             route = _cloud_route(o)
             ob = o.get("outbound") or {}
