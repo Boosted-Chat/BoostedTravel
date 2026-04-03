@@ -203,6 +203,27 @@ def search(
         except (IndexError, TypeError):
             return "-"
 
+    def _convert_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
+        from_cur = (from_cur or "").upper()
+        to_cur = (to_cur or "").upper()
+        if not amount or not from_cur or from_cur == to_cur:
+            return amount, to_cur or from_cur
+
+        # Live rates map currency -> units per EUR.
+        if eur_rates:
+            from_rate = eur_rates.get(from_cur)
+            to_rate = eur_rates.get(to_cur)
+            if from_rate and to_rate:
+                return round((amount / from_rate) * to_rate, 2), to_cur
+
+        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
     if HAS_RICH:
         table = Table(show_header=True, header_style="bold")
         table.add_column("#", style="dim", width=4)
@@ -222,8 +243,9 @@ def search(
             ib = o.get("inbound")
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
             stops = str(ob.get("stopovers", 0))
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
             row = [str(i), f"{cur} {price:.2f}", airlines, _route_str(ob), _time_str(ob, "dep"), _time_str(ob, "arr"), _dur_str(ob), stops]
             if has_return:
                 row.append(_route_str(ib))
@@ -239,8 +261,9 @@ def search(
             ob_url = cond.get("outbound_booking_url", "")
             ib_url = cond.get("inbound_booking_url", "")
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
             offer_id = o.get("id", "")
             id_str = f"  [{offer_id}]" if offer_id else ""
             if ob_url and ib_url:
@@ -255,8 +278,9 @@ def search(
                 print(f"  {i:3d}. {cur} {price:.2f} {airlines}{id_str} — no booking URL")
     else:
         for i, o in enumerate(offers, 1):
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
             ob = o.get("outbound", {})
             ib = o.get("inbound")
@@ -410,6 +434,27 @@ def search_local_cmd(
         except (IndexError, TypeError):
             return "-"
 
+    def _convert_local_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
+        from_cur = (from_cur or "").upper()
+        to_cur = (to_cur or "").upper()
+        if not amount or not from_cur or from_cur == to_cur:
+            return amount, to_cur or from_cur
+
+        # Live rates map currency -> units per EUR.
+        if eur_rates:
+            from_rate = eur_rates.get(from_cur)
+            to_rate = eur_rates.get(to_cur)
+            if from_rate and to_rate:
+                return round((amount / from_rate) * to_rate, 2), to_cur
+
+        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
     if HAS_RICH:
         table = Table(show_header=True, header_style="bold")
         table.add_column("#", style="dim", width=4)
@@ -425,16 +470,18 @@ def search_local_cmd(
             ob = o.get("outbound", {})
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
             stops = str(ob.get("stopovers", 0))
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
             table.add_row(str(i), f"{cur} {price:.2f}", airlines, _local_route(ob),
                           _local_time(ob, "dep"), _local_time(ob, "arr"),
                           _local_dur(ob), stops)
         console.print(table)
     else:
         for i, o in enumerate(offers, 1):
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
             ob = o.get("outbound", {})
             dep = _local_time(ob, "dep")
