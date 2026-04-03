@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from typing import Optional
 
@@ -152,8 +153,6 @@ _AIRLINE_TO_IATA: dict[str, str] = {v.lower(): k for k, v in _IATA_TO_AIRLINE.it
 
 def _fmt_airline(owner: str, airlines: list[str]) -> str:
     """Return 'CODE-FullName' for the Airline display column."""
-    import re as _re
-
     if not owner:
         owner = next((a for a in airlines if a), "")
     if not owner:
@@ -165,7 +164,7 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
         return " + ".join(_fmt_airline(p, []) for p in parts)
 
     # Pure IATA code (2–3 uppercase letters/digits)
-    if _re.fullmatch(r"[A-Z0-9]{2,3}", owner):
+    if re.fullmatch(r"[A-Z0-9]{2,3}", owner):
         code = owner
         primary_name = _IATA_TO_AIRLINE.get(code)
         
@@ -173,7 +172,7 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
             # Fall back to the first entry in the airlines list that differs from the code
             name = next((a for a in airlines if a and a.upper() != code), None)
             # Check if fallback is itself a IATA code
-            if name and _re.fullmatch(r"[A-Z0-9]{2,3}", name):
+            if name and re.fullmatch(r"[A-Z0-9]{2,3}", name):
                 name_mapped = _IATA_TO_AIRLINE.get(name)
                 if name_mapped:
                     return f"{code}-{name_mapped}"
@@ -182,7 +181,7 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
         # primary_name exists for this code
         # Check if airlines list has an entry that's a IATA code we can also map
         secondary = next((a for a in airlines if a and a.upper() != code), None)
-        if secondary and _re.fullmatch(r"[A-Z0-9]{2,3}", secondary):
+        if secondary and re.fullmatch(r"[A-Z0-9]{2,3}", secondary):
             secondary_mapped = _IATA_TO_AIRLINE.get(secondary)
             if secondary_mapped:
                 return f"{code}-{primary_name} + {secondary}-{secondary_mapped}"
@@ -219,6 +218,74 @@ def _final_sort_offers(offers: list[dict], sort: str) -> None:
         offers.sort(key=lambda o: (_offer_duration_seconds(o), _offer_price(o)))
         return
     offers.sort(key=lambda o: (_offer_price(o), _offer_duration_seconds(o)))
+
+
+def _format_leg_time(leg: dict, pos: str = "dep", include_day_offset: bool = False) -> str:
+    """Format a leg timestamp as HH:MM, optionally appending +n for arrival day offsets."""
+    if not leg:
+        return "-"
+
+    segs = leg.get("segments") or []
+    if not segs:
+        return "-"
+
+    if pos == "dep":
+        dt_str = segs[0].get("departure", "")
+    else:
+        dt_str = segs[-1].get("arrival", "")
+
+    if not dt_str:
+        return "-"
+
+    try:
+        time_part = dt_str.split("T")[1][:5] if "T" in dt_str else dt_str[:5]
+    except (IndexError, TypeError):
+        return "-"
+
+    if pos != "arr" or not include_day_offset:
+        return time_part
+
+    dep_str = segs[0].get("departure", "")
+    if not dep_str or "T" not in dep_str or "T" not in dt_str:
+        return time_part
+
+    try:
+        from datetime import datetime
+
+        dep_date = datetime.strptime(dep_str.split("T")[0], "%Y-%m-%d").date()
+        arr_date = datetime.strptime(dt_str.split("T")[0], "%Y-%m-%d").date()
+        day_diff = (arr_date - dep_date).days
+        return f"{time_part}+{day_diff}" if day_diff > 0 else time_part
+    except (ValueError, IndexError, TypeError):
+        return time_part
+
+
+def _convert_display_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
+    """Convert display price when possible; preserve the original currency if conversion fails."""
+    try:
+        numeric_amount = float(amount)
+    except (TypeError, ValueError):
+        return amount, (from_cur or to_cur or "").upper()
+
+    from_cur = (from_cur or "").upper()
+    to_cur = (to_cur or "").upper()
+
+    if not from_cur:
+        return numeric_amount, to_cur
+    if not to_cur or from_cur == to_cur:
+        return numeric_amount, from_cur
+
+    if eur_rates:
+        from_rate = eur_rates.get(from_cur)
+        to_rate = eur_rates.get(to_cur)
+        if from_rate and to_rate:
+            return round((numeric_amount / from_rate) * to_rate, 2), to_cur
+
+    converted = round(_fallback_convert(numeric_amount, from_cur, to_cur), 2)
+    if converted == round(numeric_amount, 2):
+        return numeric_amount, from_cur
+
+    return converted, to_cur
 
 
 # ── Search ────────────────────────────────────────────────────────────────
@@ -336,36 +403,7 @@ def search(
         return "-"
 
     def _time_str(leg, pos="dep"):
-        """Extract departure (first segment) or arrival (last segment) time as HH:MM."""
-        if not leg:
-            return "-"
-        segs = leg.get("segments", [])
-        if not segs:
-            return "-"
-        seg = segs[0] if pos == "dep" else segs[-1]
-        dt_str = seg.get("departure" if pos == "dep" else "arrival", "")
-        if not dt_str:
-            return "-"
-        try:
-            t_part = dt_str.split("T")[1] if "T" in dt_str else dt_str
-            return t_part[:5]
-        except (IndexError, TypeError):
-            return "-"
-
-    def _convert_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
-        from_cur = (from_cur or "").upper()
-        to_cur = (to_cur or "").upper()
-        if not amount or not from_cur or from_cur == to_cur:
-            return amount, to_cur or from_cur
-
-        # Live rates map currency -> units per EUR.
-        if eur_rates:
-            from_rate = eur_rates.get(from_cur)
-            to_rate = eur_rates.get(to_cur)
-            if from_rate and to_rate:
-                return round((amount / from_rate) * to_rate, 2), to_cur
-
-        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+        return _format_leg_time(leg, pos=pos, include_day_offset=(pos == "arr"))
 
     target_currency = currency.upper()
     try:
@@ -394,7 +432,7 @@ def search(
             stops = str(ob.get("stopovers", 0))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             row = [str(i), f"{cur} {price:.2f}", airlines, _route_str(ob), _time_str(ob, "dep"), _time_str(ob, "arr"), _dur_str(ob), stops]
             if has_return:
                 row.append(_route_str(ib))
@@ -412,7 +450,7 @@ def search(
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             offer_id = o.get("id", "")
             id_str = f"  [{offer_id}]" if offer_id else ""
             if ob_url and ib_url:
@@ -429,7 +467,7 @@ def search(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             ib = o.get("inbound")
@@ -565,35 +603,7 @@ def search_local_cmd(
         return "-"
 
     def _local_time(leg, pos="dep"):
-        if not leg:
-            return "-"
-        segs = leg.get("segments", [])
-        if not segs:
-            return "-"
-        seg = segs[0] if pos == "dep" else segs[-1]
-        dt_str = seg.get("departure" if pos == "dep" else "arrival", "")
-        if not dt_str:
-            return "-"
-        try:
-            t_part = dt_str.split("T")[1] if "T" in dt_str else dt_str
-            return t_part[:5]
-        except (IndexError, TypeError):
-            return "-"
-
-    def _convert_local_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
-        from_cur = (from_cur or "").upper()
-        to_cur = (to_cur or "").upper()
-        if not amount or not from_cur or from_cur == to_cur:
-            return amount, to_cur or from_cur
-
-        # Live rates map currency -> units per EUR.
-        if eur_rates:
-            from_rate = eur_rates.get(from_cur)
-            to_rate = eur_rates.get(to_cur)
-            if from_rate and to_rate:
-                return round((amount / from_rate) * to_rate, 2), to_cur
-
-        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+        return _format_leg_time(leg, pos=pos, include_day_offset=(pos == "arr"))
 
     target_currency = currency.upper()
     try:
@@ -618,7 +628,7 @@ def search_local_cmd(
             stops = str(ob.get("stopovers", 0))
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             table.add_row(str(i), f"{cur} {price:.2f}", airlines, _local_route(ob),
                           _local_time(ob, "dep"), _local_time(ob, "arr"),
                           _local_dur(ob), stops)
@@ -627,7 +637,7 @@ def search_local_cmd(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             dep = _local_time(ob, "dep")
@@ -758,20 +768,11 @@ def search_cloud_cmd(
                     stops_val = max(len(segs) - 1, 0)
         return str(stops_val) if stops_val is not None else "-"
 
-    def _convert_cloud_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
-        from_cur = (from_cur or "").upper()
-        to_cur = (to_cur or "").upper()
-        if not amount or not from_cur or from_cur == to_cur:
-            return amount, to_cur or from_cur
+    def _cloud_leg_depart(leg: dict) -> str:
+        return _format_leg_time(leg, pos="dep", include_day_offset=False)
 
-        # Live rates map currency -> units per EUR.
-        if eur_rates:
-            from_rate = eur_rates.get(from_cur)
-            to_rate = eur_rates.get(to_cur)
-            if from_rate and to_rate:
-                return round((amount / from_rate) * to_rate, 2), to_cur
-
-        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+    def _cloud_leg_arrive(leg: dict) -> str:
+        return _format_leg_time(leg, pos="arr", include_day_offset=True)
 
     target_currency = currency.upper()
     try:
@@ -785,6 +786,8 @@ def search_cloud_cmd(
         table.add_column("Price", justify="right", style="green")
         table.add_column("Airline")
         table.add_column("Route")
+        table.add_column("Depart", justify="right")
+        table.add_column("Arrive", justify="right")
         table.add_column("Duration", justify="right")
         table.add_column("Stops", justify="center")
         if has_return:
@@ -794,14 +797,17 @@ def search_cloud_cmd(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             route = _cloud_route(o)
+            ob = o.get("outbound") or {}
+            depart = _cloud_leg_depart(ob)
+            arrive = _cloud_leg_arrive(ob)
             dur = _cloud_duration(o)
             stops = _cloud_stops(o)
             ib = o.get("inbound") or {}
 
-            row = [str(i), f"{cur} {price:.2f}", airlines, route, dur, stops]
+            row = [str(i), f"{cur} {price:.2f}", airlines, route, depart, arrive, dur, stops]
             if has_return:
                 row.append(_cloud_leg_route(ib))
                 row.append(_cloud_leg_duration(ib))
@@ -812,14 +818,17 @@ def search_cloud_cmd(
         for i, o in enumerate(offers, 1):
             raw_price = o.get("price", 0)
             raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             route = _cloud_route(o)
+            ob = o.get("outbound") or {}
+            depart = _cloud_leg_depart(ob)
+            arrive = _cloud_leg_arrive(ob)
             dur = _cloud_duration(o)
             stops = _cloud_stops(o)
             ib = o.get("inbound") or {}
             ret = f"  ret:{_cloud_leg_route(ib)} {_cloud_leg_duration(ib)}" if has_return and ib else ""
-            print(f"  {i:3d}. {cur} {price:.2f}  {airlines}  {route}  {dur}  stops:{stops}{ret}")
+            print(f"  {i:3d}. {cur} {price:.2f}  {airlines}  {route}  {depart}→{arrive}  {dur}  stops:{stops}{ret}")
 
     print()
 # ── Star (Link GitHub) ─────────────────────────────────────────────────────

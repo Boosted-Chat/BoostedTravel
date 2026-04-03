@@ -42,6 +42,7 @@ _FALLBACK_VS_EUR: dict[str, float] = {
     "BRL": 6.2,
     "THB": 37.5,
     "ZAR": 20.5,
+    "KWD": 0.33,
     "AED": 3.97,
     "SAR": 4.05,
     "KES": 140.0,
