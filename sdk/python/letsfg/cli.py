@@ -15,6 +15,7 @@ Usage (booking — requires API key):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -30,6 +31,7 @@ except ImportError:
     HAS_RICH = False
 
 from letsfg.client import LetsFG, LetsFGError
+from letsfg.connectors.currency import fetch_rates, _fallback_convert
 
 app = typer.Typer(
     name="letsfg",
@@ -65,6 +67,158 @@ def _err(msg: str):
 def _json_out(data):
     """Print JSON output for machine consumption."""
     print(json.dumps(data, indent=2, default=str))
+
+
+# ── Airline display helpers ───────────────────────────────────────────────
+
+_IATA_TO_AIRLINE: dict[str, str] = {
+    # Alternative Airlines
+    "W2": "FlexFlight",
+    # Middle East / Arabian Peninsula
+    "EK": "Emirates", "EY": "Etihad Airways", "QR": "Qatar Airways",
+    "FZ": "flydubai", "G9": "Air Arabia", "XY": "flynas", "F3": "flyadeal",
+    "WY": "Oman Air", "OV": "SalamAir", "RJ": "Royal Jordanian",
+    "KU": "Kuwait Airways", "ME": "Middle East Airlines", "SV": "Saudia",
+    # Europe – full-service
+    "BA": "British Airways", "AF": "Air France", "LH": "Lufthansa",
+    "KL": "KLM", "LX": "Swiss", "OS": "Austrian Airlines",
+    "SN": "Brussels Airlines", "AY": "Finnair", "SK": "SAS",
+    "TP": "TAP Air Portugal", "IB": "Iberia", "LY": "El Al",
+    "TK": "Turkish Airlines", "AT": "Royal Air Maroc", "A3": "Aegean Airlines",
+    "OA": "Olympic Air", "GQ": "SKY express", "EI": "Aer Lingus",
+    "JU": "Air Serbia", "BT": "airBaltic", "QS": "Smartwings",
+    "S4": "Azores Airlines", "CY": "Cyprus Airways", "VS": "Virgin Atlantic",
+    "DE": "Condor", "4Y": "Discover Airlines", "J2": "Azerbaijan Airlines",
+    # Europe – LCC
+    "FR": "Ryanair", "W6": "Wizz Air", "U2": "easyJet", "VY": "Vueling",
+    "EW": "Eurowings", "HV": "Transavia", "PC": "Pegasus", "DY": "Norwegian",
+    "I2": "Iberia Express", "V7": "Volotea", "LS": "Jet2", "FI": "Icelandair",
+    "XQ": "SunExpress",
+    # North America
+    "AA": "American Airlines", "DL": "Delta Air Lines", "UA": "United Airlines",
+    "WN": "Southwest Airlines", "AS": "Alaska Airlines", "B6": "JetBlue Airways",
+    "HA": "Hawaiian Airlines", "F9": "Frontier Airlines", "NK": "Spirit Airlines",
+    "G4": "Allegiant", "XP": "Avelo Airlines", "MX": "Breeze Airways",
+    "SY": "Sun Country Airlines",
+    # Canada
+    "AC": "Air Canada", "WS": "WestJet", "PD": "Porter Airlines",
+    "F8": "Flair Airlines", "TS": "Air Transat",
+    # Latin America
+    "LA": "LATAM Airlines", "AV": "Avianca", "CM": "Copa Airlines",
+    "G3": "GOL", "AD": "Azul", "AR": "Aerolíneas Argentinas",
+    "VB": "VivaAerobus", "Y4": "Volaris", "DM": "Arajet", "H2": "Sky Airline",
+    "P5": "Wingo", "JA": "JetSMART", "FO": "Flybondi",
+    # Africa
+    "SA": "South African Airways", "FA": "FlySafair", "4Z": "Airlink", "5Z": "CemAir", "GE": "LIFT",
+    "ET": "Ethiopian Airlines", "KQ": "Kenya Airways",
+    "WB": "RwandAir", "P4": "Air Peace",
+    # Asia – full-service
+    "SQ": "Singapore Airlines", "CX": "Cathay Pacific", "NH": "ANA",
+    "JL": "Japan Airlines", "KE": "Korean Air", "OZ": "Asiana Airlines",
+    "MH": "Malaysia Airlines", "TG": "Thai Airways", "GA": "Garuda Indonesia",
+    "AI": "Air India", "PK": "PIA", "UL": "SriLankan Airlines",
+    "VN": "Vietnam Airlines", "PR": "Philippine Airlines",
+    "CA": "Air China", "MU": "China Eastern Airlines",
+    "CZ": "China Southern Airlines", "CI": "China Airlines",
+    "HU": "Hainan Airlines", "BR": "EVA Air", "JX": "Starlux Airlines",
+    "UX": "Air Europa",
+    # Asia – LCC
+    "AK": "AirAsia", "FD": "Thai AirAsia", "VJ": "VietJet Air",
+    "TR": "Scoot", "MM": "Peach Aviation", "ZG": "ZIPAIR",
+    "7C": "Jeju Air", "TW": "T'way Air", "QG": "Citilink",
+    "OD": "Batik Air", "IU": "Super Air Jet", "8B": "TransNusa",
+    "QP": "Akasa Air", "IX": "Air India Express", "6E": "IndiGo",
+    "SG": "SpiceJet", "PG": "Bangkok Airways", "5J": "Cebu Pacific",
+    "DD": "Nok Air", "8L": "Lucky Air", "9C": "Spring Airlines", "AQ": "9 Air",
+    # Pacific / Oceania
+    "QF": "Qantas", "VA": "Virgin Australia", "ZL": "Rex Airlines",
+    "NZ": "Air New Zealand", "FJ": "Fiji Airways", "PX": "Air Niugini",
+    "TL": "Airnorth", "PH": "Samoa Airways", "CG": "PNG Air",
+    "IE": "Solomon Airlines", "JQ": "Jetstar",
+    # South / Southeast Asia
+    "BS": "US-Bangla Airlines", "BG": "Biman Bangladesh Airlines",
+    # Indian Ocean / Pacific islands
+    "SB": "Aircalin", "TN": "Air Tahiti Nui", "NF": "Air Vanuatu",
+    "HM": "Air Seychelles", "MK": "Air Mauritius", "GL": "Air Greenland",
+    # Caribbean
+    "BW": "Caribbean Airlines",
+    # Central Asia
+    "FS": "FlyArystan",
+    # Eastern Europe / Other
+    "LO": "LOT Polish Airlines", "AZ": "ITA Airways",
+}
+_AIRLINE_TO_IATA: dict[str, str] = {v.lower(): k for k, v in _IATA_TO_AIRLINE.items()}
+
+
+def _fmt_airline(owner: str, airlines: list[str]) -> str:
+    """Return 'CODE-FullName' for the Airline display column."""
+    import re as _re
+
+    if not owner:
+        owner = next((a for a in airlines if a), "")
+    if not owner:
+        return "-"
+
+    # Combo offer — e.g. "Ryanair|Wizz Air" produced by combo_engine
+    if "|" in owner:
+        parts = [p.strip() for p in owner.split("|") if p.strip()]
+        return " + ".join(_fmt_airline(p, []) for p in parts)
+
+    # Pure IATA code (2–3 uppercase letters/digits)
+    if _re.fullmatch(r"[A-Z0-9]{2,3}", owner):
+        code = owner
+        primary_name = _IATA_TO_AIRLINE.get(code)
+        
+        if not primary_name:
+            # Fall back to the first entry in the airlines list that differs from the code
+            name = next((a for a in airlines if a and a.upper() != code), None)
+            # Check if fallback is itself a IATA code
+            if name and _re.fullmatch(r"[A-Z0-9]{2,3}", name):
+                name_mapped = _IATA_TO_AIRLINE.get(name)
+                if name_mapped:
+                    return f"{code}-{name_mapped}"
+            return f"{code}-{name}" if name else code
+        
+        # primary_name exists for this code
+        # Check if airlines list has an entry that's a IATA code we can also map
+        secondary = next((a for a in airlines if a and a.upper() != code), None)
+        if secondary and _re.fullmatch(r"[A-Z0-9]{2,3}", secondary):
+            secondary_mapped = _IATA_TO_AIRLINE.get(secondary)
+            if secondary_mapped:
+                return f"{code}-{primary_name} + {secondary}-{secondary_mapped}"
+        
+        return f"{code}-{primary_name}"
+
+    # Full airline name — attempt reverse lookup for its IATA code
+    code = _AIRLINE_TO_IATA.get(owner.lower())
+    return f"{code}-{owner}" if code else owner
+
+
+def _offer_price(offer: dict) -> float:
+    """Extract comparable offer price; missing/invalid values sort last."""
+    try:
+        return float(offer.get("price", float("inf")))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _offer_duration_seconds(offer: dict) -> int:
+    """Extract comparable offer duration; missing/invalid values sort last."""
+    raw = offer.get("duration_seconds")
+    if raw is None:
+        raw = (offer.get("outbound") or {}).get("total_duration_seconds")
+    try:
+        return int(raw) if raw is not None else int(1e18)
+    except (TypeError, ValueError):
+        return int(1e18)
+
+
+def _final_sort_offers(offers: list[dict], sort: str) -> None:
+    """Apply deterministic client-side sorting after merged results are fetched."""
+    if sort == "duration":
+        offers.sort(key=lambda o: (_offer_duration_seconds(o), _offer_price(o)))
+        return
+    offers.sort(key=lambda o: (_offer_price(o), _offer_duration_seconds(o)))
 
 
 # ── Search ────────────────────────────────────────────────────────────────
@@ -141,11 +295,8 @@ def search(
     offers = result.get("offers", [])
     total = result.get("total_results", len(offers))
 
-    # Sort
-    if sort == "price":
-        offers.sort(key=lambda o: o.get("price", float("inf")))
-    elif sort == "duration":
-        offers.sort(key=lambda o: (o.get("outbound", {}).get("total_duration_seconds") or float("inf")))
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(offers, sort)
 
     offers = offers[:limit]
 
@@ -201,6 +352,27 @@ def search(
         except (IndexError, TypeError):
             return "-"
 
+    def _convert_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
+        from_cur = (from_cur or "").upper()
+        to_cur = (to_cur or "").upper()
+        if not amount or not from_cur or from_cur == to_cur:
+            return amount, to_cur or from_cur
+
+        # Live rates map currency -> units per EUR.
+        if eur_rates:
+            from_rate = eur_rates.get(from_cur)
+            to_rate = eur_rates.get(to_cur)
+            if from_rate and to_rate:
+                return round((amount / from_rate) * to_rate, 2), to_cur
+
+        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
     if HAS_RICH:
         table = Table(show_header=True, header_style="bold")
         table.add_column("#", style="dim", width=4)
@@ -218,10 +390,11 @@ def search(
         for i, o in enumerate(offers, 1):
             ob = o.get("outbound", {})
             ib = o.get("inbound")
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             stops = str(ob.get("stopovers", 0))
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
             row = [str(i), f"{cur} {price:.2f}", airlines, _route_str(ob), _time_str(ob, "dep"), _time_str(ob, "arr"), _dur_str(ob), stops]
             if has_return:
                 row.append(_route_str(ib))
@@ -236,9 +409,10 @@ def search(
             cond = o.get("conditions") or {}
             ob_url = cond.get("outbound_booking_url", "")
             ib_url = cond.get("inbound_booking_url", "")
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
             offer_id = o.get("id", "")
             id_str = f"  [{offer_id}]" if offer_id else ""
             if ob_url and ib_url:
@@ -253,9 +427,10 @@ def search(
                 print(f"  {i:3d}. {cur} {price:.2f} {airlines}{id_str} — no booking URL")
     else:
         for i, o in enumerate(offers, 1):
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_price(raw_price, raw_currency, target_currency, eur_rates)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             ib = o.get("inbound")
             dep = _time_str(ob, "dep")
@@ -352,11 +527,8 @@ def search_local_cmd(
     offers = result.get("offers", [])
     total = result.get("total_results", len(offers))
 
-    # Sort
-    if sort == "price":
-        offers.sort(key=lambda o: o.get("price", float("inf")))
-    elif sort == "duration":
-        offers.sort(key=lambda o: (o.get("outbound", {}).get("total_duration_seconds") or float("inf")))
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(offers, sort)
 
     offers = offers[:limit]
 
@@ -408,6 +580,27 @@ def search_local_cmd(
         except (IndexError, TypeError):
             return "-"
 
+    def _convert_local_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
+        from_cur = (from_cur or "").upper()
+        to_cur = (to_cur or "").upper()
+        if not amount or not from_cur or from_cur == to_cur:
+            return amount, to_cur or from_cur
+
+        # Live rates map currency -> units per EUR.
+        if eur_rates:
+            from_rate = eur_rates.get(from_cur)
+            to_rate = eur_rates.get(to_cur)
+            if from_rate and to_rate:
+                return round((amount / from_rate) * to_rate, 2), to_cur
+
+        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
     if HAS_RICH:
         table = Table(show_header=True, header_style="bold")
         table.add_column("#", style="dim", width=4)
@@ -421,19 +614,21 @@ def search_local_cmd(
 
         for i, o in enumerate(offers, 1):
             ob = o.get("outbound", {})
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             stops = str(ob.get("stopovers", 0))
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
             table.add_row(str(i), f"{cur} {price:.2f}", airlines, _local_route(ob),
                           _local_time(ob, "dep"), _local_time(ob, "arr"),
                           _local_dur(ob), stops)
         console.print(table)
     else:
         for i, o in enumerate(offers, 1):
-            price = o.get("price", 0)
-            cur = o.get("currency", currency)
-            airlines = o.get("owner_airline") or ",".join(o.get("airlines", []))
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_local_price(raw_price, raw_currency, target_currency, eur_rates)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             dep = _local_time(ob, "dep")
             arr = _local_time(ob, "arr")
@@ -442,6 +637,191 @@ def search_local_cmd(
     print()
 
 
+# ── Search Cloud ───────────────────────────────────────────────────────────
+
+@app.command("search-cloud")
+def search_cloud_cmd(
+    origin: str = typer.Argument(..., help="Departure IATA code (e.g., GDN, LON, JFK)"),
+    destination: str = typer.Argument(..., help="Arrival IATA code (e.g., BER, BCN, LAX)"),
+    date: str = typer.Argument(..., help="Departure date YYYY-MM-DD"),
+    return_date: Optional[str] = typer.Option(None, "--return", "-r", help="Return date for round-trip"),
+    adults: int = typer.Option(1, "--adults", "-a", help="Number of adults"),
+    children: int = typer.Option(0, "--children", help="Number of children"),
+    infants: int = typer.Option(0, "--infants", help="Number of infants"),
+    cabin: Optional[str] = typer.Option(None, "--cabin", "-c", help="M=economy W=premium C=business F=first"),
+    currency: str = typer.Option("EUR", "--currency", help="Currency code"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max results"),
+    sort: str = typer.Option("price", "--sort", help="Sort: price or duration"),
+    max_stops: Optional[int] = typer.Option(None, "--max-stops", "-s", help="Max stopovers (0=direct only, 1, 2). Default: backend default"),
+    direct: bool = typer.Option(False, "--direct", "-d", help="Direct flights only (shortcut for --max-stops 0)"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
+    base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
+):
+    """Search flights via cloud backend only (Amadeus, Duffel, Sabre, Travelport, etc.)."""
+    bt = _get_client(api_key, base_url)
+
+    # --direct is a shortcut for --max-stops 0
+    effective_max_stops = 0 if direct else max_stops
+
+    params = {
+        "origin": origin,
+        "destination": destination,
+        "date_from": date,
+        "adults": adults,
+        "children": children,
+        "infants": infants,
+        "currency": currency,
+        "limit": limit,
+        "sort": sort,
+    }
+    if return_date:
+        params["date_to"] = return_date
+    if cabin:
+        params["cabin"] = cabin
+    if effective_max_stops is not None:
+        params["max_stops"] = effective_max_stops
+
+    try:
+        data = bt._post("/api/v1/flights/search", params)
+    except LetsFGError as e:
+        _err(f"Cloud search failed: {e.message}")
+
+    offers = data.get("offers", [])
+    total = data.get("total_results", len(offers))
+
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(offers, sort)
+    offers = offers[:limit]
+
+    if output_json:
+        _json_out({"total_results": total, "offers": offers})
+        return
+
+    if not offers:
+        print(f"No cloud flights found for {origin} → {destination} on {date}")
+        return
+
+    has_return = any(o.get("inbound") for o in offers)
+    trip_label = f"{origin} ↔ {destination}" if return_date else f"{origin} → {destination}"
+    date_label = f"{date} → {return_date}" if return_date else date
+    print(f"\n  {total} offers  |  {trip_label}  |  {date_label}  |  CLOUD only")
+
+    def _cloud_leg_route(leg: dict) -> str:
+        if not leg:
+            return "-"
+        route = leg.get("route_str")
+        if route:
+            return route
+        segs = leg.get("segments") or []
+        if not segs:
+            return "-"
+        codes = [segs[0].get("origin", "")]
+        for seg in segs:
+            codes.append(seg.get("destination", ""))
+        codes = [c for c in codes if c]
+        return "→".join(codes) if codes else "-"
+
+    def _cloud_route(offer: dict) -> str:
+        route = offer.get("route")
+        if route:
+            return route
+        ob = offer.get("outbound") or {}
+        return _cloud_leg_route(ob)
+
+    def _cloud_leg_duration(leg: dict) -> str:
+        if not leg:
+            return "-"
+        dur_s = leg.get("total_duration_seconds")
+        if dur_s:
+            h, m = divmod(int(dur_s) // 60, 60)
+            return f"{h}h {m:02d}m"
+        return "-"
+
+    def _cloud_duration(offer: dict) -> str:
+        dur_s = offer.get("duration_seconds")
+        if not dur_s:
+            dur_s = (offer.get("outbound") or {}).get("total_duration_seconds")
+        if dur_s:
+            h, m = divmod(int(dur_s) // 60, 60)
+            return f"{h}h {m:02d}m"
+        return "-"
+
+    def _cloud_stops(offer: dict) -> str:
+        stops_val = offer.get("stopovers")
+        if stops_val is None:
+            ob = offer.get("outbound") or {}
+            stops_val = ob.get("stopovers")
+            if stops_val is None:
+                segs = ob.get("segments") or []
+                if segs:
+                    stops_val = max(len(segs) - 1, 0)
+        return str(stops_val) if stops_val is not None else "-"
+
+    def _convert_cloud_price(amount: float, from_cur: str, to_cur: str, eur_rates: dict[str, float]) -> tuple[float, str]:
+        from_cur = (from_cur or "").upper()
+        to_cur = (to_cur or "").upper()
+        if not amount or not from_cur or from_cur == to_cur:
+            return amount, to_cur or from_cur
+
+        # Live rates map currency -> units per EUR.
+        if eur_rates:
+            from_rate = eur_rates.get(from_cur)
+            to_rate = eur_rates.get(to_cur)
+            if from_rate and to_rate:
+                return round((amount / from_rate) * to_rate, 2), to_cur
+
+        return round(_fallback_convert(amount, from_cur, to_cur), 2), to_cur
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
+    if HAS_RICH:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Price", justify="right", style="green")
+        table.add_column("Airline")
+        table.add_column("Route")
+        table.add_column("Duration", justify="right")
+        table.add_column("Stops", justify="center")
+        if has_return:
+            table.add_column("Return")
+            table.add_column("Ret Dur", justify="right")
+
+        for i, o in enumerate(offers, 1):
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
+            route = _cloud_route(o)
+            dur = _cloud_duration(o)
+            stops = _cloud_stops(o)
+            ib = o.get("inbound") or {}
+
+            row = [str(i), f"{cur} {price:.2f}", airlines, route, dur, stops]
+            if has_return:
+                row.append(_cloud_leg_route(ib))
+                row.append(_cloud_leg_duration(ib))
+
+            table.add_row(*row)
+        console.print(table)
+    else:
+        for i, o in enumerate(offers, 1):
+            raw_price = o.get("price", 0)
+            raw_currency = (o.get("currency", currency) or currency).upper()
+            price, cur = _convert_cloud_price(raw_price, raw_currency, target_currency, eur_rates)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
+            route = _cloud_route(o)
+            dur = _cloud_duration(o)
+            stops = _cloud_stops(o)
+            ib = o.get("inbound") or {}
+            ret = f"  ret:{_cloud_leg_route(ib)} {_cloud_leg_duration(ib)}" if has_return and ib else ""
+            print(f"  {i:3d}. {cur} {price:.2f}  {airlines}  {route}  {dur}  stops:{stops}{ret}")
+
+    print()
 # ── Star (Link GitHub) ─────────────────────────────────────────────────────
 
 @app.command()
