@@ -31,7 +31,7 @@ try:
 except ImportError:
     HAS_RICH = False
 
-from letsfg.client import LetsFG, LetsFGError
+from letsfg.client import LetsFG, LetsFGError, AuthenticationError
 from letsfg.connectors.currency import fetch_rates, _fallback_convert
 
 app = typer.Typer(
@@ -49,13 +49,38 @@ console = Console() if HAS_RICH else None
 
 
 def _get_client(api_key: str | None = None, base_url: str | None = None) -> LetsFG:
+    """Get a LetsFG client.
+
+    Key resolution order: explicit arg > env var > config file > auto-register.
+    """
     url = base_url or os.environ.get("LETSFG_BASE_URL")
-    # LetsFG() handles key resolution: explicit > env > config file > auto-register
     bt = LetsFG(api_key=api_key, base_url=url, client_type="cli")
     if not bt.api_key:
         _err("Could not connect to LetsFG API for auto-registration.\n"
              "You can register manually: letsfg register --name my-agent --email you@example.com")
     return bt
+
+
+def _handle_auth_error(e: LetsFGError) -> None:
+    """Print helpful message when API key is invalid."""
+    from letsfg.client import _saved_api_key
+
+    env_key = os.environ.get("LETSFG_API_KEY") or os.environ.get("BOOSTEDTRAVEL_API_KEY")
+    config_key = _saved_api_key()
+
+    msg = str(e.message)
+    if env_key and config_key and env_key != config_key:
+        msg += ("\n\nNote: You have LETSFG_API_KEY set in your environment, but a different key\n"
+                "      is saved in your config file. This may be a stale env var.\n"
+                "      Try: unset LETSFG_API_KEY (or $env:LETSFG_API_KEY = '' on PowerShell)")
+    elif env_key:
+        msg += ("\n\nNote: You have LETSFG_API_KEY set in your environment.\n"
+                "      If you recently re-registered, this may be a stale key.\n"
+                "      Try: unset LETSFG_API_KEY")
+    else:
+        msg += "\n\nTry: letsfg register --name my-agent --email you@example.com"
+
+    _err(msg)
 
 
 def _err(msg: str):
@@ -922,13 +947,14 @@ def search_cloud_cmd(
             print(f"  {i:3d}. {cur} {price:.2f}  {airlines}  {route}  {depart}→{arrive}  {dur}  stops:{stops}{ret}")
 
     print()
+
 # ── Star (Link GitHub) ─────────────────────────────────────────────────────
 
 @app.command()
 def star(
     github: str = typer.Option(..., "--github", "-g", help="Your GitHub username"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
-    api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", "-k", help="API key (defaults to saved key)"),
     base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
 ):
     """Link your GitHub account — star the repo for FREE unlimited access.
@@ -938,9 +964,18 @@ def star(
 
     That's it — no registration needed, we handle it automatically.
     """
+    # For star command, prefer config file key over env var (avoids stale env issues)
+    from letsfg.client import _saved_api_key
+    if not api_key:
+        api_key = _saved_api_key()
+    if not api_key:
+        api_key = os.environ.get("LETSFG_API_KEY") or os.environ.get("BOOSTEDTRAVEL_API_KEY")
+
     bt = _get_client(api_key, base_url)
     try:
         result = bt.link_github(github)
+    except AuthenticationError as e:
+        _handle_auth_error(e)
     except LetsFGError as e:
         _err(f"{e.message}")
 
@@ -1117,10 +1152,12 @@ def register(
     except LetsFGError as e:
         _err(f"{e.message}")
 
+    new_key = result.get("api_key", "")
+
     # Save the key to config file so it persists
     from letsfg.client import _save_config
     _save_config({
-        "api_key": result.get("api_key", ""),
+        "api_key": new_key,
         "agent_id": result.get("agent_id", ""),
         "auto_registered": False,
     })
@@ -1131,12 +1168,103 @@ def register(
 
     print(f"\n  ✓ Agent registered!")
     print(f"    Agent ID: {result.get('agent_id')}")
-    print(f"    API Key:  {result.get('api_key')}")
-    print(f"\n    Key saved to config. You can also export it:")
-    print(f"    export LETSFG_API_KEY={result.get('api_key')}")
+    print(f"    API Key:  {new_key}")
+    print(f"\n    Key saved to config.")
+
+    # Warn if there's an old env var that will override the new key
+    env_key = os.environ.get("LETSFG_API_KEY") or os.environ.get("BOOSTEDTRAVEL_API_KEY")
+    if env_key and env_key != new_key:
+        print(f"\n  ⚠️  WARNING: You have an old API key in your environment variable.")
+        print(f"     The CLI will use the OLD key unless you clear it:")
+        print(f"     PowerShell:  $env:LETSFG_API_KEY = ''")
+        print(f"     Bash/Zsh:    unset LETSFG_API_KEY")
+
     print(f"\n    Next: Star the repo and link your GitHub:")
     print(f"    1. Star https://github.com/LetsFG/LetsFG")
     print(f"    2. letsfg star --github <your-github-username>\n")
+
+
+# ── Recover ────────────────────────────────────────────────────────────────
+
+@app.command()
+def recover(
+    email: str = typer.Option(..., "--email", "-e", help="Your registered email"),
+    code: str = typer.Option("", "--code", "-c", help="6-digit recovery code (if you have one)"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
+    base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
+):
+    """Recover your API key via email verification.
+
+    Lost your API key? Run this with your email to get a recovery code,
+    then run again with the code to get a new key.
+
+    Step 1: Request code
+        letsfg recover --email you@example.com
+
+    Step 2: Verify code (check your email)
+        letsfg recover --email you@example.com --code 123456
+    """
+    import urllib.request
+    import urllib.error
+
+    url = base_url or os.environ.get("LETSFG_BASE_URL") or "https://api.letsfg.co"
+
+    if code:
+        # Step 2: Verify code and get new key
+        endpoint = f"{url}/api/v1/agents/recover/verify"
+        body = json.dumps({"email": email, "code": code}).encode()
+    else:
+        # Step 1: Request recovery code
+        endpoint = f"{url}/api/v1/agents/recover"
+        body = json.dumps({"email": email}).encode()
+
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "letsfg-cli/1.7.1",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            error_body = json.loads(e.read().decode())
+            _err(error_body.get("detail", str(e)))
+        except Exception:
+            _err(str(e))
+    except Exception as e:
+        _err(str(e))
+
+    if output_json:
+        _json_out(result)
+        return
+
+    status = result.get("status", "")
+    if status == "sent":
+        print(f"\n  ✓ Recovery code sent!")
+        print(f"    Check your email ({email}) for a 6-digit code.")
+        print(f"\n    Then run:")
+        print(f"    letsfg recover --email {email} --code <your-code>\n")
+    elif status == "success":
+        new_key = result.get("api_key", "")
+        # Save the new key
+        from letsfg.client import _save_config
+        _save_config({
+            "api_key": new_key,
+            "agent_id": result.get("agent_id", ""),
+            "auto_registered": False,
+        })
+        print(f"\n  ✓ API key recovered!")
+        print(f"    Agent ID: {result.get('agent_id')}")
+        print(f"    API Key:  {new_key}")
+        print(f"\n    Key saved. Your previous key is now invalid.\n")
+    else:
+        print(f"\n  {result.get('message', 'Unknown response')}\n")
 
 
 # ── Setup Payment ──────────────────────────────────────────────────────────
@@ -1188,6 +1316,9 @@ def me(
             "agent_name": profile.agent_name,
             "email": profile.email,
             "tier": profile.tier,
+            "github_username": profile.github_username,
+            "github_star_verified": profile.github_star_verified,
+            "access_granted": profile.access_granted,
             "payment_ready": profile.payment_ready,
             "usage": profile.usage,
         })
@@ -1199,11 +1330,13 @@ def me(
     gh = getattr(profile, 'github_username', '') or ''
     star_ok = getattr(profile, 'github_star_verified', False)
     if star_ok:
-        print(f"  GitHub:  ✓ {gh} (star verified — unlimited access)")
+        print(f"  GitHub:  ✓ {gh} (star verified)")
     elif gh:
-        print(f"  GitHub:  {gh} (star not verified)")
+        print(f"  GitHub:  {gh} (star not yet verified — run: letsfg star --github {gh})")
     else:
         print(f"  GitHub:  Not linked — run: letsfg star --github <username>")
+    access = getattr(profile, 'access_granted', False)
+    print(f"  Access:  {'✓ Granted (search, unlock, book)' if access else '✗ Not granted — star the repo to unlock'}")
     print(f"  Payment: {'✓ Ready' if profile.payment_ready else '—'}")
     u = profile.usage
     print(f"  Searches: {u.get('total_searches', 0)}")

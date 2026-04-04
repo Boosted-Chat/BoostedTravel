@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 import httpx
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
@@ -33,6 +33,10 @@ from models.flights import (
 logger = logging.getLogger(__name__)
 
 KIWI_GRAPHQL_URL = "https://api.skypicker.com/umbrella/v2/graphql"
+KIWI_LOCATIONS_URL = "https://api.skypicker.com/locations"
+
+# Cache IATA → Kiwi city slug (e.g. LHR → "london-united-kingdom")
+_slug_cache: dict[str, str] = {}
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -167,10 +171,12 @@ class KiwiConnectorClient:
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
+            from .browser import get_httpx_proxy_url
             self._http = httpx.AsyncClient(
                 timeout=self.timeout,
                 headers=_HEADERS,
                 follow_redirects=True,
+                proxy=get_httpx_proxy_url(),
             )
         return self._http
 
@@ -188,12 +194,80 @@ class KiwiConnectorClient:
     def _guess_market(self, currency: str) -> str:
         return self._CURRENCY_MARKET.get(currency.upper(), "gb")
 
-    def _location_id(self, code: str) -> str:
-        """Convert IATA code to Kiwi location ID."""
+    async def _resolve_slug(self, iata: str) -> str:
+        """Resolve an IATA code to a Kiwi city slug via their locations API.
+
+        Returns e.g. 'london-united-kingdom' for LHR, cached after first lookup.
+        Falls back to empty string on failure.
+        """
+        iata = iata.strip().upper()
+        if iata in _slug_cache:
+            return _slug_cache[iata]
+        try:
+            client = await self._client()
+            resp = await client.get(
+                KIWI_LOCATIONS_URL,
+                params={"term": iata, "locale": "en-US", "location_types": "airport", "limit": "1", "active_only": "true"},
+                headers={"Referer": "https://www.kiwi.com/", "Accept": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                locs = data.get("locations", [])
+                if locs:
+                    slug = locs[0].get("city", {}).get("slug", "")
+                    if slug:
+                        _slug_cache[iata] = slug
+                        return slug
+        except Exception as e:
+            logger.debug("Kiwi slug resolution failed for %s: %s", iata, e)
+        _slug_cache[iata] = ""
+        return ""
+
+    # IATA city codes that map to multiple airports.
+    # Kiwi's GraphQL needs individual airport IDs; city codes like "LON"
+    # are NOT valid Station:airport: values and silently return 0 results.
+    _CITY_AIRPORTS: dict[str, list[str]] = {
+        "LON": ["LHR", "LGW", "STN", "LCY", "LTN", "SEN"],
+        "NYC": ["JFK", "LGA", "EWR"],
+        "PAR": ["CDG", "ORY"],
+        "MIL": ["MXP", "LIN", "BGY"],
+        "BER": ["BER"],
+        "TYO": ["NRT", "HND"],
+        "OSA": ["KIX", "ITM"],
+        "MOW": ["SVO", "DME", "VKO"],
+        "BUE": ["EZE", "AEP"],
+        "SAO": ["GRU", "CGH", "VCP"],
+        "WAS": ["IAD", "DCA", "BWI"],
+        "CHI": ["ORD", "MDW"],
+        "SEL": ["ICN", "GMP"],
+        "BJS": ["PEK", "PKX"],
+        "SHA": ["PVG", "SHA"],  # Shanghai city code
+        "DEL": ["DEL"],
+        "BOM": ["BOM"],
+        "STO": ["ARN", "BMA", "NYO"],
+        "ROM": ["FCO", "CIA"],
+        "DXB": ["DXB", "DWC"],
+        "IST": ["IST", "SAW"],
+        "BKK": ["BKK", "DMK"],
+        "JKT": ["CGK", "HLP"],
+        "KUL": ["KUL", "SZB"],
+        "MEX": ["MEX", "NLU"],
+        "YTO": ["YYZ", "YTZ", "YHM"],
+        "YMQ": ["YUL", "YMX"],
+    }
+
+    def _location_ids(self, code: str) -> list[str]:
+        """Convert IATA code to list of Kiwi location IDs.
+
+        City codes (LON, NYC, etc.) are expanded to their constituent airports
+        because Kiwi's GraphQL only accepts airport-level Station IDs.
+        """
         code = code.strip().upper()
+        if code in self._CITY_AIRPORTS:
+            return [f"Station:airport:{a}" for a in self._CITY_AIRPORTS[code]]
         if len(code) == 3 and code.isalpha():
-            return f"Station:airport:{code}"
-        return code
+            return [f"Station:airport:{code}"]
+        return [code]
 
     def _build_variables(self, req: FlightSearchRequest, is_return: bool) -> dict:
         """Build GraphQL variables from FlightSearchRequest."""
@@ -201,8 +275,8 @@ class KiwiConnectorClient:
         date_end = f"{req.date_from.isoformat()}T23:59:59"
 
         itinerary: dict[str, Any] = {
-            "source": {"ids": [self._location_id(req.origin)]},
-            "destination": {"ids": [self._location_id(req.destination)]},
+            "source": {"ids": self._location_ids(req.origin)},
+            "destination": {"ids": self._location_ids(req.destination)},
             "outboundDepartureDate": {"start": date_str, "end": date_end},
         }
 
@@ -236,6 +310,7 @@ class KiwiConnectorClient:
                 "enableSelfTransfer": True,
                 "enableThrowAwayTicketing": True,
                 "enableTrueHiddenCity": True,
+                **({"maxStopsCount": req.max_stopovers} if req.max_stopovers is not None else {}),
             },
             "options": {
                 "currency": req.currency.lower(),
@@ -303,9 +378,13 @@ class KiwiConnectorClient:
         )
 
         offers = []
+        # Resolve Kiwi city slugs for booking URLs (one call per unique IATA)
+        origin_slug = await self._resolve_slug(req.origin)
+        dest_slug = await self._resolve_slug(req.destination)
+
         for itin in itineraries:
             try:
-                offer = self._parse_itinerary(itin, req, is_return)
+                offer = self._parse_itinerary(itin, req, is_return, origin_slug, dest_slug)
                 if offer:
                     offers.append(offer)
             except Exception as e:
@@ -326,7 +405,8 @@ class KiwiConnectorClient:
         )
 
     def _parse_itinerary(
-        self, itin: dict, req: FlightSearchRequest, is_return: bool
+        self, itin: dict, req: FlightSearchRequest, is_return: bool,
+        origin_slug: str = "", dest_slug: str = "",
     ) -> Optional[FlightOffer]:
         """Parse a Kiwi.com GraphQL itinerary into a FlightOffer."""
         price = float(itin.get("price", {}).get("amount", 0))
@@ -353,12 +433,6 @@ class KiwiConnectorClient:
         all_segs = outbound.segments + (inbound.segments if inbound else [])
         airlines = list({s.airline for s in all_segs if s.airline})
 
-        # Extract booking URL
-        booking_url = ""
-        booking_options = itin.get("bookingOptions", {}).get("edges", [])
-        if booking_options:
-            booking_url = booking_options[0].get("node", {}).get("bookingUrl", "")
-
         # Travel hack info
         travel_hack = itin.get("travelHack", {}) or {}
         conditions = {}
@@ -368,6 +442,47 @@ class KiwiConnectorClient:
             conditions["throwaway_ticket"] = "Only using first leg of ticket"
         if travel_hack.get("isTrueHiddenCity"):
             conditions["hidden_city"] = "Hidden city ticketing"
+
+        # Extract booking URL — ensure it's a full URL
+        booking_url = ""
+        booking_options = itin.get("bookingOptions", {}).get("edges", [])
+        if booking_options:
+            raw_url = booking_options[0].get("node", {}).get("bookingUrl", "")
+            if raw_url:
+                # Kiwi sometimes returns relative paths — prefix with base URL
+                if raw_url.startswith("/"):
+                    booking_url = f"https://www.kiwi.com{raw_url}"
+                elif raw_url.startswith("http"):
+                    booking_url = raw_url
+                else:
+                    booking_url = f"https://www.kiwi.com/{raw_url}"
+
+        # Build a stable search deeplink (token URLs expire in minutes)
+        if outbound and outbound.segments and origin_slug and dest_slug:
+            first_seg = outbound.segments[0]
+            dep_date = first_seg.departure.strftime("%Y-%m-%d") if first_seg.departure.year > 2000 else ""
+            search_deeplink = (
+                f"https://www.kiwi.com/en/search/results"
+                f"/{origin_slug}/{dest_slug}/{dep_date}"
+            )
+            if inbound and inbound.segments:
+                ret_first = inbound.segments[0]
+                ret_date = ret_first.departure.strftime("%Y-%m-%d") if ret_first.departure.year > 2000 else ""
+                if ret_date:
+                    search_deeplink += f"/{ret_date}"
+            else:
+                # One-way search — append no-return so Kiwi doesn't default to return
+                search_deeplink += "/no-return"
+
+            # Add query params: direct filter if applicable, sort by price
+            params = ["sortBy=price"]
+            if outbound.stopovers == 0:
+                params.append("stopNumber=0")
+            search_deeplink += "?" + "&".join(params)
+
+            # Always use stable search deeplink — token URLs expire in minutes
+            # and are useless by the time the user clicks
+            booking_url = search_deeplink
 
         itin_id = itin.get("id", "")
         offer_id = f"ks_{hashlib.md5(itin_id.encode()).hexdigest()[:12]}" if itin_id else f"ks_{hashlib.md5(f'{price}{airlines}'.encode()).hexdigest()[:12]}"

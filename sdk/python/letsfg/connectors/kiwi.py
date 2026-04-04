@@ -33,6 +33,10 @@ from ..models.flights import (
 logger = logging.getLogger(__name__)
 
 KIWI_GRAPHQL_URL = "https://api.skypicker.com/umbrella/v2/graphql"
+KIWI_LOCATIONS_URL = "https://api.skypicker.com/locations"
+
+# Cache IATA → Kiwi city slug (e.g. LHR → "london-united-kingdom")
+_slug_cache: dict[str, str] = {}
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -190,6 +194,35 @@ class KiwiConnectorClient:
     def _guess_market(self, currency: str) -> str:
         return self._CURRENCY_MARKET.get(currency.upper(), "gb")
 
+    async def _resolve_slug(self, iata: str) -> str:
+        """Resolve an IATA code to a Kiwi city slug via their locations API.
+
+        Returns e.g. 'london-united-kingdom' for LHR, cached after first lookup.
+        Falls back to empty string on failure.
+        """
+        iata = iata.strip().upper()
+        if iata in _slug_cache:
+            return _slug_cache[iata]
+        try:
+            client = await self._client()
+            resp = await client.get(
+                KIWI_LOCATIONS_URL,
+                params={"term": iata, "locale": "en-US", "location_types": "airport", "limit": "1", "active_only": "true"},
+                headers={"Referer": "https://www.kiwi.com/", "Accept": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                locs = data.get("locations", [])
+                if locs:
+                    slug = locs[0].get("city", {}).get("slug", "")
+                    if slug:
+                        _slug_cache[iata] = slug
+                        return slug
+        except Exception as e:
+            logger.debug("Kiwi slug resolution failed for %s: %s", iata, e)
+        _slug_cache[iata] = ""
+        return ""
+
     # IATA city codes that map to multiple airports.
     # Kiwi's GraphQL needs individual airport IDs; city codes like "LON"
     # are NOT valid Station:airport: values and silently return 0 results.
@@ -345,9 +378,13 @@ class KiwiConnectorClient:
         )
 
         offers = []
+        # Resolve Kiwi city slugs for booking URLs (one call per unique IATA)
+        origin_slug = await self._resolve_slug(req.origin)
+        dest_slug = await self._resolve_slug(req.destination)
+
         for itin in itineraries:
             try:
-                offer = self._parse_itinerary(itin, req, is_return)
+                offer = self._parse_itinerary(itin, req, is_return, origin_slug, dest_slug)
                 if offer:
                     offers.append(offer)
             except Exception as e:
@@ -368,7 +405,8 @@ class KiwiConnectorClient:
         )
 
     def _parse_itinerary(
-        self, itin: dict, req: FlightSearchRequest, is_return: bool
+        self, itin: dict, req: FlightSearchRequest, is_return: bool,
+        origin_slug: str = "", dest_slug: str = "",
     ) -> Optional[FlightOffer]:
         """Parse a Kiwi.com GraphQL itinerary into a FlightOffer."""
         price = float(itin.get("price", {}).get("amount", 0))
@@ -419,27 +457,32 @@ class KiwiConnectorClient:
                 else:
                     booking_url = f"https://www.kiwi.com/{raw_url}"
 
-        # Build a stable search deeplink as fallback (token URLs expire in minutes)
-        if outbound and outbound.segments:
+        # Build a stable search deeplink (token URLs expire in minutes)
+        if outbound and outbound.segments and origin_slug and dest_slug:
             first_seg = outbound.segments[0]
-            last_seg = outbound.segments[-1]
             dep_date = first_seg.departure.strftime("%Y-%m-%d") if first_seg.departure.year > 2000 else ""
             search_deeplink = (
                 f"https://www.kiwi.com/en/search/results"
-                f"/{first_seg.origin}/{last_seg.destination}/{dep_date}"
+                f"/{origin_slug}/{dest_slug}/{dep_date}"
             )
             if inbound and inbound.segments:
                 ret_first = inbound.segments[0]
                 ret_date = ret_first.departure.strftime("%Y-%m-%d") if ret_first.departure.year > 2000 else ""
                 if ret_date:
                     search_deeplink += f"/{ret_date}"
-
-            # Prefer stable search deeplink over token URL (which expires)
-            if not booking_url:
-                booking_url = search_deeplink
             else:
-                # Store both — conditions has the search deeplink as fallback
-                conditions["kiwi_search_url"] = search_deeplink
+                # One-way search — append no-return so Kiwi doesn't default to return
+                search_deeplink += "/no-return"
+
+            # Add query params: direct filter if applicable, sort by price
+            params = ["sortBy=price"]
+            if outbound.stopovers == 0:
+                params.append("stopNumber=0")
+            search_deeplink += "?" + "&".join(params)
+
+            # Always use stable search deeplink — token URLs expire in minutes
+            # and are useless by the time the user clicks
+            booking_url = search_deeplink
 
         itin_id = itin.get("id", "")
         offer_id = f"ks_{hashlib.md5(itin_id.encode()).hexdigest()[:12]}" if itin_id else f"ks_{hashlib.md5(f'{price}{airlines}'.encode()).hexdigest()[:12]}"

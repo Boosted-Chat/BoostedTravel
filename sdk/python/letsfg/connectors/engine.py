@@ -230,6 +230,7 @@ from .bookingcom import BookingcomConnectorClient
 from .musafir import MusafirConnectorClient
 from .akbartravels import AkbartravelsConnectorClient
 from .airasiamove import AirasiamoveConnectorClient
+from .hopper import HopperConnectorClient
 
 from ..models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, FlightSearchResponse
 
@@ -574,6 +575,8 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("musafir_ota", MusafirConnectorClient, 55.0),
     ("akbartravels_ota", AkbartravelsConnectorClient, 55.0),
     ("airasiamove_ota", AirasiamoveConnectorClient, 55.0),
+    # ── Hopper (direct commerce API — no browser needed) ──
+    ("hopper_direct", HopperConnectorClient, 25.0),
 ]
 
 

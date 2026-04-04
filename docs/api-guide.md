@@ -1,17 +1,8 @@
 # API Guide
 
-## Two Ways to Search Flights
+## Search Flights
 
-LetsFG offers two search modes:
-
-| Mode | Command / Method | API Key | Coverage | Cost |
-|------|-----------------|---------|----------|------|
-| **Local search** | `search-local` / `search_local()` | **Not needed** | 200 airline connectors | Free |
-| **Full search** | `search` / `bt.search()` | Required | 400+ airlines (GDS/NDC) | Free (star repo) |
-
-### Local Search (No API Key)
-
-Search 200 airline websites directly — completely free, no registration required:
+All search runs locally on your machine — 180+ airline connectors query airlines directly. No API key needed for search.
 
 ```python
 from letsfg.local import search_local
@@ -27,20 +18,10 @@ result = await search_local("LHR", "BCN", "2026-04-15", max_browsers=4)
 
 ```bash
 # CLI — works immediately after pip install
-letsfg search-local LHR BCN 2026-04-15
+letsfg search LHR BCN 2026-04-15
 
 # Limit browsers
-letsfg search-local LHR BCN 2026-04-15 --max-browsers 4
-```
-
-### Full Search (API Key)
-
-Search 400+ airlines via GDS and NDC connections:
-
-```python
-from letsfg import LetsFG
-bt = LetsFG(api_key="trav_...")
-flights = bt.search("LHR", "BCN", "2026-04-15")
+letsfg search LHR BCN 2026-04-15 --max-browsers 4
 ```
 
 ---

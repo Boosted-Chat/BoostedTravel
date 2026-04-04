@@ -36,7 +36,7 @@ from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.airnewzealand.com"
+_BASE = "https://www.airnewzealand.co.nz"
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

@@ -164,7 +164,8 @@ async def _dismiss_overlays(page) -> None:
         await page.evaluate("""() => {
             document.querySelectorAll(
                 '#onetrust-consent-sdk, .onetrust-pc-dark-filter, ' +
-                '[class*="cookie"], [class*="consent"], [class*="overlay"]'
+                '[class*="cookie"], [class*="consent"], ' +
+                '.cdk-overlay-backdrop, .cdk-overlay-dark-backdrop'
             ).forEach(el => el.remove());
         }""")
     except Exception:
@@ -253,84 +254,70 @@ class AirEuropaConnectorClient:
         try:
             logger.info("AirEuropa: loading search for %s→%s", req.origin, req.destination)
 
-            # Navigate directly to Air Europa's digital booking flow with search params
-            # (avoids fragile form fill + Angular validation issues)
-            dep = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, 'strftime') else str(req.date_from)
-            dep_compact = dep.replace("-", "")  # 20260615
-            adults = req.adults or 1
-
-            # Air Europa's booking URL format (Amadeus DES Angular app)
-            # Use expanded airport codes (LON→LHR) since city codes cause redirect to /booking/recovery
-            direct_url = (
-                f"https://digital.aireuropa.com/booking/availability?origin={api_origin}"
-                f"&destination={api_dest}&departureDate={dep_compact}"
-                f"&adt={adults}&chd={req.children or 0}&inf={req.infants or 0}"
-                f"&cabinClass=ECONOMY&tripType=ONE_WAY&channel=WEB&market=GB&lang=en"
-            )
-
-            # First: establish session on homepage (needed for Amadeus DES auth tokens)
+            # Direct URL to digital.aireuropa.com/booking/availability no longer works
+            # (Amadeus DES Angular app requires session context from form submission).
+            # Always use the homepage form fill approach.
+            logger.info("AirEuropa: using form fill on homepage")
             await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(4.0)
             await _dismiss_overlays(page)
+            # Remove any lingering CDK/Angular overlays that block interaction
+            await page.evaluate("""() => {
+                document.querySelectorAll('.cdk-overlay-backdrop, .cdk-overlay-dark-backdrop').forEach(el => el.remove());
+            }""")
+            await asyncio.sleep(0.5)
 
-            # Navigate to results page
-            logger.info("AirEuropa: navigating to booking flow: %s", direct_url[:120])
-            await page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(5.0)
-
-            # Check if we landed on a different URL (redirect)
-            current_url = page.url.lower()
-            logger.info("AirEuropa: landed on %s", page.url[:150])
-
-            # If redirected back to homepage, try form-fill approach as fallback
-            if "digital.aireuropa" not in current_url and "booking" not in current_url:
-                logger.info("AirEuropa: direct URL failed, trying form fill fallback")
-                await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(4.0)
-                await _dismiss_overlays(page)
-
-                # One-way toggle
-                await page.evaluate("""() => {
-                    const ms = document.querySelector('common-select.way-trip mat-select');
-                    if (ms && ms.offsetHeight > 0) ms.click();
-                }""")
-                await asyncio.sleep(0.8)
-                await page.evaluate("""() => {
-                    const opts = document.querySelectorAll('mat-option');
-                    for (const o of opts) {
-                        const t = (o.textContent || '').trim().toLowerCase();
-                        if (t.includes('one way') || t.includes('one-way')) { o.click(); return; }
+            # One-way toggle — use force click to bypass any remaining overlay
+            await page.evaluate("""() => {
+                // Try mat-radio for one-way
+                const radios = document.querySelectorAll('mat-radio-button, input[type="radio"]');
+                for (const r of radios) {
+                    const t = (r.textContent || r.parentElement?.textContent || '').trim().toLowerCase();
+                    if (t.includes('one way') || t.includes('one-way') || t.includes('solo ida')) {
+                        r.click(); return;
                     }
-                }""")
-                await asyncio.sleep(1.0)
+                }
+                // Try mat-select dropdown
+                const ms = document.querySelector('common-select.way-trip mat-select, [class*="trip-type"] mat-select');
+                if (ms) ms.click();
+            }""")
+            await asyncio.sleep(0.8)
+            await page.evaluate("""() => {
+                const opts = document.querySelectorAll('mat-option, [role="option"]');
+                for (const o of opts) {
+                    const t = (o.textContent || '').trim().toLowerCase();
+                    if (t.includes('one way') || t.includes('one-way') || t.includes('solo ida')) { o.click(); return; }
+                }
+            }""")
+            await asyncio.sleep(1.0)
 
-                ok = await self._fill_airport(page, "input#departure", req.origin)
-                if not ok:
-                    return self._empty(req)
-                await asyncio.sleep(1.0)
+            ok = await self._fill_airport(page, "input#departure", api_origin)
+            if not ok:
+                return self._empty(req)
+            await asyncio.sleep(1.0)
 
-                ok = await self._fill_airport(page, "input#arrival", req.destination)
-                if not ok:
-                    return self._empty(req)
-                await asyncio.sleep(1.0)
+            ok = await self._fill_airport(page, "input#arrival", api_dest)
+            if not ok:
+                return self._empty(req)
+            await asyncio.sleep(1.0)
 
-                ok = await self._fill_date(page, req)
-                if not ok:
-                    return self._empty(req)
+            ok = await self._fill_date(page, req)
+            if not ok:
+                return self._empty(req)
 
-                # Click search and wait for navigation
-                async with page.expect_navigation(timeout=20000, wait_until="domcontentloaded"):
-                    await page.evaluate("""() => {
-                        const btn = document.querySelector('button.ae-btn-block.ae-btn-primary');
-                        if (btn && btn.offsetHeight > 0) { btn.click(); return; }
-                        const btns = document.querySelectorAll('button');
-                        for (const b of btns) {
-                            const t = (b.textContent || '').trim().toLowerCase();
-                            if (t === 'search' && b.offsetHeight > 0) { b.click(); return; }
-                        }
-                    }""")
-                logger.info("AirEuropa: form submitted, navigated to %s", page.url[:120])
-                await asyncio.sleep(5.0)
+            # Click search — Air Europa uses Angular SPA routing, so no full navigation.
+            # Just click and let the API interception capture the response.
+            await page.evaluate("""() => {
+                const btn = document.querySelector('button.ae-btn-block.ae-btn-primary');
+                if (btn && btn.offsetHeight > 0) { btn.click(); return; }
+                const btns = document.querySelectorAll('button');
+                for (const b of btns) {
+                    const t = (b.textContent || '').trim().toLowerCase();
+                    if ((t === 'search' || t.includes('search')) && b.offsetHeight > 0) { b.click(); return; }
+                }
+            }""")
+            logger.info("AirEuropa: search button clicked, waiting for SPA navigation")
+            await asyncio.sleep(8.0)
 
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + remaining
@@ -383,12 +370,24 @@ class AirEuropaConnectorClient:
     async def _fill_airport(self, page, selector: str, iata: str) -> bool:
         try:
             field = page.locator(selector).first
-            await field.click(timeout=5000)
+            await field.click(timeout=5000, force=True)
             await asyncio.sleep(0.5)
             await page.keyboard.press("Control+a")
             await page.keyboard.press("Backspace")
             await field.type(iata, delay=120)
             await asyncio.sleep(2.0)
+
+            # Check if Air Europa serves this destination
+            no_service = await page.evaluate("""() => {
+                const opts = document.querySelectorAll('mat-option, [role="option"]');
+                for (const o of opts) {
+                    if (o.offsetHeight > 0 && (o.textContent || '').toLowerCase().includes('do not fly')) return true;
+                }
+                return false;
+            }""")
+            if no_service:
+                logger.warning("AirEuropa: airline does not fly to %s", iata)
+                return False
 
             # Angular mat-autocomplete options
             selected = await page.evaluate("""(iata) => {
@@ -398,6 +397,12 @@ class AirEuropaConnectorClient:
                 );
                 for (const o of opts) {
                     if (o.textContent.includes(iata) && o.offsetHeight > 0) {
+                        o.click(); return true;
+                    }
+                }
+                // Click first valid option if available
+                for (const o of opts) {
+                    if (o.offsetHeight > 0 && !(o.textContent || '').toLowerCase().includes('do not fly')) {
                         o.click(); return true;
                     }
                 }
@@ -426,7 +431,7 @@ class AirEuropaConnectorClient:
         try:
             # Click the departure date input to open calendar
             date_field = page.locator("input#mat-input-1, input[placeholder*='DD/MM']").first
-            await date_field.click(timeout=5000)
+            await date_field.click(timeout=5000, force=True)
             await asyncio.sleep(1.0)
 
             # Air Europa calendar shows 2 months at a time with .month sections.

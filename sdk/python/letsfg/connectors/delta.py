@@ -98,7 +98,7 @@ _CHROME_FLAGS = [
 ]
 
 _MAX_ATTEMPTS = 3
-_RESULTS_WAIT = 25  # seconds to wait for API response after clicking search
+_RESULTS_WAIT = 35  # seconds to wait for API response after clicking search
 
 # -- Shared CDP Chrome state -------------------------------------------
 _CDP_PORT = 9472
@@ -267,17 +267,25 @@ class DeltaConnectorClient:
 
         t0 = time.monotonic()
 
+        consecutive_failures = 0
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
                 result = await self._attempt_search(req, t0)
                 if result is not None:
                     return result
+                # None means timeout or form failure - browser may be stale
+                consecutive_failures += 1
+                if consecutive_failures >= 2:
+                    logger.info("Delta: resetting browser after %d consecutive failures", consecutive_failures)
+                    await _reset_browser()
+                    consecutive_failures = 0
             except Exception as e:
                 logger.warning(
                     "Delta: attempt %d/%d error: %s", attempt, _MAX_ATTEMPTS, e
                 )
-                if "closed" in str(e).lower() or "disconnected" in str(e).lower():
+                if "closed" in str(e).lower() or "disconnected" in str(e).lower() or "timeout" in str(e).lower():
                     await _reset_browser()
+                    consecutive_failures = 0
 
         return self._empty(req)
 
@@ -349,15 +357,28 @@ class DeltaConnectorClient:
                 req.origin, req.destination, req.date_from,
             )
 
+            # Use /us/en to avoid EU geo-redirect which has slower hydration
             await page.goto(
-                "https://www.delta.com/",
+                "https://www.delta.com/us/en",
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
+            # Angular SPA needs time to hydrate (~10-15s)
+            await asyncio.sleep(10.0)
+
+            # Dismiss cookie consent early (OneTrust blocks form interaction)
+            try:
+                accept_btn = page.locator("#onetrust-accept-btn-handler")
+                if await accept_btn.is_visible(timeout=3000):
+                    await accept_btn.click(timeout=3000)
+                    await asyncio.sleep(1.5)
+                    logger.info("Delta: accepted cookies")
+            except Exception:
+                pass
 
             # Wait for booking form (classic Angular form with #fromAirportName)
             form_type = "none"
-            for _w in range(20):
+            for _w in range(15):
                 has_classic = await page.evaluate(
                     "() => !!document.querySelector('#fromAirportName')"
                 )
@@ -377,7 +398,7 @@ class DeltaConnectorClient:
                 logger.warning("Delta: no booking form found after 20s")
                 return None
 
-            # Dismiss cookie consent / overlays
+            # Remove any remaining OneTrust overlays
             await page.evaluate("""() => {
                 document.querySelectorAll(
                     '[id*="onetrust"], .onetrust-pc-dark-filter, .ot-fade-in'
@@ -503,6 +524,12 @@ class DeltaConnectorClient:
             # Classic Angular form: <a id="fromAirportName"> / <a id="toAirportName">
             link_id = "fromAirportName" if field_type == "origin" else "toAirportName"
             link = page.locator(f"#{link_id}")
+            
+            # Check if link exists
+            if await link.count() == 0:
+                logger.warning("Delta: %s link #%s not found", field_type, link_id)
+                return False
+                
             await link.click(timeout=5000)
             await asyncio.sleep(1.5)
 
@@ -514,15 +541,15 @@ class DeltaConnectorClient:
             await search_input.press_sequentially(iata, delay=120)
             await asyncio.sleep(2.5)
 
-            # Click matching airport link in the modal popup
+            # Click matching airport link in the modal popup (.airportLookup-list class)
             airport_link = page.locator(
-                "modal-container a, .airport-lookup a"
+                "modal-container a.airportLookup-list"
             ).filter(has_text=iata).first
             await airport_link.click(timeout=5000)
             await asyncio.sleep(0.8)
             return True
         except Exception as e:
-            logger.debug("Delta: airport fill '%s' error: %s", field_type, e)
+            logger.warning("Delta: airport fill '%s' error: %s", field_type, e)
             return False
 
     async def _fill_date(self, page, req: FlightSearchRequest) -> None:

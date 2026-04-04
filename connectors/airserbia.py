@@ -27,14 +27,14 @@ import time
 from datetime import datetime, date, timedelta
 from typing import Optional
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
-from connectors.browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied, inject_stealth_js
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,7 @@ async def _get_context():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
@@ -191,6 +192,8 @@ class AirSerbiaConnectorClient:
         t0 = time.monotonic()
         context = await _get_context()
         page = await context.new_page()
+        await inject_stealth_js(page)
+        await auto_block_if_proxied(page)
 
         search_data: dict = {}
         api_event = asyncio.Event()
@@ -226,7 +229,15 @@ class AirSerbiaConnectorClient:
         try:
             logger.info("AirSerbia: loading homepage for %s→%s", req.origin, req.destination)
             await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(5.0)
+            # Wait for selectize.js search widget to render — Cloudflare challenge
+            # may fire first (403 then auto-solve), so poll for form visibility.
+            for _wait in range(20):  # up to 20s total
+                await asyncio.sleep(1.0)
+                vis = await page.locator('input[placeholder="From"]:visible').count()
+                if vis > 0:
+                    break
+            else:
+                logger.warning("AirSerbia: From input never became visible")
             await _dismiss_overlays(page)
 
             # One-way toggle — Air Serbia uses pill tab buttons

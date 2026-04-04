@@ -239,13 +239,19 @@ class SkyscannerConnectorClient:
             page.on("response", on_response)
 
             # Skyscanner URL pattern: /transport/flights/{origin}/{dest}/{YYMMDD}/
+            # Round-trip: /transport/flights/{origin}/{dest}/{YYMMDD}/{YYMMDD_ret}/
             d = req.date_from
             date_str = f"{d.year % 100:02d}{d.month:02d}{d.day:02d}"
             origin = req.origin.lower()
             dest = req.destination.lower()
+            date_path = f"{date_str}/"
+            if req.return_from:
+                rd = req.return_from
+                ret_str = f"{rd.year % 100:02d}{rd.month:02d}{rd.day:02d}"
+                date_path = f"{date_str}/{ret_str}/"
             url = (
                 f"https://www.skyscanner.net/transport/flights/"
-                f"{origin}/{dest}/{date_str}/"
+                f"{origin}/{dest}/{date_path}"
                 f"?adultsv2={req.adults or 1}"
                 f"&cabinclass=economy"
                 f"&ref=home"
@@ -418,6 +424,21 @@ def _parse_skyscanner(data: dict, req: FlightSearchRequest) -> list[FlightOffer]
                 f"ss_{itin_id}_{best_price}".encode()
             ).hexdigest()[:10]
 
+            # Build proper Skyscanner deeplink with dates
+            d = req.date_from
+            _date_str = f"{d.year % 100:02d}{d.month:02d}{d.day:02d}"
+            _booking_url = (
+                f"https://www.skyscanner.net/transport/flights/"
+                f"{req.origin.lower()}/{req.destination.lower()}/{_date_str}"
+            )
+            if req.return_from:
+                rd = req.return_from
+                _ret_str = f"{rd.year % 100:02d}{rd.month:02d}{rd.day:02d}"
+                _booking_url += f"/{_ret_str}"
+            _booking_url += f"/?adults={req.adults or 1}&cabinclass=economy&preferdirects=true"
+            if req.return_from:
+                _booking_url += "&rtn=1"
+
             offers.append(FlightOffer(
                 id=f"ss_{h}",
                 price=best_price,
@@ -430,10 +451,7 @@ def _parse_skyscanner(data: dict, req: FlightSearchRequest) -> list[FlightOffer]
                 source="skyscanner_meta",
                 source_tier="free",
                 is_locked=False,
-                booking_url=(
-                    f"https://www.skyscanner.net/transport/flights/"
-                    f"{req.origin.lower()}/{req.destination.lower()}/"
-                ),
+                booking_url=_booking_url,
             ))
         except Exception as e:
             logger.warning("SKYSCANNER: parse itinerary failed: %s", e)

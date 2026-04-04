@@ -11,10 +11,10 @@ pip install letsfg
 That's it. Search flights immediately:
 
 ```bash
-letsfg search-local LHR BCN 2026-04-15
+letsfg search LHR BCN 2026-04-15
 ```
 
-This runs 200 airline connectors locally on your machine — Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, Qatar Airways, LATAM, Finnair, and 190+ more. Completely free, unlimited, zero configuration.
+This runs 180+ airline connectors locally on your machine — Ryanair, Wizz Air, EasyJet, Southwest, AirAsia, Norwegian, Qatar Airways, LATAM, Finnair, and more. Completely free, unlimited, zero configuration.
 
 ```python
 from letsfg.local import search_local
@@ -27,9 +27,9 @@ for offer in result.offers[:5]:
 
 ---
 
-## Unlock Full Power with an API Key (Recommended)
+## API Key for Unlock & Book
 
-Adding an API key connects you to LetsFG's enterprise backend — GDS/NDC providers (Amadeus, Duffel, Sabre, Travelport, Kiwi) with 400+ premium carriers like Lufthansa, British Airways, Emirates, and Singapore Airlines. Both local connectors and cloud sources run simultaneously, giving you the best price from across the entire internet.
+Search is completely free and runs locally — no API key needed. An API key is required for unlocking offers and booking flights.
 
 ### 1. Register (one command, free, instant)
 
@@ -48,23 +48,15 @@ curl -X POST https://api.letsfg.co/api/v1/agents/register \
 
 ### 2. Use the API Key
 
-Every authenticated request requires the `X-API-Key` header:
-
 ```bash
 # Set as environment variable (recommended)
 export LETSFG_API_KEY=trav_...
 
 # CLI reads it automatically
-letsfg search LHR JFK 2026-04-15
+letsfg unlock off_xxx
 
 # Or pass explicitly
-letsfg search LHR JFK 2026-04-15 --api-key trav_...
-
-# cURL
-curl -X POST https://api.letsfg.co/api/v1/flights/search \
-  -H "X-API-Key: trav_..." \
-  -H "Content-Type: application/json" \
-  -d '{"origin": "LHR", "destination": "JFK", "date_from": "2026-04-15"}'
+letsfg unlock off_xxx --api-key trav_...
 ```
 
 ### 3. Python SDK
@@ -215,7 +207,7 @@ letsfg system-info
 export LETSFG_MAX_BROWSERS=4
 
 # CLI flag (per-search)
-letsfg search-local LHR BCN 2026-04-15 --max-browsers 4
+letsfg search LHR BCN 2026-04-15 --max-browsers 4
 ```
 
 ```python
