@@ -30,6 +30,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,7 @@ class LHGroupBaseConnector:
             # Try up to 2 fingerprints before giving up
             for fp in random.sample(_FINGERPRINTS, min(2, len(_FINGERPRINTS))):
                 try:
-                    with creq.Session(impersonate=fp) as sess:
+                    with creq.Session(impersonate=fp, proxies=get_curl_cffi_proxies()) as sess:
                         resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
                     if resp.status_code == 200:
                         break

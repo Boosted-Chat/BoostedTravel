@@ -7,7 +7,7 @@ headed CDP Chrome with form fill + API interception is required.
 
 Strategy (CDP Chrome + API interception):
 1. Launch headed Chrome via CDP (off-screen, stealth).
-2. Navigate to airchina.com → SPA loads with search widget.
+2. Navigate to hainanairlines.com → SPA loads with search widget.
 3. Accept cookies → set one-way → fill origin/dest → select date → search.
 4. Intercept the search API response (flight availability JSON).
 5. If API not captured, fall back to DOM scraping on results page.
@@ -576,10 +576,10 @@ class HainanConnectorClient:
                 let currency = 'CNY';
                 if (/USD|\$/.test(priceMatch[0])) currency = 'USD';
                 else if (/EUR|€/.test(priceMatch[0])) currency = 'EUR';
-                const fnMatch = text.match(/\b(CA\s*\d{2,4})\b/i);
+                const fnMatch = text.match(/\b(HU\s*\d{2,4})\b/i);
                 results.push({
                     depTime: times[0], arrTime: times[1], price, currency,
-                    flightNo: fnMatch ? fnMatch[1].replace(/\s/g, '') : 'CA',
+                    flightNo: fnMatch ? fnMatch[1].replace(/\s/g, '') : 'HU',
                 });
             }
             return results;
