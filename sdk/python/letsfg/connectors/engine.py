@@ -1001,6 +1001,23 @@ class MultiProvider:
         # (e.g. Singapore connector returning SIN→LHR for a LON→DEL search).
         deduped = self._filter_wrong_routes(deduped, req)
 
+        # ── Round-trip preference ──────────────────────────────────────────
+        # When a round-trip was requested, prefer offers that include both
+        # outbound and inbound routes.  One-way offers (inbound is None)
+        # are dropped when true round-trip offers are available; kept only
+        # as a fallback when no connector returned a proper RT result.
+        if is_round_trip:
+            rt_offers = [o for o in deduped if o.inbound is not None]
+            if rt_offers:
+                ow_dropped = len(deduped) - len(rt_offers)
+                if ow_dropped:
+                    logger.info(
+                        "RT preference: keeping %d round-trip offers, "
+                        "dropping %d one-way",
+                        len(rt_offers), ow_dropped,
+                    )
+                deduped = rt_offers
+
         # --- Airline-diverse selection ---
         # Ensure at least the cheapest offer per airline is included,
         # then fill remaining slots with overall cheapest.
