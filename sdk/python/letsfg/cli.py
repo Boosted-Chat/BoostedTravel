@@ -143,7 +143,7 @@ _IATA_TO_AIRLINE: dict[str, str] = {
     # Africa
     "SA": "South African Airways", "FA": "FlySafair", "4Z": "Airlink", "5Z": "CemAir", "GE": "LIFT",
     "ET": "Ethiopian Airlines", "KQ": "Kenya Airways",
-    "WB": "RwandAir", "P4": "Air Peace", "AH": "Air Algerie",
+    "WB": "RwandAir", "P4": "Air Peace", "AH": "Air Algerie", "DT": "TAAG Angola Airlines",
     # Asia – full-service
     "SQ": "Singapore Airlines", "CX": "Cathay Pacific", "NH": "ANA",
     "JL": "Japan Airlines", "KE": "Korean Air", "OZ": "Asiana Airlines",
@@ -184,6 +184,8 @@ _AIRLINE_TO_IATA: dict[str, str] = {v.lower(): k for k, v in _IATA_TO_AIRLINE.it
 # Additional aliases for airline names that share the same IATA carrier code.
 _AIRLINE_ALIAS_TO_IATA: dict[str, str] = {
     "Rwandair Express": "WB",
+    "Etihad": "EY",
+    "TAAG Air Angola": "DT",
 }
 
 _AIRLINE_NORMALIZED_TO_IATA: dict[str, str] = {
@@ -205,6 +207,13 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
     if "|" in owner:
         parts = [p.strip() for p in owner.split("|") if p.strip()]
         return " + ".join(_fmt_airline(p, []) for p in parts)
+
+    # Comma-separated multi-airline string (e.g. ixigo headerTextWeb)
+    if "," in owner:
+        parts = [p.strip() for p in owner.split(",") if p.strip()]
+        seen: set[str] = set()
+        unique = [p for p in parts if not (p in seen or seen.add(p))]
+        return " + ".join(_fmt_airline(p, []) for p in unique)
 
     # Pure IATA code (2–3 uppercase letters/digits)
     if re.fullmatch(r"[A-Z0-9]{2,3}", owner):
