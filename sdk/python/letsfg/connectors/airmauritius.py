@@ -28,6 +28,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ _HEADERS = {
     "Accept": "application/json",
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
     "Origin": "https://www.airmauritius.com",
     "Referer": "https://www.airmauritius.com/",
@@ -124,7 +125,8 @@ class AirmauritiusConnectorClient:
     async def _call_sputnik(self, payload: dict) -> list[dict]:
         try:
             async with httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS
+                timeout=self.timeout, headers=_HEADERS,
+                proxy=get_httpx_proxy_url(),
             ) as client:
                 r = await client.post(_SPUTNIK_URL, json=payload)
                 if r.status_code != 200:

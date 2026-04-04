@@ -47,65 +47,102 @@ _HEADERS = {
 }
 
 _IATA_TO_SLUG: dict[str, str] = {
-    # Ethiopia domestic
+    # ---------- City codes (multi-airport) ----------
+    "LON": "london", "PAR": "paris", "ROM": "rome",
+    "NYC": "new-york", "YTO": "toronto", "BUE": "buenos-aires-bue",
+    "OSA": "osaka-osa",
+    # ---------- Ethiopia domestic ----------
     "ADD": "addis-ababa", "AWA": "hawassa", "LLI": "lalibela",
     "MQX": "mekelle", "AMH": "arba-minch", "ASO": "asosa",
     "BJR": "bahir-dar", "AXU": "axum", "DIR": "dire-dawa",
-    "GDQ": "gondar", "JIM": "jimma",
-    # East Africa
-    "NBO": "nairobi", "MBA": "mombasa",
+    "GDQ": "gondar", "JIM": "jimma", "JIJ": "jijiga",
+    "GMB": "gambella", "SZE": "semera", "DSE": "kombolcha",
+    "GOB": "goba", "GDE": "gode", "BCO": "jinka", "SHC": "shire",
+    # ---------- Horn of Africa ----------
+    "HGA": "hargeisa", "JIB": "djibouti", "MGQ": "mogadishu",
+    "ASM": "asmara", "BBO": "berbera", "BSA": "bossaso",
+    # ---------- East Africa ----------
+    "NBO": "nairobi", "MBA": "mombasa", "ZNZ": "zanzibar",
     "DAR": "dar-es-salaam", "JRO": "kilimanjaro",
     "EBB": "entebbe", "KGL": "kigali",
-    "BJM": "bujumbura", "SEZ": "mahe",
-    # Southern Africa
-    "JNB": "johannesburg", "CPT": "cape-town",
-    "LUN": "lusaka", "HRE": "harare",
-    "WDH": "windhoek", "MPM": "maputo",
-    "LLW": "lilongwe", "MRU": "mauritius",
-    # West Africa
-    "LOS": "lagos", "ABV": "abuja",
+    "BJM": "bujumbura", "SEZ": "mahe", "JUB": "juba",
+    # ---------- Southern Africa ----------
+    "JNB": "johannesburg", "CPT": "cape-town", "DUR": "durban",
+    "PLZ": "port-elizabeth", "HDS": "hoedspruit",
+    "LUN": "lusaka", "NLA": "ndola",
+    "HRE": "harare", "BUQ": "bulawayo", "VFA": "victoria-falls",
+    "WDH": "windhoek", "MPM": "maputo", "BEW": "beira",
+    "LLW": "lilongwe", "BLZ": "blantyre",
+    "MRU": "port-louis", "MUB": "maun", "GBE": "gaborone",
+    # ---------- Indian Ocean ----------
+    "TNR": "antananarivo", "NOS": "nosy-be",
+    "HAH": "hahaia", "PRI": "praslin-island",
+    # ---------- West Africa ----------
+    "LOS": "lagos", "ABV": "abuja", "ENU": "enugu", "KAN": "kano",
     "ACC": "accra", "ABJ": "abidjan",
     "DSS": "dakar", "BKO": "bamako",
     "OUA": "ouagadougou", "CKY": "conakry",
     "FNA": "freetown", "LFW": "lome",
     "COO": "cotonou", "NIM": "niamey",
-    # Central Africa
-    "DLA": "douala", "NDJ": "ndjamena",
-    "LBV": "libreville", "FIH": "kinshasa",
-    "BZV": "brazzaville", "BGF": "bangui",
-    # North Africa
-    "CAI": "cairo", "ALG": "algiers",
-    "CMN": "casablanca", "TUN": "tunis",
-    "KRT": "khartoum",
-    # Horn of Africa
-    "HGA": "hargeisa", "JIB": "djibouti",
-    "MGQ": "mogadishu",
-    # Europe
+    "ROB": "monrovia", "BJL": "banjul",
+    # ---------- Central Africa ----------
+    "DLA": "douala", "YAO": "yaounde",
+    "NDJ": "ndjamena", "LBV": "libreville",
+    "FIH": "kinshasa", "FBM": "lubumbashi",
+    "FKI": "kisangani", "GOM": "goma", "MJM": "mbuji-mayi",
+    "BZV": "brazzaville", "PNR": "pointe-noire",
+    "BGF": "bangui", "SSG": "malabo", "LAD": "luanda",
+    # ---------- North Africa ----------
+    "CAI": "cairo", "KRT": "khartoum", "PZU": "port-sudan",
+    # ---------- Europe ----------
     "LHR": "london", "CDG": "paris", "FRA": "frankfurt",
     "FCO": "rome", "MAD": "madrid", "BRU": "brussels",
     "VIE": "vienna", "IST": "istanbul", "ATH": "athens",
     "MXP": "milan", "ARN": "stockholm", "GVA": "geneva",
-    "DUB": "dublin", "MAN": "manchester",
-    # Middle East
-    "DXB": "dubai-dxb", "DOH": "doha",
-    "JED": "jeddah", "RUH": "riyadh",
+    "DUB": "dublin", "MAN": "manchester-city",
+    "AMS": "amsterdam", "CPH": "copenhagen",
+    "MUC": "munich", "DUS": "dusseldorf",
+    "OSL": "oslo", "HEL": "helsinki",
+    "WAW": "warsaw", "PRG": "prague",
+    "BCN": "barcelona", "LYS": "lyon", "MRS": "marseille",
+    "OPO": "porto", "GOT": "gothenburg",
+    "BGO": "bergen", "SVG": "stavanger",
+    "LLA": "lulea", "TRD": "trondheim",
+    "GNB": "grenoble", "MLA": "malta",
+    "SVO": "moscow", "ZRH": "zurich",
+    # ---------- Middle East ----------
+    "DXB": "dubai-dxb", "AUH": "abu-dhabi", "SHJ": "sharjah",
+    "DOH": "doha",
+    "JED": "jeddah", "RUH": "riyadh", "DMM": "dammam",
+    "MED": "medina", "GIZ": "jizan",
     "TLV": "tel-aviv", "AMM": "amman",
     "BAH": "bahrain", "MCT": "muscat",
-    "KWI": "kuwait",
-    # Asia
+    "KWI": "kuwait-city", "BEY": "beirut",
+    # ---------- Asia ----------
     "PEK": "beijing", "PVG": "shanghai",
-    "CAN": "guangzhou", "HKG": "hong-kong",
-    "ICN": "seoul", "NRT": "tokyo",
-    "BOM": "mumbai", "DEL": "delhi",
-    "BLR": "bangalore", "BKK": "bangkok",
-    "KUL": "kuala-lumpur", "SIN": "singapore",
-    "MNL": "manila",
-    # Americas
+    "CAN": "guangzhou", "CTU": "chengdu", "HGH": "hangzhou",
+    "HKG": "hong-kong",
+    "ICN": "seoul", "NRT": "tokyo", "KIX": "osaka-osa",
+    "BOM": "mumbai", "DEL": "delhi", "BLR": "bangalore",
+    "AMD": "ahmedabad", "MAA": "chennai", "HYD": "hyderabad",
+    "CNN": "kannur", "DAC": "dhaka", "KHI": "karachi",
+    "BKK": "bangkok", "KUL": "kuala-lumpur",
+    "SIN": "singapore", "CGK": "jakarta",
+    "MNL": "manila", "HAN": "hanoi",
+    "SYD": "sydney", "MEL": "melbourne",
+    # ---------- Americas ----------
     "IAD": "washington-dc", "EWR": "newark",
-    "ORD": "chicago", "IAH": "houston",
-    "LAX": "los-angeles",
-    "YYZ": "toronto", "YTO": "toronto",
-    "GRU": "sao-paulo",
+    "JFK": "new-york", "ORD": "chicago", "IAH": "houston",
+    "LAX": "los-angeles", "ATL": "atlanta", "BOS": "boston",
+    "DEN": "denver", "DFW": "dallas",
+    "SEA": "seattle", "MSP": "minneapolis",
+    "SFO": "san-francisco", "SAN": "san-diego", "RDU": "raleigh",
+    "YYZ": "toronto", "YUL": "montreal",
+    "YYC": "calgary", "YVR": "vancouver",
+    "YOW": "ottawa", "YWG": "winnipeg",
+    "YEG": "edmonton", "YHZ": "halifax", "YQB": "quebec-yqb",
+    "GRU": "sao-paulo", "GIG": "rio-de-janeiro",
+    "EZE": "buenos-aires-bue",
 }
 
 

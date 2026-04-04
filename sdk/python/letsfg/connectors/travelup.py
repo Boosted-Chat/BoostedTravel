@@ -28,6 +28,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,9 @@ class TravelupConnectorClient:
 
         offers: list[FlightOffer] = []
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, proxy=get_httpx_proxy_url(),
+            ) as client:
                 resp = await client.get(_API_URL, headers=headers, params=params)
                 if resp.status_code != 200:
                     logger.warning("TravelUp API %d for %s→%s", resp.status_code, req.origin, req.destination)
