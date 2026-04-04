@@ -1,27 +1,23 @@
 """
-Kenya Airways connector — EveryMundo airTRFX fare pages.
+Kenya Airways connector — EveryMundo sputnik grouped-routes API.
 
 Kenya Airways (IATA: KQ) is Kenya's flag carrier. SkyTeam member.
 NBO (Nairobi) hub — primary East African hub. 55+ destinations
 across Africa, Europe, Middle East, Indian subcontinent.
 
 Strategy (httpx, no browser):
-  KQ uses EveryMundo airTRFX at kenya-airways.com.
-  1. Fetch route page: kenya-airways.com/en_ke/flights-from-{o}-to-{d}
-  2. Extract __NEXT_DATA__ JSON from <script> tag
-  3. Parse StandardFareModule fares from Apollo GraphQL state
-  4. Filter by origin/destination airport codes and departure date
-  Note: Kenya Airways uses /en_ke/ locale prefix.
+  KQ uses the EveryMundo airTRFX sputnik API (same as El Al, SAA, etc.).
+  1. POST grouped-routes with markets, dates, airline code
+  2. Returns fare-level data per route (origin, dest, price, date)
+  3. Filter by origin/destination/date
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import re
 import time
-from datetime import datetime
+from datetime import date, datetime, time as dt_time, timedelta
 from typing import Optional
 
 import httpx
@@ -36,92 +32,48 @@ from models.flights import (
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.kenya-airways.com"
+_API_URL = "https://openair-california.airtrfx.com/airfare-sputnik-service/v3/kq/fares/grouped-routes"
+_API_KEY = "HeQpRjsFI5xlAaSx2onkjc1HTK0ukqA1IrVvd5fvaMhNtzLTxInTpeYB1MK93pah"
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/json",
+    "Origin": "https://mm-prerendering-static-prod.airtrfx.com",
+    "Referer": "https://mm-prerendering-static-prod.airtrfx.com/",
+    "em-api-key": _API_KEY,
 }
 
-_IATA_TO_SLUG: dict[str, str] = {
-    # Kenya domestic
-    "NBO": "nairobi", "MBA": "mombasa", "KIS": "kisumu",
-    "EDL": "eldoret",
-    # East Africa
-    "DAR": "dar-es-salaam", "JRO": "kilimanjaro-jro",
-    "ZNZ": "zanzibar", "EBB": "entebbe",
-    "KGL": "kigali", "BJM": "bujumbura",
-    "JUB": "juba", "MGQ": "mogadishu",
-    "SEZ": "mahe", "MRU": "port-louis",
-    # Southern Africa
-    "JNB": "johannesburg", "CPT": "cape-town",
-    "HRE": "harare", "LUN": "lusaka",
-    "LLW": "lilongwe", "BLZ": "blantyre",
-    "MPM": "maputo", "WDH": "windhoek",
-    "GBE": "gaborone", "MTS": "manzini",
-    # West Africa
-    "LOS": "lagos", "ABV": "abuja",
-    "ACC": "accra", "ABJ": "abidjan",
-    "DSS": "dakar", "FNA": "freetown",
-    "ROB": "monrovia", "DLA": "douala",
-    # Central/North Africa
-    "FIH": "kinshasa", "LBV": "libreville",
-    "BGF": "bangui", "ADD": "addis-ababa",
-    "CAI": "cairo", "KRT": "khartoum",
-    "TNR": "antananarivo", "DZA": "dzaoudzi",
-    "HAH": "moroni",
-    # Europe
-    "LHR": "london", "CDG": "paris",
-    "AMS": "amsterdam", "FRA": "frankfurt",
-    "FCO": "rome", "MAD": "madrid",
-    "BRU": "brussels", "GVA": "geneva",
-    "ZRH": "zurich", "MUC": "munich",
-    "VIE": "vienna", "PRG": "prague",
-    "WAW": "warsaw", "HEL": "helsinki",
-    "OSL": "oslo", "ARN": "stockholm",
-    "CPH": "copenhagen", "DUB": "dublin",
-    "LIS": "lisbon", "ATH": "athens",
-    "BCN": "barcelona",
-    # Middle East / Indian subcontinent
-    "DXB": "dubai", "DOH": "doha",
-    "JED": "jeddah", "RUH": "riyadh",
-    "BAH": "bahrain", "KWI": "kuwait-city",
-    "MCT": "muscat", "AMM": "amman",
-    "TLV": "tel-aviv", "IST": "istanbul",
-    "BOM": "mumbai", "DEL": "new-delhi",
-    "BLR": "bangalore", "MAA": "chennai",
-    "HYD": "hyderabad", "ISB": "islamabad",
-    "CMB": "colombo", "KHI": "karachi",
-    "LHE": "lahore", "DAM": "dammam",
-    "THR": "tehran",
-    # Asia
-    "BKK": "bangkok", "HKG": "hong-kong",
-    "PVG": "shanghai", "CAN": "guangzhou",
-    "PEK": "beijing", "ICN": "seoul",
-    "NRT": "tokyo", "MNL": "manila",
-    "KUL": "kuala-lumpur", "SIN": "singapore",
-    "HAN": "hanoi", "SGN": "ho-chi-minh-city",
-    "HKT": "phuket", "TPE": "taipei",
-    # Americas
-    "JFK": "new-york", "IAD": "washington",
-    "ORD": "chicago", "IAH": "houston",
-    "ATL": "atlanta", "LAX": "los-angeles",
-    "SFO": "san-francisco", "MIA": "miami",
-    "BOS": "boston", "SEA": "seattle",
-    "DEN": "denver", "MCO": "orlando",
-    "YYZ": "toronto", "YUL": "montreal",
-    "YVR": "vancouver",
-    # Oceania
-    "SYD": "sydney", "MEL": "melbourne",
-    "PER": "perth",
-}
+
+def _as_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    return value
+
+
+def _build_route(origin, destination, travel_date):
+    departure_dt = datetime.combine(travel_date, dt_time(0, 0))
+    segment = FlightSegment(
+        airline="KQ",
+        airline_name="Kenya Airways",
+        flight_no="",
+        origin=origin,
+        destination=destination,
+        origin_city="",
+        destination_city="",
+        departure=departure_dt,
+        arrival=departure_dt,
+        duration_seconds=0,
+        cabin_class="economy",
+    )
+    return FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
 
 
 class KenyaAirwaysConnectorClient:
-    """Kenya Airways — EveryMundo airTRFX fare pages."""
+    """Kenya Airways — EveryMundo sputnik grouped-routes API."""
 
     def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
@@ -139,41 +91,27 @@ class KenyaAirwaysConnectorClient:
             await self._http.aclose()
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        t0 = time.monotonic()
-        client = await self._client()
-
-        origin_slug = _IATA_TO_SLUG.get(req.origin)
-        dest_slug = _IATA_TO_SLUG.get(req.destination)
-        if not origin_slug or not dest_slug:
-            logger.warning("KenyaAirways: unmapped IATA %s or %s", req.origin, req.destination)
-            return self._empty(req)
-
-        url = f"{_BASE}/en_ke/flights-from-{origin_slug}-to-{dest_slug}"
-        logger.info("KenyaAirways: fetching %s", url)
+        started = time.monotonic()
+        offers: list[FlightOffer] = []
 
         try:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                logger.warning("KenyaAirways: %s returned %d", url, resp.status_code)
-                return self._empty(req)
-        except Exception as e:
-            logger.error("KenyaAirways fetch error: %s", e)
-            return self._empty(req)
+            payload = self._build_payload(req)
+            cards = await self._fetch_cards(payload)
+            offers = self._build_offers(cards, req)
+        except Exception as exc:
+            logger.warning("Kenya Airways search failed for %s->%s: %s", req.origin, req.destination, exc)
 
-        fares = self._extract_fares(resp.text)
-        if not fares:
-            logger.info("KenyaAirways: no fares on page %s", url)
-            return self._empty(req)
-
-        offers = self._build_offers(fares, req)
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
+        logger.info(
+            "KenyaAirways %s->%s: %d offers in %.1fs",
+            req.origin, req.destination, len(offers), time.monotonic() - started,
+        )
 
-        elapsed = time.monotonic() - t0
-        logger.info("KenyaAirways %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
-
-        h = hashlib.md5(f"kenyaairways{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(
+            f"kenyaairways{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()
+        ).hexdigest()[:12]
         return FlightSearchResponse(
-            search_id=f"fs_{h}",
+            search_id=f"fs_{search_hash}",
             origin=req.origin,
             destination=req.destination,
             currency=offers[0].currency if offers else "KES",
@@ -181,117 +119,109 @@ class KenyaAirwaysConnectorClient:
             total_results=len(offers),
         )
 
-    @staticmethod
-    def _extract_fares(html: str) -> list[dict]:
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            html,
-            re.S,
-        )
-        if not m:
-            return []
-        try:
-            nd = json.loads(m.group(1))
-        except (json.JSONDecodeError, ValueError):
-            return []
+    def _build_payload(self, req: FlightSearchRequest) -> dict:
+        outbound = _as_date(req.date_from)
+        inbound = _as_date(req.return_from) if req.return_from else None
+        start = outbound - timedelta(days=1)
+        end = inbound + timedelta(days=7) if inbound else outbound + timedelta(days=7)
 
-        apollo = (
-            nd.get("props", {})
-            .get("pageProps", {})
-            .get("apolloState", {})
-            .get("data", {})
-        )
-        if not apollo:
-            return []
+        return {
+            "markets": ["KE", "GB", "US", "IN", "AE", "DE", "FR", "NL", "ZA", "TH", "CN"],
+            "languageCode": "en",
+            "dataExpirationWindow": "30d",
+            "datePattern": "dd MMM yy (E)",
+            "outputCurrencies": ["USD"],
+            "departure": {"start": start.isoformat(), "end": end.isoformat()},
+            "budget": {"maximum": None},
+            "passengers": {"adults": max(1, req.adults or 1)},
+            "travelClasses": ["ECONOMY"],
+            "flightType": "ROUND_TRIP" if req.return_from else "ONE_WAY",
+            "flexibleDates": True,
+            "faresPerRoute": "10",
+            "trfxRoutes": True,
+            "routesLimit": 200,
+            "sorting": [{"popularity": "DESC"}],
+            "airlineCode": "kq",
+        }
 
-        all_fares: list[dict] = []
-        for v in apollo.values():
-            if not isinstance(v, dict) or v.get("__typename") != "StandardFareModule":
-                continue
-            for f in v.get("fares", []):
-                if isinstance(f, dict) and "__ref" in f:
-                    ref_data = apollo.get(f["__ref"])
-                    if ref_data and isinstance(ref_data, dict):
-                        all_fares.append(ref_data)
-                elif isinstance(f, dict):
-                    all_fares.append(f)
-        return all_fares
+    async def _fetch_cards(self, payload: dict) -> list[dict]:
+        client = await self._client()
+        response = await client.post(_API_URL, json=payload)
+        response.raise_for_status()
 
-    def _build_offers(self, fares: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
-        target_date = req.date_from.strftime("%Y-%m-%d")
+        data = response.json()
+        cards: list[dict] = []
+        for route in data:
+            for fare in route.get("fares") or []:
+                departure_value = fare.get("departureDate")
+                if not departure_value:
+                    continue
+                departure_date = datetime.strptime(departure_value[:10], "%Y-%m-%d").date()
+
+                return_value = fare.get("returnDate")
+                return_date = None
+                if return_value:
+                    return_date = datetime.strptime(return_value[:10], "%Y-%m-%d").date()
+
+                cards.append({
+                    "origin": (fare.get("origin") or route.get("origin") or "").upper(),
+                    "destination": (fare.get("destination") or route.get("destination") or "").upper(),
+                    "origin_city": fare.get("originCity") or route.get("originCity") or "",
+                    "destination_city": fare.get("destinationCity") or route.get("destinationCity") or "",
+                    "departure_date": departure_date,
+                    "return_date": return_date,
+                    "currency": fare.get("currencyCode") or "USD",
+                    "price": round(float(fare.get("totalPrice") or fare.get("usdTotalPrice") or 0.0), 2),
+                    "trip_type": (fare.get("flightType") or "ONE_WAY").lower().replace("_", "-"),
+                    "cabin": fare.get("farenetTravelClass") or fare.get("travelClass") or "Economy",
+                })
+
+        return cards
+
+    def _build_offers(self, cards: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
         offers: list[FlightOffer] = []
 
-        for fare in fares:
-            orig = fare.get("originAirportCode", "")
-            dest = fare.get("destinationAirportCode", "")
-            if orig != req.origin or dest != req.destination:
+        for card in cards:
+            if card["origin"] != req.origin or card["destination"] != req.destination:
+                continue
+            if card["price"] <= 0:
                 continue
 
-            dep_date = fare.get("departureDate", "")
+            outbound = _build_route(req.origin, req.destination, card["departure_date"])
+            inbound = None
+            if card.get("return_date"):
+                inbound = _build_route(req.destination, req.origin, card["return_date"])
 
-            price = fare.get("totalPrice")
-            if not price or float(price) <= 0:
-                continue
-
-            currency = fare.get("currencyCode") or "KES"
-            price_f = round(float(price), 2)
-
-            dep_dt = datetime(2000, 1, 1)
-            if dep_date:
-                try:
-                    dep_dt = datetime.strptime(dep_date[:10], "%Y-%m-%d")
-                except ValueError:
-                    pass
-
-            cabin = (fare.get("formattedTravelClass") or "Economy").lower()
-            seg = FlightSegment(
-                airline="KQ",
-                airline_name="Kenya Airways",
-                flight_no="",
-                origin=req.origin,
-                destination=req.destination,
-                origin_city=fare.get("originCity", ""),
-                destination_city=fare.get("destinationCity", ""),
-                departure=dep_dt,
-                arrival=dep_dt,
-                duration_seconds=0,
-                cabin_class=cabin,
-            )
-            route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
-
-            fid = hashlib.md5(
-                f"kq_{orig}{dest}{dep_date}{price_f}{cabin}".encode()
+            price = round(card["price"], 2)
+            currency = card.get("currency") or "USD"
+            return_token = f"_{card['return_date'].isoformat()}" if card.get("return_date") else ""
+            offer_hash = hashlib.md5(
+                f"kq_{req.origin}_{req.destination}_{card['departure_date'].isoformat()}{return_token}_{price}".encode()
             ).hexdigest()[:12]
 
             offers.append(FlightOffer(
-                id=f"kq_{fid}",
-                price=price_f,
+                id=f"kq_{offer_hash}",
+                price=price,
                 currency=currency,
-                price_formatted=fare.get("formattedTotalPrice") or f"{price_f:.2f} {currency}",
-                outbound=route,
-                inbound=None,
+                price_formatted=f"{price:.2f} {currency}",
+                outbound=outbound,
+                inbound=inbound,
                 airlines=["Kenya Airways"],
                 owner_airline="KQ",
                 booking_url=(
                     f"https://www.kenya-airways.com/en_ke/book/"
                     f"?origin={req.origin}&destination={req.destination}"
-                    f"&date={target_date}"
+                    f"&date={card['departure_date'].isoformat()}"
                     f"&adults={req.adults or 1}&tripType=O"
                 ),
                 is_locked=False,
                 source="kenyaairways_direct",
                 source_tier="free",
+                conditions={
+                    "trip_type": card.get("trip_type", "one-way"),
+                    "cabin": str(card.get("cabin") or "Economy"),
+                    "fare_note": "Promo fare from Kenya Airways embedded fare module",
+                },
             ))
 
         return offers
-
-    def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"kenyaairways{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{h}",
-            origin=req.origin,
-            destination=req.destination,
-            currency="KES",
-            offers=[],
-            total_results=0,
-        )

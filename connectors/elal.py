@@ -123,7 +123,7 @@ class ElAlConnectorClient:
         return {
             "markets": ["US", "IL"],
             "languageCode": "en",
-            "dataExpirationWindow": "2d",
+            "dataExpirationWindow": "30d",
             "datePattern": "dd MMM yy (E)",
             "outputCurrencies": ["USD"],
             "departure": {"start": start.isoformat(), "end": end.isoformat()},

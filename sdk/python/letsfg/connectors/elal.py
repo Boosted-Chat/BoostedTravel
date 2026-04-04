@@ -119,12 +119,12 @@ class ElAlConnectorClient:
         outbound = _as_date(req.date_from)
         inbound = _as_date(req.return_from) if req.return_from else None
         start = outbound - timedelta(days=1)
-        end = inbound + timedelta(days=3) if inbound else outbound + timedelta(days=3)
+        end = inbound + timedelta(days=7) if inbound else outbound + timedelta(days=7)
 
         return {
             "markets": ["US", "IL"],
             "languageCode": "en",
-            "dataExpirationWindow": "2d",
+            "dataExpirationWindow": "30d",
             "datePattern": "dd MMM yy (E)",
             "outputCurrencies": ["USD"],
             "departure": {"start": start.isoformat(), "end": end.isoformat()},
