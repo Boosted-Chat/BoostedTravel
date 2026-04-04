@@ -1,13 +1,17 @@
 """
-Virgin Atlantic connector — EveryMundo airTRFX Sputnik API + route page fallback.
+Virgin Atlantic CDP Chrome connector — GraphQL response interception.
 
 Virgin Atlantic (IATA: VS) is a UK long-haul airline.
 Hub at London Heathrow (LHR) flying to 30+ destinations in the Americas,
 Caribbean, Africa, Asia, and Middle East. Part of the SkyTeam alliance.
 
-Strategy:
-  Primary: EveryMundo Sputnik fare API with date-specific query (httpx)
-  Fallback: curl_cffi route page scraping (__NEXT_DATA__ → DpaHeadline)
+Strategy (CDP Chrome + GraphQL interception):
+1. Launch REAL system Chrome (--remote-debugging-port, --user-data-dir).
+2. Connect via Playwright CDP.  NO stealth injection (causes Akamai detection).
+3. Navigate directly to parameterised search results URL.
+4. Akamai challenges the GraphQL requests (429) — browser JS auto-solves.
+5. Capture SearchOffers GraphQL response via page.on("response").
+6. Parse flightsAndFares → FlightOffers with real bookable prices.
 """
 
 from __future__ import annotations
@@ -16,13 +20,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from typing import Optional
-
-import httpx
-from curl_cffi import requests as creq
 
 from ..models.flights import (
     FlightOffer,
@@ -31,583 +35,477 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import get_httpx_proxy_url
+from .browser import (
+    find_chrome,
+    stealth_popen_kwargs,
+    proxy_chrome_args,
+    auto_block_if_proxied,
+    disable_background_networking_args,
+)
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://flights.virginatlantic.com"
-_SITE_EDITION = "en-gb"
-_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+# ── Singleton Chrome state ────────────────────────────────────────────────
 
-# Static slug mapping for VS destinations
-_IATA_TO_SLUG: dict[str, str] = {
-    # UK origins (+ city codes)
-    "LHR": "london", "MAN": "manchester", "EDI": "edinburgh",
-    "LON": "london", "LGW": "london", "STN": "london", "LCY": "london", "LTN": "london",
-    # US (+ city codes)
-    "NYC": "new-york", "JFK": "new-york", "EWR": "new-york", "LGA": "new-york",
-    "WAS": "washington-dc",
-    "LAX": "los-angeles", "SFO": "san-francisco",
-    "BOS": "boston", "MIA": "miami", "ATL": "atlanta",
-    "IAD": "washington-dc", "DCA": "washington-dc",
-    "ORD": "chicago", "SEA": "seattle", "DFW": "dallas",
-    "IAH": "houston", "DTW": "detroit", "MSP": "minneapolis",
-    "MCO": "orlando", "TPA": "tampa", "LAS": "las-vegas",
-    # Caribbean
-    "BGI": "barbados", "MBJ": "montego-bay", "ANU": "antigua",
-    "GND": "grenada", "UVF": "st-lucia", "POS": "trinidad",
-    "NAS": "nassau", "PUJ": "punta-cana",
-    # Americas
-    "HAV": "havana", "CUN": "cancun",
-    # Middle East / Asia
-    "TLV": "tel-aviv", "DXB": "dubai",
-    "DEL": "delhi", "BOM": "mumbai",
-    "HKG": "hong-kong", "PVG": "shanghai",
-    # Africa
-    "JNB": "johannesburg", "CPT": "cape-town",
-    "NBO": "nairobi", "LOS": "lagos",
-    # Europe (partner routes + city codes)
-    "PAR": "paris", "ROM": "rome",
-    "AMS": "amsterdam", "CDG": "paris", "FCO": "rome",
-    "BCN": "barcelona", "ATH": "athens",
-}
-
-_AIRPORT_API = "https://openair-california.airtrfx.com/hangar-service/v2/vs/airports/search"
-_EM_API_KEY = "HeQpRjsFI5xlAaSx2onkjc1HTK0ukqA1IrVvd5fvaMhNtzLTxInTpeYB1MK93pah"
-
-_SPUTNIK_URL = (
-    "https://openair-california.airtrfx.com"
-    "/airfare-sputnik-service/v3/vs/fares/search"
+_DEBUG_PORT = 9451
+_USER_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".virginatlantic_chrome_data"
 )
-_SPUTNIK_HEADERS = {
-    "EM-API-Key": _EM_API_KEY,
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Origin": "https://www.virginatlantic.com",
-    "Referer": "https://www.virginatlantic.com/",
-}
 
-_slug_cache: dict[str, str] = {}
-_slug_cache_loaded = False
+_pw_instance = None
+_browser = None
+_chrome_proc = None
+_browser_lock: Optional[asyncio.Lock] = None
+_context = None
 
 
-def _load_slug_cache_sync() -> None:
-    global _slug_cache, _slug_cache_loaded
-    if _slug_cache_loaded:
-        return
-    try:
-        sess = creq.Session(impersonate="chrome124")
-        r = sess.post(
-            _AIRPORT_API,
-            json={"language": "en", "siteEdition": _SITE_EDITION},
-            headers={
-                "em-api-key": _EM_API_KEY,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            timeout=10,
-        )
-        if r.status_code == 200:
-            for ap in r.json():
-                iata = ap.get("iataCode", "")
-                city = ap.get("city", {}).get("name", "")
-                if iata and city:
-                    _slug_cache[iata] = city.lower().replace(" ", "-")
-            logger.info("VS: cached %d airport slugs", len(_slug_cache))
-    except Exception as e:
-        logger.warning("VS: airport cache load failed: %s", e)
-    _slug_cache_loaded = True
+def _get_lock() -> asyncio.Lock:
+    global _browser_lock
+    if _browser_lock is None:
+        _browser_lock = asyncio.Lock()
+    return _browser_lock
 
 
-def _resolve_slug(iata: str) -> str | None:
-    slug = _IATA_TO_SLUG.get(iata)
-    if slug:
-        return slug
-    if not _slug_cache_loaded:
-        _load_slug_cache_sync()
-    return _slug_cache.get(iata)
-
-
-def _build_booking_url(origin: str, destination: str, date_from=None, date_to=None) -> str:
-    """Build a Google Flights deep-link for Virgin Atlantic.
-
-    VA's own site (flights.virginatlantic.com) ignores query params — dates/trip
-    type cannot be pre-filled.  Google Flights accepts all params and shows
-    the correct VA flight results.
-    """
-    from urllib.parse import quote_plus
-    dep = ""
-    if date_from:
-        dep_str = date_from.strftime("%b %d") if hasattr(date_from, "strftime") else str(date_from)[:10]
-        dep = f" {dep_str}"
-    if date_to:
-        ret_str = date_to.strftime("%b %d") if hasattr(date_to, "strftime") else str(date_to)[:10]
-        q = f"Virgin Atlantic {origin} to {destination}{dep} return {ret_str}"
+async def _get_context():
+    global _context
+    browser = await _get_browser()
+    if _context:
+        try:
+            if _context.pages is not None:
+                return _context
+        except Exception:
+            pass
+    contexts = browser.contexts
+    if contexts:
+        _context = contexts[0]
     else:
-        q = f"Virgin Atlantic {origin} to {destination}{dep} one way"
-    return f"https://www.google.com/travel/flights?q={quote_plus(q)}"
+        _context = await browser.new_context(
+            viewport={"width": 1366, "height": 768},
+        )
+    return _context
 
+
+async def _get_browser():
+    """Launch real Chrome via CDP — NO stealth injection (Akamai detects it)."""
+    global _pw_instance, _browser, _chrome_proc
+    lock = _get_lock()
+    async with lock:
+        if _browser:
+            try:
+                if _browser.is_connected():
+                    return _browser
+            except Exception:
+                pass
+
+        from playwright.async_api import async_playwright
+        from .browser import _launched_procs
+
+        # Try connecting to existing Chrome on the port first
+        pw = None
+        try:
+            pw = await async_playwright().start()
+            _browser = await pw.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{_DEBUG_PORT}"
+            )
+            _pw_instance = pw
+            logger.info("VS: connected to existing Chrome on port %d", _DEBUG_PORT)
+            return _browser
+        except Exception:
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+
+        # Launch Chrome HEADED — Akamai 403s headless.
+        # CRITICAL: Do NOT use inject_stealth_js — it triggers Akamai detection.
+        chrome = find_chrome()
+        os.makedirs(_USER_DATA_DIR, exist_ok=True)
+        args = [
+            chrome,
+            f"--remote-debugging-port={_DEBUG_PORT}",
+            f"--user-data-dir={_USER_DATA_DIR}",
+            "--no-first-run",
+            *proxy_chrome_args(),
+            *disable_background_networking_args(),
+            "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-http2",
+            "--window-position=-2400,-2400",
+            "--window-size=1366,768",
+            "about:blank",
+        ]
+        _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
+        _launched_procs.append(_chrome_proc)
+        await asyncio.sleep(2.0)
+
+        pw = await async_playwright().start()
+        _pw_instance = pw
+        _browser = await pw.chromium.connect_over_cdp(
+            f"http://127.0.0.1:{_DEBUG_PORT}"
+        )
+        logger.info(
+            "VS: Chrome launched headed on CDP port %d (pid %d)",
+            _DEBUG_PORT,
+            _chrome_proc.pid,
+        )
+        return _browser
+
+
+async def _reset_chrome_profile():
+    """Kill Chrome and wipe user-data-dir to clear Akamai-flagged sessions."""
+    global _browser, _chrome_proc, _context
+    try:
+        if _browser:
+            await _browser.close()
+    except Exception:
+        pass
+    _browser = None
+    _context = None
+    if _chrome_proc:
+        try:
+            _chrome_proc.terminate()
+        except Exception:
+            pass
+        _chrome_proc = None
+    if os.path.isdir(_USER_DATA_DIR):
+        try:
+            shutil.rmtree(_USER_DATA_DIR)
+            logger.info("VS: deleted stale Chrome profile %s", _USER_DATA_DIR)
+        except Exception as e:
+            logger.warning("VS: failed to delete Chrome profile: %s", e)
+
+
+# ── ISO 8601 duration parser ─────────────────────────────────────────────
+
+_PT_RE = re.compile(
+    r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", re.IGNORECASE
+)
+
+
+def _parse_pt_duration(s: str) -> int:
+    """Parse ISO 8601 duration like 'PT8H10M' → seconds."""
+    m = _PT_RE.match(s or "")
+    if not m:
+        return 0
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2) or 0)
+    seconds = int(m.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _parse_dt(s: str) -> datetime:
+    if not s:
+        return datetime(2000, 1, 1)
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        try:
+            return datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            return datetime(2000, 1, 1)
+
+
+# ── Fare family → cabin class mapping ────────────────────────────────────
+
+def _cabin_from_fare_family(fare_family_type: str) -> str:
+    """Map VA fareFamilyType to standard cabin class code."""
+    ff = (fare_family_type or "").upper()
+    if "BUS" in ff or "UPPER" in ff:
+        return "C"
+    if "PREMIUM" in ff or "COMFORT" in ff:
+        return "W"
+    if "FIRST" in ff:
+        return "F"
+    return "M"
+
+
+# ── Connector class ──────────────────────────────────────────────────────
 
 class VirginAtlanticConnectorClient:
-    """Virgin Atlantic — EveryMundo airTRFX route pages via curl_cffi."""
+    """Virgin Atlantic — CDP Chrome + GraphQL SearchOffers interception."""
 
-    def __init__(self, timeout: float = 25.0):
+    def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
 
     async def close(self):
-        pass
+        pass  # Browser is shared singleton
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        return await self._search_single(req)
+
+    async def _search_single(
+        self, req: FlightSearchRequest, _retry: int = 0
+    ) -> FlightSearchResponse:
         t0 = time.monotonic()
 
-        # Primary: Sputnik grouped-routes API (multi-fare, route-specific)
-        offers = await self._try_sputnik_grouped(req)
+        context = await _get_context()
+        page = await context.new_page()
+        # CRITICAL: Do NOT call inject_stealth_js(page) — it triggers Akamai.
+        await auto_block_if_proxied(page)
 
-        # Secondary: Sputnik search API (single cheapest fare)
-        if not offers:
-            offers = await self._try_sputnik(req)
+        # Response interception state
+        search_data: dict = {}
+        akamai_blocked = False
+        got_429_count = 0
 
-        # Fallback: HTML route page (__NEXT_DATA__)
-        if not offers:
-            origin_slug = _resolve_slug(req.origin)
-            dest_slug = _resolve_slug(req.destination)
-            if origin_slug and dest_slug:
-                url = f"{_BASE}/{_SITE_EDITION}/flights-from-{origin_slug}-to-{dest_slug}"
-                logger.info("VS: Sputnik empty, falling back to HTML %s", url)
-                try:
-                    html = await asyncio.get_event_loop().run_in_executor(
-                        None, self._fetch_sync, url
-                    )
-                except Exception as e:
-                    logger.error("VS fetch error: %s", e)
-                    html = None
-                if html:
-                    offers = self._extract_offers(html, req)
-
-        offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
-
-        elapsed = time.monotonic() - t0
-        logger.info(
-            "VS %s→%s: %d offers in %.1fs",
-            req.origin, req.destination, len(offers), elapsed,
-        )
-
-        h = hashlib.md5(
-            f"vs{req.origin}{req.destination}{req.date_from}".encode()
-        ).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{h}",
-            origin=req.origin,
-            destination=req.destination,
-            currency=offers[0].currency if offers else "GBP",
-            offers=offers,
-            total_results=len(offers),
-        )
-
-    async def _try_sputnik_grouped(self, req: FlightSearchRequest) -> list[FlightOffer]:
-        """Try EveryMundo Sputnik grouped-routes API for multi-fare results."""
-        try:
-            dt = req.date_from
-            if isinstance(dt, datetime):
-                dt = dt.date()
-            elif not isinstance(dt, date):
-                dt = datetime.strptime(str(dt), "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            dt = date.today() + timedelta(days=30)
-
-        start = dt
-        end = dt
-
-        payload = {
-            "markets": ["GB", "US", "IE"],
-            "languageCode": "en",
-            "dataExpirationWindow": "7d",
-            "datePattern": "dd MMM yy (E)",
-            "outputCurrencies": ["GBP", "USD"],
-            "departure": {"start": start.isoformat(), "end": end.isoformat()},
-            "budget": {"maximum": None},
-            "passengers": {"adults": max(1, req.adults or 1)},
-            "travelClasses": ["ECONOMY"],
-            "flightType": "ROUND_TRIP",
-            "flexibleDates": True,
-            "faresPerRoute": "10",
-            "trfxRoutes": True,
-            "routesLimit": 500,
-            "sorting": [{"popularity": "DESC"}],
-            "airlineCode": "vs",
-        }
-
-        grouped_url = _SPUTNIK_URL.replace("/fares/search", "/fares/grouped-routes")
-        try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, headers=_SPUTNIK_HEADERS,
-                proxy=get_httpx_proxy_url(),
-            ) as client:
-                r = await client.post(grouped_url, json=payload)
-                if r.status_code != 200:
-                    logger.info("VS grouped-routes: HTTP %d", r.status_code)
-                    return []
-                data = r.json()
-                if not isinstance(data, list):
-                    return []
-        except Exception as e:
-            logger.info("VS grouped-routes error: %s", e)
-            return []
-
-        from .airline_routes import city_match_set
-        origin_set = city_match_set(req.origin)
-        dest_set = city_match_set(req.destination)
-        target_date = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, "strftime") else str(req.date_from)[:10]
-
-        offers = []
-        for route in data:
-            for fare in route.get("fares") or []:
-                orig = (fare.get("originAirportCode") or route.get("origin") or "").upper()
-                dest = (fare.get("destinationAirportCode") or route.get("destination") or "").upper()
-                # Filter by correct route - BOTH origin AND destination must match
-                if orig not in origin_set or dest not in dest_set:
-                    continue
-
-                # Filter by correct date
-                dep_str = (fare.get("departureDate") or "")[:10]
-                if dep_str != target_date:
-                    continue
-
-                price = fare.get("totalPrice") or fare.get("usdTotalPrice")
-                if not price or float(price) <= 0:
-                    continue
-                # Skip redemption/miles fares
-                if fare.get("redemption"):
-                    continue
-
-                price_f = round(float(price), 2)
-                currency = fare.get("currencyCode") or "GBP"
-                dep_str = (fare.get("departureDate") or "")[:10]
-                ret_str = (fare.get("returnDate") or "")[:10]
-                cabin = (fare.get("farenetTravelClass") or "ECONOMY").lower()
-
-                dep_dt = datetime(2000, 1, 1)
-                if dep_str:
-                    try:
-                        dep_dt = datetime.strptime(dep_str, "%Y-%m-%d")
-                    except ValueError:
-                        pass
-
-                seg = FlightSegment(
-                    airline="VS", airline_name="Virgin Atlantic", flight_no="",
-                    origin=orig, destination=dest,
-                    origin_city=fare.get("originCity") or "",
-                    destination_city=fare.get("destinationCity") or "",
-                    departure=dep_dt, arrival=dep_dt,
-                    duration_seconds=0, cabin_class=cabin,
+        async def _on_response(response):
+            nonlocal akamai_blocked, got_429_count
+            url = response.url
+            if "/graphql" not in url:
+                return
+            status = response.status
+            if status == 429:
+                got_429_count += 1
+                if got_429_count <= 3:
+                    logger.info("VS: GraphQL 429 (Akamai challenge %d) — waiting for auto-resolve", got_429_count)
+                return
+            if status in (403, 444):
+                akamai_blocked = True
+                logger.warning("VS: Akamai %d on GraphQL", status)
+                return
+            if status != 200:
+                return
+            try:
+                body = await response.json()
+                if not isinstance(body, dict):
+                    return
+                faf = (
+                    body.get("data", {})
+                    .get("searchOffers", {})
+                    .get("result", {})
+                    .get("slice", {})
+                    .get("flightsAndFares")
                 )
-                outbound = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
-
-                inbound = None
-                if ret_str:
-                    try:
-                        ret_dt = datetime.strptime(ret_str, "%Y-%m-%d")
-                    except ValueError:
-                        ret_dt = dep_dt
-                    ret_seg = FlightSegment(
-                        airline="VS", airline_name="Virgin Atlantic", flight_no="",
-                        origin=dest, destination=orig,
-                        origin_city=fare.get("destinationCity") or "",
-                        destination_city=fare.get("originCity") or "",
-                        departure=ret_dt, arrival=ret_dt,
-                        duration_seconds=0, cabin_class=cabin,
+                if faf is not None:
+                    search_data.update(body)
+                    logger.info(
+                        "VS: captured SearchOffers GraphQL (%d flights)",
+                        len(faf),
                     )
-                    inbound = FlightRoute(segments=[ret_seg], total_duration_seconds=0, stopovers=0)
+            except Exception as e:
+                logger.debug("VS: GraphQL parse error: %s", e)
 
-                ret_token = f"_{ret_str}" if ret_str else ""
-                fid = hashlib.md5(
-                    f"vs_{orig}_{dest}_{dep_str}{ret_token}_{price_f}".encode()
-                ).hexdigest()[:12]
-
-                target_date = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, "strftime") else str(req.date_from)
-                offers.append(FlightOffer(
-                    id=f"vs_{fid}",
-                    price=price_f,
-                    currency=currency,
-                    price_formatted=fare.get("formattedTotalPrice") or f"{price_f:.2f} {currency}",
-                    outbound=outbound,
-                    inbound=inbound,
-                    airlines=["Virgin Atlantic"],
-                    owner_airline="VS",
-                    booking_url=_build_booking_url(req.origin, req.destination, req.date_from, req.return_from),
-                    is_locked=False,
-                    source="virginatlantic_direct",
-                    source_tier="free",
-                    conditions={
-                        "trip_type": (fare.get("flightType") or "ROUND_TRIP").lower().replace("_", "-"),
-                        "cabin": str(fare.get("formattedTravelClass") or cabin),
-                        "fare_note": "Published fare from Virgin Atlantic fare module",
-                    },
-                ))
-
-        logger.info("VS grouped-routes %s→%s: %d offers", req.origin, req.destination, len(offers))
-        return offers
-
-    async def _try_sputnik(self, req: FlightSearchRequest) -> list[FlightOffer]:
-        """Try EveryMundo Sputnik search API for single cheapest fare."""
-        try:
-            dt = req.date_from
-            if isinstance(dt, datetime):
-                dt = dt.date()
-            elif not isinstance(dt, date):
-                dt = datetime.strptime(str(dt), "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            dt = date.today() + timedelta(days=30)
-
-        days_from_now = (dt - date.today()).days
-        if days_from_now < 1:
-            days_from_now = 1
-
-        payload = {
-            "origins": [req.origin],
-            "destinations": [req.destination],
-            "departureDaysInterval": {
-                "min": days_from_now,
-                "max": days_from_now,
-            },
-            "journeyType": "ONE_WAY",
-        }
+        page.on("response", _on_response)
 
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, headers=_SPUTNIK_HEADERS,
-                proxy=get_httpx_proxy_url(),) as client:
-                r = await client.post(_SPUTNIK_URL, json=payload)
-                if r.status_code != 200:
-                    logger.info("VS Sputnik: HTTP %d", r.status_code)
-                    return []
-                fares = r.json()
-                if not isinstance(fares, list):
-                    return []
+            # Build search URL
+            adults = max(1, req.adults or 1)
+            children = req.children or 0
+            infants = req.infants or 0
+            date_str = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, "strftime") else str(req.date_from)[:10]
+
+            search_url = (
+                f"https://www.virginatlantic.com/en-EU/flights/search/slice"
+                f"?passengers=a{adults}t0c{children}i{infants}"
+                f"&origin={req.origin}&destination={req.destination}"
+                f"&departing={date_str}"
+            )
+
+            logger.info("VS: navigating to %s", search_url)
+            await page.goto(
+                search_url,
+                wait_until="domcontentloaded",
+                timeout=int(self.timeout * 1000),
+            )
+
+            # Wait for GraphQL SearchOffers response.
+            # Akamai initially returns 429, browser JS auto-solves (~5–25s).
+            remaining = max(self.timeout - (time.monotonic() - t0), 15)
+            deadline = time.monotonic() + remaining
+            while (
+                not search_data
+                and not akamai_blocked
+                and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.5)
+
+            # If hard-blocked, reset profile and retry once
+            if akamai_blocked and not search_data:
+                logger.warning("VS: Akamai hard-blocked, resetting Chrome profile")
+                await _reset_chrome_profile()
+                if _retry < 1:
+                    logger.info("VS: retrying with fresh profile")
+                    await asyncio.sleep(2.0)
+                    return await self._search_single(req, _retry=_retry + 1)
+                logger.warning("VS: Akamai blocked after retry, giving up")
+                return self._empty(req)
+
+            if not search_data:
+                logger.warning("VS: no SearchOffers data received within timeout")
+                return self._empty(req)
+
+            # Parse
+            offers = self._parse_graphql(search_data, req, search_url)
+            offers.sort(key=lambda o: o.price)
+
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "VS %s→%s: %d offers in %.1fs (CDP Chrome)",
+                req.origin, req.destination, len(offers), elapsed,
+            )
+
+            h = hashlib.md5(
+                f"vs{req.origin}{req.destination}{date_str}".encode()
+            ).hexdigest()[:12]
+
+            return FlightSearchResponse(
+                search_id=f"fs_{h}",
+                origin=req.origin,
+                destination=req.destination,
+                currency=offers[0].currency if offers else "GBP",
+                offers=offers,
+                total_results=len(offers),
+            )
         except Exception as e:
-            logger.info("VS Sputnik error: %s", e)
+            logger.error("VS CDP error: %s", e)
+            return self._empty(req)
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # GraphQL response parsing
+    # ------------------------------------------------------------------
+
+    def _parse_graphql(
+        self, body: dict, req: FlightSearchRequest, booking_url: str
+    ) -> list[FlightOffer]:
+        faf_list = (
+            body.get("data", {})
+            .get("searchOffers", {})
+            .get("result", {})
+            .get("slice", {})
+            .get("flightsAndFares", [])
+        )
+        if not faf_list:
             return []
 
-        offers = []
-        for fare in fares:
-            offer = self._build_sputnik_offer(fare, req)
+        offers: list[FlightOffer] = []
+        for item in faf_list:
+            offer = self._parse_flight_and_fares(item, req, booking_url)
             if offer:
                 offers.append(offer)
-
-        logger.info("VS Sputnik %s→%s: %d fares", req.origin, req.destination, len(offers))
         return offers
 
-    def _build_sputnik_offer(
-        self, fare: dict, req: FlightSearchRequest,
-    ) -> FlightOffer | None:
-        ps = fare.get("priceSpecification", {})
-        ob = fare.get("outboundFlight", {})
-
-        price = ps.get("usdTotalPrice") or ps.get("totalPrice")
-        if not price:
-            return None
-        try:
-            price_f = round(float(price), 2)
-        except (ValueError, TypeError):
-            return None
-        if price_f <= 0:
+    def _parse_flight_and_fares(
+        self, item: dict, req: FlightSearchRequest, booking_url: str
+    ) -> Optional[FlightOffer]:
+        flight = item.get("flight", {})
+        fares = item.get("fares", [])
+        if not flight or not fares:
             return None
 
-        currency = "USD" if ps.get("usdTotalPrice") else (ps.get("currencyCode") or "GBP")
+        # Find cheapest fare
+        best_fare = None
+        best_price = float("inf")
+        for fare in fares:
+            price_obj = fare.get("price")
+            if not price_obj:
+                continue
+            amt = price_obj.get("amountIncludingTax")
+            if amt is not None and amt > 0 and amt < best_price:
+                best_price = amt
+                best_fare = fare
 
-        dep_date_str = fare.get("departureDate", "")[:10]
-        if not dep_date_str:
+        if best_fare is None:
             return None
 
-        # Reject fares that don't match the requested date
-        target_date = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, "strftime") else str(req.date_from)[:10]
-        if dep_date_str != target_date:
+        price_obj = best_fare["price"]
+        price_f = round(best_price, 2)
+        currency = price_obj.get("currency", "GBP")
+        fare_family = best_fare.get("fareFamilyType", "")
+        cabin_class = _cabin_from_fare_family(fare_family)
+
+        # Get cabin name from fareSegments if available
+        fare_segs = best_fare.get("fareSegments", [])
+        cabin_name = fare_segs[0].get("cabinName", "") if fare_segs else ""
+
+        # Build segments
+        raw_segments = flight.get("segments", [])
+        if not raw_segments:
             return None
 
-        origin_code = ob.get("departureAirportIataCode") or req.origin
-        dest_code = ob.get("arrivalAirportIataCode") or req.destination
-        cabin_input = ob.get("fareClassInput") or ob.get("fareClass") or "Economy"
-        cabin = cabin_input.split()[0].lower() if cabin_input else "economy"
+        segments: list[FlightSegment] = []
+        for seg in raw_segments:
+            airline_obj = seg.get("airline", {})
+            op_airline = seg.get("operatingAirline", {})
+            origin_obj = seg.get("origin", {})
+            dest_obj = seg.get("destination", {})
 
-        try:
-            dep_dt = datetime.strptime(dep_date_str, "%Y-%m-%d")
-        except ValueError:
-            dep_dt = datetime(2000, 1, 1)
+            airline_code = airline_obj.get("code", "VS")
+            airline_name = airline_obj.get("name", "Virgin Atlantic")
+            flight_number = seg.get("flightNumber", "")
 
-        seg = FlightSegment(
-            airline="VS",
-            airline_name="Virgin Atlantic",
-            flight_no="",
-            origin=origin_code,
-            destination=dest_code,
-            origin_city="",
-            destination_city="",
-            departure=dep_dt,
-            arrival=dep_dt,
-            duration_seconds=0,
-            cabin_class=cabin,
+            seg_duration = _parse_pt_duration(seg.get("duration", ""))
+
+            segments.append(FlightSegment(
+                airline=airline_code,
+                airline_name=airline_name,
+                flight_no=flight_number,
+                origin=origin_obj.get("code", ""),
+                destination=dest_obj.get("code", ""),
+                origin_city=origin_obj.get("cityName", ""),
+                destination_city=dest_obj.get("cityName", ""),
+                departure=_parse_dt(seg.get("departure", "")),
+                arrival=_parse_dt(seg.get("arrival", "")),
+                duration_seconds=seg_duration,
+                cabin_class=cabin_class,
+            ))
+
+        total_duration = _parse_pt_duration(flight.get("duration", ""))
+        stopovers = max(0, len(segments) - 1)
+
+        outbound = FlightRoute(
+            segments=segments,
+            total_duration_seconds=total_duration,
+            stopovers=stopovers,
         )
-        route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
 
-        target_date = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, "strftime") else str(req.date_from)
+        # Build unique ID from flight details
+        seg_key = "_".join(
+            f"{s.flight_no}_{s.departure.strftime('%H%M') if s.departure.year > 2000 else ''}"
+            for s in segments
+        )
         fid = hashlib.md5(
-            f"vs_{origin_code}{dest_code}{dep_date_str}{price_f}{cabin}".encode()
+            f"vs_{req.origin}_{req.destination}_{seg_key}_{price_f}".encode()
         ).hexdigest()[:12]
+
+        # Collect all airline names
+        airlines = list(dict.fromkeys(
+            seg.get("airline", {}).get("name", "Virgin Atlantic")
+            for seg in raw_segments
+        ))
+
+        conditions = {}
+        if cabin_name:
+            conditions["cabin"] = cabin_name
+        if fare_family:
+            conditions["fare_family"] = fare_family
 
         return FlightOffer(
             id=f"vs_{fid}",
             price=price_f,
             currency=currency,
             price_formatted=f"{price_f:.2f} {currency}",
-            outbound=route,
+            outbound=outbound,
             inbound=None,
-            airlines=["Virgin Atlantic"],
+            airlines=airlines,
             owner_airline="VS",
-            booking_url=_build_booking_url(req.origin, req.destination, req.date_from, req.return_from),
+            booking_url=booking_url,
             is_locked=False,
             source="virginatlantic_direct",
             source_tier="free",
+            conditions=conditions,
         )
 
-    def _fetch_sync(self, url: str) -> str | None:
-        sess = creq.Session(impersonate="chrome124")
-        try:
-            r = sess.get(url, headers=_HEADERS, timeout=int(self.timeout))
-            if r.status_code != 200:
-                logger.warning("VS: %s returned %d", url, r.status_code)
-                return None
-            return r.text
-        except Exception as e:
-            logger.warning("VS curl_cffi error: %s", e)
-            return None
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-    def _extract_offers(
-        self, html: str, req: FlightSearchRequest
-    ) -> list[FlightOffer]:
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            html,
-            re.S,
-        )
-        if not m:
-            logger.info("VS: no __NEXT_DATA__ found")
-            return []
-
-        try:
-            nd = json.loads(m.group(1))
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("VS: __NEXT_DATA__ JSON parse failed")
-            return []
-
-        props = nd.get("props", {}).get("pageProps", {})
-        apollo = props.get("apolloState", {}).get("data", {})
-
-        offers: list[FlightOffer] = []
-        target_date = req.date_from.strftime("%Y-%m-%d")
-
-        for key, val in apollo.items():
-            if not isinstance(val, dict):
-                continue
-            if val.get("__typename") != "DpaHeadline":
-                continue
-
-            meta = val.get("metaData", {})
-            if not isinstance(meta, dict):
-                continue
-
-            headline = meta.get("headline", {})
-            if not isinstance(headline, dict):
-                continue
-
-            lowest_fare = headline.get("lowestFare", {})
-            if not isinstance(lowest_fare, dict):
-                continue
-
-            offer = self._build_offer_from_fare(lowest_fare, req, target_date)
-            if offer:
-                offers.append(offer)
-
-        return offers
-
-    def _build_offer_from_fare(
-        self,
-        fare: dict,
-        req: FlightSearchRequest,
-        target_date: str,
-    ) -> FlightOffer | None:
-        price = fare.get("totalPrice")
-        if not price:
-            return None
-        try:
-            price_f = round(float(price), 2)
-        except (ValueError, TypeError):
-            return None
-        if price_f <= 0:
-            return None
-
-        dep_date_str = fare.get("departureDate", "")[:10]
-        if not dep_date_str:
-            return None
-
-        # Filter: only accept fares matching the exact requested date
-        if dep_date_str != target_date:
-            return None
-
-        currency = fare.get("currencyCode") or "GBP"
-        origin_code = fare.get("originAirportCode") or req.origin
-        dest_code = fare.get("destinationAirportCode") or req.destination
-        cabin = (fare.get("formattedTravelClass") or "Economy").lower()
-
-        try:
-            dep_dt = datetime.strptime(dep_date_str, "%Y-%m-%d")
-        except ValueError:
-            dep_dt = datetime(2000, 1, 1)
-
-        seg = FlightSegment(
-            airline="VS",
-            airline_name="Virgin Atlantic",
-            flight_no="",
-            origin=origin_code,
-            destination=dest_code,
-            origin_city="",
-            destination_city="",
-            departure=dep_dt,
-            arrival=dep_dt,
-            duration_seconds=0,
-            cabin_class=cabin,
-        )
-        route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
-
-        fid = hashlib.md5(
-            f"vs_{origin_code}{dest_code}{dep_date_str}{price_f}{cabin}".encode()
-        ).hexdigest()[:12]
-
-        return FlightOffer(
-            id=f"vs_{fid}",
-            price=price_f,
-            currency=currency,
-            price_formatted=(
-                fare.get("formattedTotalPrice") or f"{price_f:.2f} {currency}"
-            ),
-            outbound=route,
-            inbound=None,
-            airlines=["Virgin Atlantic"],
-            owner_airline="VS",
-            booking_url=_build_booking_url(req.origin, req.destination, req.date_from, req.return_from),
-            is_locked=False,
-            source="virginatlantic_direct",
-            source_tier="free",
-        )
-
-    @staticmethod
-    def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
+    def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
             f"vs{req.origin}{req.destination}{req.date_from}".encode()
         ).hexdigest()[:12]
