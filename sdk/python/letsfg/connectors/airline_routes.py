@@ -157,7 +157,7 @@ AIRPORT_COUNTRY: dict[str, str] = {
     "ASU": "PY", "MVD": "UY",
     "VVI": "BO", "LPB": "BO",
     # Africa
-    "JNB": "ZA", "CPT": "ZA", "DUR": "ZA", "PLZ": "ZA",
+    "JNB": "ZA", "HLA": "ZA", "CPT": "ZA", "DUR": "ZA", "PLZ": "ZA",
     "LOS": "NG", "ABV": "NG", "PHC": "NG",
     "NBO": "KE", "MBA": "KE",
     "ADD": "ET",

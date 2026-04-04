@@ -327,6 +327,7 @@ def _build_location_index() -> dict[str, list[dict]]:
         "MDE": ("José María Córdova Airport", "Medellín", "airport"),
         # Africa
         "JNB": ("O.R. Tambo Airport", "Johannesburg", "airport"),
+        "HLA": ("Lanseria International Airport", "Johannesburg", "airport"),
         "CPT": ("Cape Town International Airport", "Cape Town", "airport"),
         "NBO": ("Jomo Kenyatta Airport", "Nairobi", "airport"),
         "ADD": ("Bole International Airport", "Addis Ababa", "airport"),
