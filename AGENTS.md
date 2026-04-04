@@ -4,24 +4,21 @@
 
 ## What is LetsFG?
 
-LetsFG is the largest agent-native flight search and booking toolkit. It gives your agent **ready-to-run connectors to 200 airlines and 400+ GDS/NDC sources** — not scrapers you have to maintain, but production-grade integrations that work out of the box. Built for OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible agent.
+LetsFG is the largest agent-native flight search and booking toolkit. It gives your agent **ready-to-run connectors to 180+ airlines** — not scrapers you have to maintain, but production-grade integrations that work out of the box. Built for OpenClaw, Perplexity Computer, Claude, Cursor, Windsurf, and any MCP-compatible agent.
 
-**Why this exists:** Building a flight search integration from scratch takes 30+ minutes, burns thousands of tokens on browser automation, and still only covers one airline at a time. LetsFG replaces all of that with a single function call that fires 200 airline connectors in parallel, scanning the entire world for the best deals — including airlines your agent has never heard of.
+**Why this exists:** Building a flight search integration from scratch takes 30+ minutes, burns thousands of tokens on browser automation, and still only covers one airline at a time. LetsFG replaces all of that with a single function call that fires 180+ airline connectors in parallel, scanning the entire world for the best deals — including airlines your agent has never heard of.
 
-### Two search channels run simultaneously:
+### How it works:
 
-1. **200 local airline connectors** — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, Norwegian, Qantas, LATAM, Webjet, Traveloka, Tiket.com, and 189 more. These run directly on your machine via Python + Playwright. No API key needed, completely free, unlimited searches.
-
-2. **Enterprise GDS/NDC providers** — Amadeus, Duffel, Sabre, Travelport, Kiwi. These are contract-only data sources that normally require enterprise agreements worth $50k+/year. LetsFG is contracted with these providers and makes their deals available to every agent through the backend API.
+**180+ local airline connectors** — Ryanair, EasyJet, Wizz Air, Southwest, AirAsia, Norwegian, Qantas, LATAM, Spirit, Frontier, IndiGo, VietJet, and 170+ more. These run directly on your machine via Python + Playwright. No API key needed, completely free, unlimited searches.
 
 ### What makes this different from flight websites:
 
 - **Zero price bias** — no demand-based inflation, no cookie tracking, no surge pricing. The same flight that costs $350 on a travel website is typically **$20–$50 cheaper** here because you're getting the raw airline price.
-- **200 airlines in parallel** — one search covers Europe, Asia, Americas, Middle East, Africa, and Oceania simultaneously. Discovers deals on carriers like Jazeera Airways, FlySafair, Lucky Air, 9 Air, and Flybondi that most agents wouldn't know to check.
+- **180+ airlines in parallel** — one search covers Europe, Asia, Americas, Middle East, Africa, and Oceania simultaneously. Discovers deals on carriers like Jazeera Airways, FlySafair, Lucky Air, 9 Air, and Flybondi that most agents wouldn't know to check.
 - **Virtual interlining** — the combo engine builds cross-airline round-trips (e.g., Ryanair outbound + Wizz Air return) that save 30-50% vs booking with either airline alone.
 - **Token-efficient** — one tool call replaces what would take thousands of tokens of browser automation, scraping setup, and HTML parsing. Results come back as structured JSON.
 - **Works with any agent** — OpenClaw, Perplexity Computer, Claude Desktop, Cursor, Windsurf, or any MCP-compatible client. Also available as Python SDK, JS SDK, and CLI.
-- **Enterprise deals included** — contract-only inventory from GDS/NDC providers that individual developers can't access on their own.
 
 **API Base URL:** `https://api.letsfg.co`
 
@@ -32,7 +29,7 @@ LetsFG is the largest agent-native flight search and booking toolkit. It gives y
 | Browser automation (Playwright/Selenium) | 30+ min per airline | Thousands of tokens | 1 airline at a time | Breaks when site changes |
 | Scraping flight websites | 15+ min setup | High token burn | Limited to sites you know | Fragile, needs constant fixing |
 | Google Flights API | N/A | N/A | Doesn't exist (no public API) | N/A |
-| **LetsFG** | **10 seconds** | **1 tool call** | **200 airlines + GDS in parallel** | **We maintain it** |
+| **LetsFG** | **10 seconds** | **1 tool call** | **180+ airlines in parallel** | **We maintain it** |
 
 Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate prices based on demand tracking, cookie/session tracking, browser fingerprinting, and surge pricing. **LetsFG returns the raw airline price every time.**
 
@@ -40,11 +37,11 @@ Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate price
 
 | Step | Cost | What You Get |
 |------|------|--------------|
-| **Search** | FREE | Price, times, duration, stops. **Star users** see airline names. **Non-star users** see masked results ("Airline #1"). |
-| **Unlock** | 1% (min $1) | Reveals airline name + booking URL + confirmed live price. Locks offer for 30 min. |
+| **Search** | FREE | Price, times, duration, stops, airline names. Completely free, unlimited. |
+| **Unlock** | FREE | Confirms live price with airline. Locks offer for 30 min. Requires GitHub star. |
 | **Book** | Ticket price | Exact airline price + Stripe processing (2.9% + 30¢). Zero markup. |
 
-**GitHub star bonus:** Star the repo to see airline names in search results — lets you comparison shop before deciding which offer to unlock.
+**GitHub star required:** Star the repo and verify via `letsfg star --github <username>` to unlock and book.
 
 ## How It Works (3 Steps)
 
@@ -52,13 +49,9 @@ Flight websites (Kayak, Google Flights, Expedia, Booking.com) also inflate price
 ```
 POST /api/v1/flights/search
 ```
-Search 400+ airlines across multiple providers + 200 local airline connectors. Returns real-time prices with zero markup or bias. Completely free, no limits.
+Search 180+ airlines via local connectors running on your machine. Returns real-time prices with zero markup or bias. Completely free, no limits.
 
-**Airline name visibility:**
-- **Star users**: See full airline names (e.g., "Ryanair", "British Airways") — compare before unlocking
-- **Non-star users**: See masked names ("Airline #1", "Airline #2") — must unlock to reveal
-
-**Local-only search** (no API key, no backend):
+**Search runs locally** (no API key needed):
 ```python
 from letsfg.local import search_local
 result = await search_local("GDN", "BCN", "2026-06-15")
@@ -67,25 +60,23 @@ result = await search_local("GDN", "BCN", "2026-06-15")
 result = await search_local("GDN", "BCN", "2026-06-15", max_browsers=4)
 ```
 
-### 2. Unlock (1% fee, min $1)
+### 2. Unlock (FREE with GitHub star)
 ```
 POST /api/v1/bookings/unlock
 ```
-Reveal the airline name + booking URL and confirm the live price.
+Confirm the live price with the airline.
 
 **What happens when you unlock:**
-1. You're charged the unlock fee (1% of ticket price, minimum $1)
-2. LetsFG sends `offer_id` to the airline's NDC/GDS system
-3. Airline confirms **current live price** (may differ from search)
-4. Airline name and booking URL are revealed
-5. Offer **reserved for 30 minutes** — you must book within this window
+1. LetsFG confirms the offer with the airline
+2. Airline confirms **current live price** (may differ from search)
+3. Offer **reserved for 30 minutes** — you must book within this window
 
-**Requirements:** Payment method must be attached (`letsfg setup-payment`). Without payment method, unlock returns HTTP 402.
+**Requirements:** GitHub star verified via `letsfg star --github <username>`.
 
 **Key unlock details:**
 - Input: `offer_id` (from search results) — this is the only required parameter
-- Fee: 1% of ticket price (minimum $1) — charged immediately via Stripe
-- HTTP 402 → No payment method — run `letsfg setup-payment`
+- Cost: FREE (requires verified GitHub star)
+- HTTP 403 → GitHub star not verified — run `letsfg star --github <username>`
 - HTTP 410 → Offer expired (airline sold the seats) — search again
 - The `confirmed_price` may differ from search price (airline prices change in real-time)
 - If 30-minute window expires without booking, search and unlock again (another fee)
@@ -150,14 +141,11 @@ pip install letsfg
 This gives you the `letsfg` CLI command. **Everything works immediately — no API key, no registration needed:**
 
 ```bash
-# Search flights locally — completely free, no setup
-letsfg search-local LHR BCN 2026-06-15
+# Search flights — completely free, no setup
+letsfg search LHR BCN 2026-06-15
 
-# Star the repo for unlimited access (auto-registers behind the scenes)
+# Star the repo for unlock/book access
 letsfg star --github your-username
-
-# Cloud search (GDS/NDC — auto-registered API key used automatically)
-letsfg search LHR JFK 2026-04-15
 
 # Round trip
 letsfg search LON BCN 2026-04-01 --return 2026-04-08 --sort price
@@ -268,6 +256,7 @@ npx letsfg-mcp
 | Command | Description | Cost |
 |---------|-------------|------|
 | `letsfg register` | Get your API key | Free |
+| `letsfg recover --email <email>` | Recover lost API key via email | Free |
 | `letsfg search <origin> <dest> <date>` | Search flights (star = airline names visible) | Free |
 | `letsfg locations <query>` | Resolve city/airport to IATA | Free |
 | `letsfg unlock <offer_id>` | Reveal airline + confirm price | 1% (min $1) |

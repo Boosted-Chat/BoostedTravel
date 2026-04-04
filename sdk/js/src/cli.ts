@@ -339,12 +339,14 @@ async function cmdMe(args: string[]) {
   const gh = p.github_username || '';
   const starOk = p.github_star_verified || false;
   if (starOk) {
-    console.log(`  GitHub:  ✓ ${gh} (star verified — unlimited access)`);
+    console.log(`  GitHub:  ✓ ${gh} (star verified)`);
   } else if (gh) {
-    console.log(`  GitHub:  ${gh} (star not verified)`);
+    console.log(`  GitHub:  ${gh} (star not yet verified — run: letsfg star --github ${gh})`);
   } else {
     console.log(`  GitHub:  Not linked — run: letsfg star --github <username>`);
   }
+  const access = p.access_granted || false;
+  console.log(`  Access:  ${access ? '✓ Granted (search, unlock, book)' : '✗ Not granted — star the repo to unlock'}`);
   console.log(`  Payment: ${p.payment_ready ? '✓ Ready' : '—'}`);
   console.log(`  Searches: ${u.total_searches || 0}`);
   console.log(`  Unlocks:  ${u.total_unlocks || 0}`);

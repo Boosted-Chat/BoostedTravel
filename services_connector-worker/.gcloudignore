@@ -1,0 +1,4 @@
+letsfg_sdk/
+__pycache__/
+*.pyc
+.git/

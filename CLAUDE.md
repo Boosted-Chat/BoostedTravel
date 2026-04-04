@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-LetsFG is an agent-native flight search & booking platform. This public repository contains the SDKs, 200 local airline connectors, and documentation. The backend API runs on Cloud Run and is in a separate private repository.
+LetsFG is an agent-native flight search & booking platform. This public repository contains the SDKs, 180+ local airline connectors, and documentation. The backend API runs on Cloud Run and is in a separate private repository.
 
 **API Base URL:** `https://api.letsfg.co`
 
@@ -24,7 +24,7 @@ LetsFG/
 │   │   │   ├── models/
 │   │   │   │   ├── __init__.py
 │   │   │   │   └── flights.py       # Pydantic models (FlightOffer, FlightSegment, etc.)
-│   │   │   └── connectors/          # 200 airline scrapers + infrastructure
+│   │   │   └── connectors/          # 180+ airline scrapers + infrastructure
 │   │   │       ├── __init__.py
 │   │   │       ├── _connector_template.py  # Reference template (3 patterns)
 │   │   │       ├── browser.py        # Shared Chrome launcher, stealth CDP, cleanup
@@ -72,16 +72,18 @@ LetsFG/
 ## Key Concepts
 
 ### Three-Step Flow
-1. **Search** (free) → Returns flight offers from 400+ airlines
+1. **Search** (free) → Returns flight offers from 180+ airlines (all local connectors)
 2. **Unlock** (free with GitHub star) → Confirms live price, locks offer for booking
 3. **Book** (free after unlock) → Creates the actual booking with the airline
 
-### Two Search Modes
-1. **Cloud search** — Queries GDS/NDC providers (Duffel, Amadeus, Sabre, Travelport, Kiwi) via backend API. Requires API key.
-2. **Local search** — Fires 200 connectors on the user's machine via Playwright + httpx. No API key needed. Both modes run simultaneously and results are merged.
+### Search Architecture
+All search runs locally on the user's machine via 180+ airline connectors (Playwright + httpx). No cloud providers are used. The backend API handles only:
+- Telemetry tracking (search stats, connector performance)
+- Unlock (confirms live price with airline)
+- Book (creates airline reservation)
 
-### 200 local airline connectors
-The `connectors/` directory contains scrapers for 200 airlines. Three connector patterns:
+### 180+ local airline connectors
+The `connectors/` directory contains scrapers for 180+ airlines. Three connector patterns:
 - **Direct API** — Reverse-engineered REST/GraphQL endpoints (fastest, ~0.3-2s)
 - **CDP Chrome** — Real Chrome browser via Playwright CDP for bot-protected sites (~10-25s)
 - **API Interception** — Playwright navigation + response capture (~5-15s)

@@ -272,6 +272,13 @@ FAST_CONNECTORS: list[tuple[str, float, str | None]] = [
     ("kiwi_connector", 25.0, None),
 ]
 
+# Connectors that support native round-trip search (return_date in URL/query).
+# These get a single RT call instead of two one-way calls in round-trip mode.
+RT_CAPABLE_CONNECTORS: set[str] = {
+    "skyscanner_meta", "kayak_meta", "cheapflights_meta", "momondo_meta",
+    "kiwi_connector",
+}
+
 
 # ── Main entry point ────────────────────────────────────────────────────────
 
@@ -405,23 +412,25 @@ async def _run_round_trip(
         destination, origin, return_date,
     )
 
-    # ── Phase 1: Both API searches in parallel ──────────────────────────
+    # ── Phase 1: Native round-trip API search ─────────────────────────
     api_offers: list[dict] = []
     if LETSFG_API_KEY:
         try:
-            out_api_task = _search_api(origin, destination, date_from, adults, currency, limit)
-            ret_api_task = _search_api(destination, origin, return_date, adults, currency, limit)
-            out_api_res, ret_api_res = await asyncio.gather(
-                out_api_task, ret_api_task, return_exceptions=True,
+            # Single native RT call — GDS/NDC providers price outbound+return
+            # together, yielding significantly cheaper fares than two one-ways.
+            api_rt_task = _search_api(
+                origin, destination, date_from, adults, currency, limit * 2,
+                return_date=return_date,
             )
+            api_rt_res = await asyncio.gather(api_rt_task, return_exceptions=True)
+            api_rt_res = api_rt_res[0]
 
-            for label, res in [("outbound", out_api_res), ("return", ret_api_res)]:
-                if isinstance(res, Exception):
-                    logger.error("Phase 1 %s API failed: %s", label, res)
-                elif isinstance(res, dict):
-                    offers = res.get("offers", [])
-                    api_offers.extend(offers)
-                    logger.info("Phase 1 %s API: %d offers", label, len(offers))
+            if isinstance(api_rt_res, Exception):
+                logger.error("Phase 1 RT API failed: %s", api_rt_res)
+            elif isinstance(api_rt_res, dict):
+                offers = api_rt_res.get("offers", [])
+                api_offers.extend(offers)
+                logger.info("Phase 1 RT API: %d native round-trip offers", len(offers))
 
             elapsed = time.monotonic() - t0
             if api_offers:
@@ -440,14 +449,22 @@ async def _run_round_trip(
     else:
         logger.info("Phase 1 skipped (no LETSFG_API_KEY)")
 
-    # ── Phase 2: Both fan-out directions in parallel ────────────────────
+    # ── Phase 2: Fan-out — one-way pairs + aggregator round-trip ───────
     outbound_offers: list[dict] = []
     return_offers: list[dict] = []
+    rt_aggregator_offers: list[dict] = []
     try:
+        # One-way fan-outs for combo engine (direct airlines only, exclude RT-capable)
         out_local_task = _search_local(origin, destination, date_from, adults, currency, limit * 2)
         ret_local_task = _search_local(destination, origin, return_date, adults, currency, limit * 2)
-        out_local_res, ret_local_res = await asyncio.gather(
-            out_local_task, ret_local_task, return_exceptions=True,
+        # Native RT fan-out for aggregators (Skyscanner, Kayak, CheapFlights, Momondo, Kiwi)
+        rt_local_task = _search_local(
+            origin, destination, date_from, adults, currency, limit * 2,
+            return_date=return_date, only_rt_capable=True,
+        )
+        out_local_res, ret_local_res, rt_local_res = await asyncio.gather(
+            out_local_task, ret_local_task, rt_local_task,
+            return_exceptions=True,
         )
 
         if isinstance(out_local_res, Exception):
@@ -461,6 +478,13 @@ async def _run_round_trip(
         elif isinstance(ret_local_res, dict):
             return_offers = ret_local_res.get("offers", [])
             logger.info("Phase 2 return: %d offers", len(return_offers))
+
+        if isinstance(rt_local_res, Exception):
+            logger.error("Phase 2 RT aggregator fan-out failed: %s", rt_local_res)
+        elif isinstance(rt_local_res, dict):
+            rt_aggregator_offers = rt_local_res.get("offers", [])
+            logger.info("Phase 2 RT aggregators: %d native round-trip offers",
+                        len(rt_aggregator_offers))
     except Exception as exc:
         logger.error("Phase 2 round-trip failed: %s", exc)
 
@@ -489,8 +513,8 @@ async def _run_round_trip(
         logger.error("Combo engine failed: %s", exc)
 
     # ── Merge everything ────────────────────────────────────────────────
-    # API offers (both directions) + outbound one-ways + return one-ways + combos
-    all_offers = api_offers + outbound_offers + return_offers + combos_json
+    # API RT offers + aggregator RT offers + outbound one-ways + return one-ways + combos
+    all_offers = api_offers + rt_aggregator_offers + outbound_offers + return_offers + combos_json
     merged = _deduplicate(all_offers)
     if max_stops is not None:
         merged = _filter_by_stops(merged, max_stops)
@@ -500,9 +524,10 @@ async def _run_round_trip(
     elapsed = time.monotonic() - t0
     logger.info(
         "Round-trip complete: %s⇄%s %s/%s — %d offers "
-        "(%d api + %d out + %d ret + %d combos) in %.1fs",
+        "(%d api_rt + %d agg_rt + %d out + %d ret + %d combos) in %.1fs",
         origin, destination, date_from, return_date, len(merged),
-        len(api_offers), len(outbound_offers), len(return_offers),
+        len(api_offers), len(rt_aggregator_offers),
+        len(outbound_offers), len(return_offers),
         len(combos_json), elapsed,
     )
 
@@ -614,11 +639,19 @@ async def _search_api(
 async def _search_local(
     origin: str, destination: str, date_from: str,
     adults: int, currency: str, limit: int,
+    return_date: str | None = None,
+    only_rt_capable: bool = False,
 ) -> dict:
     """Fan out search to individual connector-worker Cloud Run instances.
 
     Each connector gets its own HTTP call → its own Cloud Run instance.
     All connectors run truly in parallel (no browser semaphore).
+
+    When return_date is set, the payload includes it so connectors that
+    support native round-trip can build RT URLs (aggregators, Kiwi).
+
+    When only_rt_capable is True, only fire connectors in RT_CAPABLE_CONNECTORS
+    (used for the dedicated round-trip fan-out in _run_round_trip).
     """
     if not CONNECTOR_WORKER_URL:
         logger.error("CONNECTOR_WORKER_URL not set — skipping fan-out")
@@ -660,36 +693,37 @@ async def _search_local(
     origin_country = get_country(origin)
     dest_country = get_country(destination)
 
+    def _base_payload(connector_id: str, all_pairs: bool) -> dict:
+        payload = {
+            "connector_id": connector_id,
+            "origin": origin,
+            "destination": destination,
+            "date_from": date_from,
+            "adults": adults,
+            "currency": currency,
+            "sibling_pairs": sibling_pairs,
+            "all_pairs": all_pairs,
+        }
+        if return_date:
+            payload["return_date"] = return_date
+        return payload
+
     # Fast connectors (Ryanair, Wizzair, Kiwi) — search all pairs
     for fast_id, fast_timeout, countries_key in FAST_CONNECTORS:
+        if only_rt_capable and fast_id not in RT_CAPABLE_CONNECTORS:
+            continue
         if countries_key:
             countries = AIRLINE_COUNTRIES.get(countries_key)
             if countries and origin_country and dest_country:
                 if origin_country not in countries and dest_country not in countries:
                     continue
-        tasks.append({
-            "connector_id": fast_id,
-            "origin": origin,
-            "destination": destination,
-            "date_from": date_from,
-            "adults": adults,
-            "currency": currency,
-            "sibling_pairs": sibling_pairs,
-            "all_pairs": True,
-        })
+        tasks.append(_base_payload(fast_id, all_pairs=True))
 
     # Direct airline connectors (route-filtered) — primary + siblings
     for name, _cls, timeout in filtered:
-        tasks.append({
-            "connector_id": name,
-            "origin": origin,
-            "destination": destination,
-            "date_from": date_from,
-            "adults": adults,
-            "currency": currency,
-            "sibling_pairs": sibling_pairs,
-            "all_pairs": False,
-        })
+        if only_rt_capable and name not in RT_CAPABLE_CONNECTORS:
+            continue
+        tasks.append(_base_payload(name, all_pairs=False))
 
     logger.info("Fan-out: %s->%s — %d tasks (%d direct + %d fast)",
                 origin, destination, len(tasks),
@@ -748,29 +782,47 @@ async def _search_local(
 
 async def _call_connector(
     client: httpx.AsyncClient, headers: dict, task: dict,
+    max_retries: int = 2,
 ) -> dict:
-    """Make a single HTTP call to the connector-worker service."""
+    """Make a single HTTP call to the connector-worker service.
+
+    Retries on HTTP 500 (Cloud Run cold-start / no available instance)
+    with exponential backoff: 2s, 4s.  By the time the retry fires,
+    Cloud Run will have spun up more instances from the initial burst.
+    """
     connector_id = task["connector_id"]
-    try:
-        resp = await client.post(
-            f"{CONNECTOR_WORKER_URL}/run",
-            json=task,
-            headers=headers,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        n_offers = len(data.get("offers", []))
-        if n_offers:
-            logger.info("+ %s: %d offers in %.1fs",
-                        connector_id, n_offers,
-                        data.get("elapsed_seconds", 0))
-        return data
-    except httpx.HTTPStatusError as exc:
-        logger.warning("- %s: HTTP %s", connector_id, exc.response.status_code)
-        return {"offers": [], "total_results": 0}
-    except Exception as exc:
-        logger.warning("- %s: %s", connector_id, exc)
-        return {"offers": [], "total_results": 0}
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await client.post(
+                f"{CONNECTOR_WORKER_URL}/run",
+                json=task,
+                headers=headers,
+            )
+            if resp.status_code == 500 and attempt < max_retries:
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            n_offers = len(data.get("offers", []))
+            if n_offers:
+                logger.info("+ %s: %d offers in %.1fs%s",
+                            connector_id, n_offers,
+                            data.get("elapsed_seconds", 0),
+                            f" (retry {attempt})" if attempt else "")
+            return data
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 500 and attempt < max_retries:
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
+            logger.warning("- %s: HTTP %s", connector_id, exc.response.status_code)
+            return {"offers": [], "total_results": 0}
+        except Exception as exc:
+            if attempt < max_retries:
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
+            logger.warning("- %s: %s", connector_id, exc)
+            return {"offers": [], "total_results": 0}
+    return {"offers": [], "total_results": 0}
 
 
 # ── Callback ────────────────────────────────────────────────────────────────

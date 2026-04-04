@@ -254,8 +254,15 @@ class EtihadConnectorClient:
 
             # Direct API call from browser JS context (bypasses Akamai — same origin, valid session)
             dep = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, 'strftime') else str(req.date_from)
+
+            # The 1A Calendar Pricing Service requires originAirportCityCode
+            # and originAirportCountryCode — without these it returns 400
+            # "Invalid Origin Airport Country".
+            from .airline_routes import get_country
+            origin_country = get_country(api_origin) or "AE"
+
             result = await page.evaluate("""async (params) => {
-                const [origin, dest, depDate] = params;
+                const [origin, dest, depDate, originCountry] = params;
                 try {
                     const resp = await fetch('/ada-services/bff-calendar-pricing/service/instant-search/v2/fetch-prices', {
                         method: 'POST',
@@ -265,9 +272,11 @@ class EtihadConnectorClient:
                         },
                         body: JSON.stringify({
                             originAirportCode: origin,
+                            originAirportCityCode: origin,
+                            originAirportCountryCode: originCountry,
                             destinationAirportCode: dest,
                             cabinClass: 'ECONOMY',
-                            tripType: 'return',
+                            tripType: 'RT',
                             passengerTypeCode: 'ADT',
                             departureDate: depDate,
                             tripDuration: '7',
@@ -279,7 +288,7 @@ class EtihadConnectorClient:
                 } catch (e) {
                     return {_error: -1, _msg: e.message};
                 }
-            }""" , [api_origin, api_dest, dep])
+            }""" , [api_origin, api_dest, dep, origin_country])
 
             if not result or result.get("_error"):
                 err = result.get("_error", "?") if result else "null"

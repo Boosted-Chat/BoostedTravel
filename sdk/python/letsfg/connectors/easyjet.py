@@ -297,9 +297,10 @@ class EasyjetConnectorClient:
             total_results=len(all_offers),
         )
 
-    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def _search_single(self, req: FlightSearchRequest, _retry: int = 0) -> FlightSearchResponse:
         """
         Search easyJet for a single origin→dest pair using CDP Chrome.
+        Retries once after Akamai block + profile reset.
         """
         t0 = time.monotonic()
 
@@ -402,10 +403,15 @@ class EasyjetConnectorClient:
             while not search_data and not akamai_blocked and time.monotonic() < deadline:
                 await asyncio.sleep(0.5)
 
-            # If Akamai blocked us, nuke the profile and bail
+            # If Akamai blocked us, reset profile and retry once
             if akamai_blocked:
-                logger.warning("easyJet: Akamai flagged session, clearing Chrome profile for next run")
+                logger.warning("easyJet: Akamai flagged session, clearing Chrome profile")
                 await _reset_chrome_profile()
+                if _retry < 1:
+                    logger.info("easyJet: retrying %s→%s with fresh profile", req.origin, req.destination)
+                    await asyncio.sleep(2.0)  # Brief pause before retry
+                    return await self._search_single(req, _retry=_retry + 1)
+                logger.warning("easyJet: Akamai blocked after retry, giving up")
                 return self._empty(req)
 
             if not search_data or not search_data.get("journeyPairs"):

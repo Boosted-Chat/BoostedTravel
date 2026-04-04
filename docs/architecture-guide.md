@@ -251,11 +251,11 @@ configure_max_browsers(16)
 
 ```bash
 # CLI flag
-letsfg search-local LHR BCN 2026-04-15 --max-browsers 4
+letsfg search LHR BCN 2026-04-15 --max-browsers 4
 
 # Environment variable
 export LETSFG_MAX_BROWSERS=4
-letsfg search-local LHR BCN 2026-04-15
+letsfg search LHR BCN 2026-04-15
 ```
 
 Priority: CLI flag > environment variable > auto-detect from RAM.

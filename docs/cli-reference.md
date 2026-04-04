@@ -21,8 +21,8 @@ The `letsfg` CLI is available via both Python and JavaScript. Same commands, sam
 | Command | Description |
 |---------|-------------|
 | `letsfg register` | Create account and get API key |
-| `letsfg search <origin> <dest> <date>` | Search flights (free, requires API key) |
-| `letsfg search-local <origin> <dest> <date>` | Search flights locally (free, **no API key**) |
+| `letsfg recover --email <email>` | Recover lost API key via email verification |
+| `letsfg search <origin> <dest> <date>` | Search flights (free, runs 180+ local connectors) |
 | `letsfg system-info` | Show system resources & concurrency tier |
 | `letsfg locations <query>` | Resolve city/airport to IATA codes |
 | `letsfg unlock <offer_id>` | Unlock offer details (free) |
@@ -60,30 +60,23 @@ If omitted, the search returns all cabin classes.
 
 ## Examples
 
-### Local Search (No API Key)
-
-```bash
-# Search 200 local airline connectors — completely free, no registration
-letsfg search-local LHR JFK 2026-04-15
-
-# With cabin class and JSON output
-letsfg search-local LON BCN 2026-04-01 --cabin M --json
-
-# Limit browser concurrency for constrained environments
-letsfg search-local LHR BCN 2026-04-15 --max-browsers 4
-```
-
-Local search queries 200 airline websites directly. No API key needed — install and search immediately.
-
 ### Basic Search
 
 ```bash
-# One-way London to New York
+# One-way London to New York — queries 180+ local airline connectors
 letsfg search LHR JFK 2026-04-15
 
 # Round-trip with cabin class
 letsfg search LON BCN 2026-04-01 --return 2026-04-08 --cabin M --sort price
+
+# Direct flights only, JSON output
+letsfg search LON BCN 2026-04-01 --max-stops 0 --json
+
+# Limit browser concurrency for constrained environments
+letsfg search LHR BCN 2026-04-15 --max-browsers 4
 ```
+
+All search is local — queries 180+ airline websites directly. No API key needed, just install and search.
 
 ### Multi-Passenger
 
@@ -161,6 +154,20 @@ letsfg system-info --json
 ```
 
 Output includes platform, CPU cores, total/available RAM, tier name, recommended max browsers, and current setting.
+
+### Account Recovery
+
+Lost your API key? Recover it via email verification:
+
+```bash
+# Step 1: Request a recovery code (sent to your registered email)
+letsfg recover --email you@example.com
+
+# Step 2: Enter the 6-digit code from your email
+letsfg recover --email you@example.com --code 123456
+```
+
+The code expires in 15 minutes. Once verified, a new API key is issued and your previous key is invalidated.
 
 ## Environment Variables
 

@@ -27,14 +27,14 @@ import time
 from datetime import datetime, date, timedelta
 from typing import Optional
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
-from connectors.browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,7 @@ async def _get_context():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
@@ -191,6 +192,7 @@ class AirTransatConnectorClient:
         t0 = time.monotonic()
         context = await _get_context()
         page = await context.new_page()
+        await auto_block_if_proxied(page)
 
         search_data: dict = {}
         api_event = asyncio.Event()
@@ -252,6 +254,9 @@ class AirTransatConnectorClient:
             if not ok:
                 return self._empty(req)
             await asyncio.sleep(1.0)
+
+            # Re-dismiss overlays (newsletter popup may appear after delay)
+            await _dismiss_overlays(page)
 
             ok = await self._fill_date(page, req)
             if not ok:
@@ -366,7 +371,7 @@ class AirTransatConnectorClient:
         try:
             # Click departure date field or its calendar button to open picker
             dep_field = page.locator('#datePickerDeparture').first
-            await dep_field.click(timeout=5000)
+            await dep_field.click(timeout=5000, force=True)
             await asyncio.sleep(1.5)
 
             # Try calendar button if picker didn't open
@@ -383,13 +388,13 @@ class AirTransatConnectorClient:
                 }""")
                 await asyncio.sleep(1.5)
 
-            # Navigate to target month
+            # Navigate to target month — VDP v2 uses .vdpPeriodControl for month text
             for _ in range(12):
                 month_text = await page.evaluate("""() => {
                     const h = document.querySelectorAll(
+                        '.vdpPeriodControl, .vdpPeriodControls, ' +
                         '.vdp-datepicker__calendar header span, ' +
-                        '[class*="calendar"] [class*="month"], [class*="calendar"] [class*="title"], ' +
-                        '.month-title, th[colspan]'
+                        '[class*="calendar"] [class*="month"], .month-title, th[colspan]'
                     );
                     return [...h].map(e => e.textContent.trim()).join('|');
                 }""")
@@ -397,20 +402,30 @@ class AirTransatConnectorClient:
                     break
                 await page.evaluate("""() => {
                     const n = document.querySelector(
-                        '.vdp-datepicker__calendar .next, [class*="next"], ' +
-                        '[aria-label*="next"], [aria-label*="Next"]'
+                        '.vdpArrowNext, .vdpArrow.vdpArrowNext, ' +
+                        '.vdp-datepicker__calendar .next, ' +
+                        '[aria-label*="next" i], [aria-label*="Next"]'
                     );
                     if (n && n.offsetHeight > 0) n.click();
                 }""")
                 await asyncio.sleep(0.5)
 
-            # Click the target day
+            # Click the target day — VDP v2 uses .vdpCell.selectable with button/span children
             clicked = await page.evaluate("""(day) => {
-                const cells = document.querySelectorAll(
+                // VDP v2 cells
+                const cells = document.querySelectorAll('.vdpCell.selectable');
+                for (const c of cells) {
+                    const text = c.textContent.trim();
+                    if (text === day && c.offsetHeight > 0) {
+                        c.click(); return true;
+                    }
+                }
+                // VDP v1 fallback
+                const spans = document.querySelectorAll(
                     '.vdp-datepicker__calendar td span, td[class*="day"], ' +
                     'td[role="gridcell"], [class*="calendar-day"]'
                 );
-                for (const c of cells) {
+                for (const c of spans) {
                     const text = c.textContent.trim();
                     if (text === day && !c.classList.contains('disabled') &&
                         c.getAttribute('aria-disabled') !== 'true' && c.offsetHeight > 0) {
@@ -421,8 +436,10 @@ class AirTransatConnectorClient:
             }""", target_day)
             if clicked:
                 logger.info("AirTransat: date selected %s", iso)
+            else:
+                logger.warning("AirTransat: could not click day %s in %s", target_day, target_month)
             await asyncio.sleep(1.0)
-            return True
+            return clicked
         except Exception as e:
             logger.warning("AirTransat: date error: %s", e)
             return False

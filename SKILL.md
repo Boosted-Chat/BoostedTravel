@@ -20,14 +20,14 @@ description: "LetsFG — Agent-native flight search, hotel search, and booking A
 ## Skills
 
 ### search_flights
-Search 400+ airlines worldwide via NDC and GDS. Returns real-time prices with zero markup or bias — $20–50 cheaper than OTAs.
+Search 180+ airlines worldwide via local connectors. Returns real-time prices with zero markup or bias — $20–50 cheaper than OTAs.
 - **Cost:** FREE (unlimited)
 - **Input:** origin (IATA), destination (IATA), date_from, optional: date_to, return_from, return_to, adults, children, infants, cabin_class (M/W/C/F), max_stopovers, currency, sort, limit
 - **Output:** List of flight offers with price, airlines, times, segments, conditions, passenger_ids
 - **Note:** All offers are locked. Must unlock before booking.
 
 ### search_hotels
-Search 300,000+ hotels worldwide via Amadeus GDS + Hotelbeds B2B wholesale net rates.
+Search hotels worldwide via direct hotel APIs and aggregators.
 - **Cost:** FREE
 - **Input:** location (city name or IATA), checkin, checkout, adults, children, rooms, min_stars, max_price, currency, sort, limit
 - **Output:** List of hotel offers with name, address, stars, rating, photos, rooms, prices, cancellation policies
@@ -39,7 +39,7 @@ Search ground transfers — private cars, taxis, shared shuttles, airport expres
 - **Output:** Transfer options with prices and vehicle types
 
 ### search_activities
-Search 300,000+ activities — tours, museum tickets, day trips via Amadeus + Hotelbeds wholesale.
+Search activities — tours, museum tickets, day trips via direct APIs and aggregators.
 - **Cost:** FREE
 - **Input:** location, date_from, date_to
 - **Output:** Activity options with prices, descriptions, availability
@@ -67,7 +67,7 @@ Override auto-detected browser concurrency limit for local search.
 - **Input:** max_browsers (integer, 1–32)
 - **Priority:** env var `LETSFG_MAX_BROWSERS` > explicit config > auto-detect from RAM
 - **Python:** `from letsfg import configure_max_browsers; configure_max_browsers(4)`
-- **CLI:** `letsfg search-local LHR BCN 2026-04-15 --max-browsers 4`
+- **CLI:** `letsfg search LHR BCN 2026-04-15 --max-browsers 4`
 - **MCP:** `search_flights` tool with `max_browsers` parameter
 - **JS:** `await searchLocal('LHR', 'BCN', '2026-04-15', { maxBrowsers: 4 })`
 
@@ -125,7 +125,7 @@ Register a new AI agent.
 - **Output:** api_key (permanent credential)
 
 ### setup_payment
-Attach a payment card for booking. **Required before booking Duffel/GDS flights.**
+Attach a payment card for booking. **Required before booking flights.**
 - **Cost:** FREE (attaching the card is free; you are charged the ticket price when you book)
 - **Input:** token (e.g. "tok_visa" for testing) or payment_method_id or card details
 - **Output:** Payment status confirmation
@@ -364,9 +364,8 @@ def search_with_retry(bt, origin, dest, date, max_retries=3):
 
 ## Key Facts
 
-- 400+ airlines via NDC and GDS (Duffel)
-- 300,000+ hotels via Amadeus GDS + Hotelbeds B2B
-- 300,000+ activities via Amadeus + Hotelbeds wholesale
+- 180+ airlines via local connectors (Playwright + httpx)
+- Hotels and activities via direct APIs
 - Zero price bias — no demand inflation, no cookie tracking
 - $20–50 cheaper than OTAs on average
 - Real airline PNR codes and hotel confirmations

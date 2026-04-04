@@ -6,7 +6,7 @@ Star Alliance member. 50+ destinations across NZ, Pacific islands, AU, Asia, Ame
 
 Strategy (httpx, no browser):
   Air New Zealand uses EveryMundo airTRFX (same platform as Air Canada / Thai).
-  1. Fetch route page or homepage: airnewzealand.com/flights/en-nz/flights-from-{o}-to-{d}
+  1. Fetch route page: airnewzealand.com/flights/en-nz/flights-from-{origin}-to-{dest}
   2. Extract __NEXT_DATA__ JSON from <script> tag
   3. Parse StandardFareModule fares from Apollo GraphQL state
   4. Filter by matching origin/destination airport codes and departure date
@@ -24,17 +24,19 @@ from typing import Optional
 
 import httpx
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
+from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.airnewzealand.com"
+_BASE = "https://www.airnewzealand.co.nz"
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -46,6 +48,8 @@ _HEADERS = {
 
 # IATA → slug for Air New Zealand's EveryMundo fare pages.
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "TYO": "tokyo",
     # New Zealand
     "AKL": "auckland", "WLG": "wellington", "CHC": "christchurch",
     "ZQN": "queenstown", "DUD": "dunedin", "PMR": "palmerston-north",
@@ -84,8 +88,8 @@ class AirNewZealandConnectorClient:
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True
-            )
+                timeout=self.timeout, headers=_HEADERS, follow_redirects=True,
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -102,25 +106,21 @@ class AirNewZealandConnectorClient:
             logger.warning("Air NZ: unmapped IATA %s or %s", req.origin, req.destination)
             return self._empty(req)
 
-        # Try route-specific page first, fall back to homepage
-        route_url = f"{_BASE}/flights/en-nz/flights-from-{origin_slug}-to-{dest_slug}"
-        home_url = f"{_BASE}/flights/en-nz/"
-        fares = None
+        url = f"{_BASE}/flights/en-nz/flights-from-{origin_slug}-to-{dest_slug}"
+        logger.info("Air NZ: fetching %s", url)
 
-        for url in (route_url, home_url):
-            logger.info("Air NZ: fetching %s", url)
-            try:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    continue
-                fares = self._extract_fares(resp.text)
-                if fares:
-                    break
-            except Exception as e:
-                logger.error("Air NZ fetch error: %s", e)
+        try:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                logger.warning("Air NZ: %s returned %d", url, resp.status_code)
+                return self._empty(req)
+        except Exception as e:
+            logger.error("Air NZ fetch error: %s", e)
+            return self._empty(req)
 
+        fares = self._extract_fares(resp.text)
         if not fares:
-            logger.info("Air NZ: no fares found for %s→%s", req.origin, req.destination)
+            logger.info("Air NZ: no fares on page %s", url)
             return self._empty(req)
 
         offers = self._build_offers(fares, req)
@@ -179,13 +179,30 @@ class AirNewZealandConnectorClient:
     def _build_offers(self, fares: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
 
+        # Separate exact-date and nearby fares (airTRFX shows cached snapshots)
+        exact_fares: list[dict] = []
+        nearby_fares: list[dict] = []
         for fare in fares:
             orig = fare.get("originAirportCode", "")
             dest = fare.get("destinationAirportCode", "")
-            if orig != req.origin or dest != req.destination:
+            if orig not in valid_origins or dest not in valid_dests:
                 continue
+            if not fare.get("totalPrice") or float(fare.get("totalPrice", 0)) <= 0:
+                continue
+            if fare.get("departureDate", "")[:10] == target_date:
+                exact_fares.append(fare)
+            else:
+                nearby_fares.append(fare)
 
+        # Prefer exact-date fares; fall back to all route fares
+        use_fares = exact_fares if exact_fares else nearby_fares
+
+        for fare in use_fares:
+            orig = fare.get("originAirportCode", "")
+            dest = fare.get("destinationAirportCode", "")
             dep_date = fare.get("departureDate", "")
 
             price = fare.get("totalPrice")
