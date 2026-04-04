@@ -555,8 +555,11 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "GA", "CM", "ML",
     },
     "saa": {
-        "ZA", "GH", "NG", "KE", "TZ", "MU", "MZ", "ZW", "NA", "GB",
-        "DE", "US", "AU", "HK", "SG", "IN",
+        "ZA", "AE", "AO", "AR", "AT", "AU", "BE", "BF", "BI", "BJ",
+        "BR", "BW", "CD", "CG", "CH", "CL", "CM", "CO", "DE", "EG",
+        "ET", "GA", "GH", "KE", "ML", "MU", "MW", "MZ", "NA", "NG",
+        "NZ", "PE", "PT", "RW", "SG", "SN", "TD", "TZ", "UG", "UY",
+        "ZM", "ZW",
     },
     "sas": {
         "SE", "NO", "DK", "FI", "IS", "GB", "IE", "FR", "DE", "NL",

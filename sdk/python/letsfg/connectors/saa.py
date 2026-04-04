@@ -46,52 +46,56 @@ _HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Derived from flysaa.com sitemap — only slugs that actually have airTRFX pages.
 _IATA_TO_SLUG: dict[str, str] = {
-    # City codes (multi-airport cities)
-    "LON": "london", "NYC": "new-york", "PAR": "paris", "ROM": "rome",
     # South Africa domestic
     "JNB": "johannesburg", "CPT": "cape-town",
     "DUR": "durban", "PLZ": "port-elizabeth",
     "BFN": "bloemfontein", "GRJ": "george",
-    "ELS": "east-london",
+    "UTW": "queenstown",
     # Southern Africa
     "WDH": "windhoek", "MPM": "maputo",
     "LUN": "lusaka", "HRE": "harare",
     "LLW": "lilongwe", "GBE": "gaborone",
-    "MTS": "manzini", "MRU": "mauritius",
-    "SEZ": "mahe", "VFA": "victoria-falls",
+    "MRU": "mauritius", "VFA": "victoria-falls",
     "LVI": "livingstone", "MUB": "maun",
     # East Africa
     "NBO": "nairobi", "DAR": "dar-es-salaam",
     "JRO": "kilimanjaro", "ZNZ": "zanzibar",
     "EBB": "entebbe", "KGL": "kigali",
-    "ADD": "addis-ababa",
+    "ADD": "addis-ababa", "MBA": "mombasa",
+    "KIS": "kisumu", "BJM": "bujumbura",
     # West Africa
     "LOS": "lagos", "ABV": "abuja",
     "ACC": "accra", "DKR": "dakar",
-    # Central / North Africa
+    "COO": "cotonou", "BKO": "bamako",
+    "OUA": "ouagadougou",
+    # Central Africa
     "FIH": "kinshasa", "LBV": "libreville",
-    "CAI": "cairo",
+    "DLA": "douala", "BZV": "brazzaville",
+    "PNR": "pointe-noire", "FBM": "lubumbashi",
+    "LAD": "luanda", "NDJ": "ndjamena",
+    # North Africa / Middle East
+    "CAI": "cairo", "SSH": "sharm-el-sheikh",
+    "LXR": "luxor", "DXB": "dubai",
     # Europe
-    "LHR": "london", "FRA": "frankfurt",
-    "CDG": "paris", "MUC": "munich",
-    "ZRH": "zurich", "AMS": "amsterdam",
-    "FCO": "rome", "MAD": "madrid",
-    "ATH": "athens", "IST": "istanbul",
-    # Middle East
-    "DXB": "dubai", "DOH": "doha",
-    "JED": "jeddah",
-    # Asia
-    "BOM": "mumbai", "DEL": "delhi",
-    "BKK": "bangkok", "HKG": "hong-kong",
-    "SIN": "singapore", "PER": "perth",
-    "PEK": "beijing",
-    # Americas
-    "JFK": "new-york", "IAD": "washington",
-    "MIA": "miami", "ATL": "atlanta",
-    "GRU": "sao-paulo",
+    "FRA": "frankfurt", "MUC": "munich",
+    "ZRH": "zurich", "VIE": "vienna",
+    "LIS": "lisbon", "BRU": "brussels",
+    # South America
+    "GRU": "sao-paulo", "GIG": "rio-de-janeiro",
+    "EZE": "buenos-aires", "LIM": "lima",
+    "BOG": "bogota", "SCL": "santiago",
+    "MVD": "montevideo",
     # Oceania
     "SYD": "sydney", "MEL": "melbourne",
+    "PER": "perth", "BNE": "brisbane",
+    "ADL": "adelaide", "DRW": "darwin",
+    "CNS": "cairns", "HBA": "hobart",
+    "CBR": "canberra", "AKL": "auckland",
+    "WLG": "wellington", "CHC": "christchurch",
+    # Asia
+    "SIN": "singapore",
 }
 
 
