@@ -434,12 +434,9 @@ class KiwiConnectorClient:
                 if ret_date:
                     search_deeplink += f"/{ret_date}"
 
-            # Prefer stable search deeplink over token URL (which expires)
-            if not booking_url:
-                booking_url = search_deeplink
-            else:
-                # Store both — conditions has the search deeplink as fallback
-                conditions["kiwi_search_url"] = search_deeplink
+            # Always use stable search deeplink — token URLs expire in minutes
+            # and are useless by the time the user clicks
+            booking_url = search_deeplink
 
         itin_id = itin.get("id", "")
         offer_id = f"ks_{hashlib.md5(itin_id.encode()).hexdigest()[:12]}" if itin_id else f"ks_{hashlib.md5(f'{price}{airlines}'.encode()).hexdigest()[:12]}"
