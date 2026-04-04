@@ -308,14 +308,18 @@ class KlmConnectorClient:
         dep_date_str = fare.get("departureDate", "")[:10]
         if not dep_date_str:
             return None
+        return_date_str = fare.get("returnDate", "")[:10]
 
         currency = fare.get("currencyCode") or "EUR"
         origin_code = fare.get("originAirportCode") or req.origin
         dest_code = fare.get("destinationAirportCode") or req.destination
         cabin = (fare.get("formattedTravelClass") or "Economy").lower()
 
+        outbound_date = target_date
+        inbound_date = req.return_from.strftime("%Y-%m-%d") if req.return_from else return_date_str
+
         try:
-            dep_dt = datetime.strptime(dep_date_str, "%Y-%m-%d")
+            dep_dt = datetime.strptime(outbound_date, "%Y-%m-%d")
         except ValueError:
             dep_dt = datetime(2000, 1, 1)
 
@@ -334,9 +338,51 @@ class KlmConnectorClient:
         )
         route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
 
+        inbound_route = None
+        if inbound_date:
+            try:
+                inbound_dt = datetime.strptime(inbound_date, "%Y-%m-%d")
+            except ValueError:
+                inbound_dt = dep_dt
+
+            inbound_seg = FlightSegment(
+                airline="KL",
+                airline_name="KLM Royal Dutch Airlines",
+                flight_no="",
+                origin=dest_code,
+                destination=origin_code,
+                origin_city="",
+                destination_city="",
+                departure=inbound_dt,
+                arrival=inbound_dt,
+                duration_seconds=0,
+                cabin_class=cabin,
+            )
+            inbound_route = FlightRoute(
+                segments=[inbound_seg],
+                total_duration_seconds=0,
+                stopovers=0,
+            )
+
         fid = hashlib.md5(
-            f"kl_{origin_code}{dest_code}{dep_date_str}{price_f}{cabin}".encode()
+            f"kl_{origin_code}{dest_code}{outbound_date}{inbound_date}{price_f}{cabin}".encode()
         ).hexdigest()[:12]
+
+        if inbound_date:
+            booking_url = (
+                f"https://www.klm.nl/search/offers"
+                f"?origin={req.origin}&destination={req.destination}"
+                f"&outboundDate={outbound_date}"
+                f"&returnDate={inbound_date}"
+                f"&adultCount={req.adults or 1}&tripType=ROUND_TRIP"
+            )
+        else:
+            booking_url = (
+                f"https://www.klm.nl/search/offers"
+                f"?origin={req.origin}&destination={req.destination}"
+                f"&outboundDate={outbound_date}"
+                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
+            )
 
         return FlightOffer(
             id=f"kl_{fid}",
@@ -346,15 +392,10 @@ class KlmConnectorClient:
                 fare.get("formattedTotalPrice") or f"{price_f:.2f} {currency}"
             ),
             outbound=route,
-            inbound=None,
+            inbound=inbound_route,
             airlines=["KLM"],
             owner_airline="KL",
-            booking_url=(
-                f"https://www.klm.nl/search/offers"
-                f"?origin={req.origin}&destination={req.destination}"
-                f"&outboundDate={target_date}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
-            ),
+            booking_url=booking_url,
             is_locked=False,
             source="klm_direct",
             source_tier="free",

@@ -282,7 +282,10 @@ class HopperConnectorClient:
 
             # Build inbound route for round trips
             inbound_route = None
-            inbound_slice_id = trip.get("inboundSlice", "")
+            inbound_slice_id = (
+                trip.get("inboundSlice", "")
+                or trip.get("returnSlice", "")
+            )
             if inbound_slice_id:
                 inbound_slice = slice_map.get(inbound_slice_id)
                 if inbound_slice:

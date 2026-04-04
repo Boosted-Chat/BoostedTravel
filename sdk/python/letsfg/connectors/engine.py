@@ -1367,6 +1367,7 @@ class MultiProvider:
         "BKK": {"BKK", "DMK"},
         "JKT": {"CGK", "HLP"},
         "KUL": {"KUL", "SZB"},
+        "RIO": {"GIG", "SDU"},
         "MEX": {"MEX", "NLU"},
         "YTO": {"YYZ", "YTZ", "YHM"},
         "YMQ": {"YUL", "YMX"},
@@ -1379,7 +1380,7 @@ class MultiProvider:
         "SAO": "GRU", "WAS": "IAD", "CHI": "ORD", "SEL": "ICN",
         "BJS": "PEK", "SHA": "PVG", "STO": "ARN", "ROM": "FCO",
         "DXB": "DXB", "IST": "IST", "BKK": "BKK", "JKT": "CGK",
-        "KUL": "KUL", "MEX": "MEX", "YTO": "YYZ", "YMQ": "YUL",
+        "KUL": "KUL", "RIO": "GIG", "MEX": "MEX", "YTO": "YYZ", "YMQ": "YUL",
     }
 
     # Connectors that natively handle city codes — do NOT rewrite for these
@@ -1402,6 +1403,9 @@ class MultiProvider:
         "tap_direct",
         # Meta-search engines that natively support city codes in URLs
         "skyscanner_meta",
+        "momondo_meta",
+        "kayak_meta",
+        "cheapflights_meta",
     }
 
     @classmethod

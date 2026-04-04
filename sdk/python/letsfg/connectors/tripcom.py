@@ -32,15 +32,6 @@ from ..models.flights import (
 
 logger = logging.getLogger(__name__)
 
-# CNY exchange rates (approximate) — updated periodically
-_CNY_RATES = {
-    "EUR": 0.127, "USD": 0.138, "GBP": 0.109,
-    "INR": 11.58, "AUD": 0.214, "CAD": 0.192,
-    "JPY": 20.4, "KRW": 189.0, "SGD": 0.184,
-    "THB": 4.66, "MYR": 0.606, "CNY": 1.0,
-}
-
-
 def _parse_dt(s: Any) -> datetime:
     if not s:
         return datetime(2000, 1, 1)
@@ -52,11 +43,9 @@ def _parse_dt(s: Any) -> datetime:
 
 
 def _cny_to(amount: float, currency: str) -> float:
-    """Convert CNY amount to target currency."""
-    rate = _CNY_RATES.get(currency.upper())
-    if rate:
-        return round(amount * rate, 2)
-    return round(amount * _CNY_RATES["EUR"], 2)
+    """Convert CNY amount to target currency using shared fallback rates."""
+    from .currency import _fallback_convert
+    return round(_fallback_convert(amount, "CNY", currency), 2)
 
 
 class TripcomConnectorClient:

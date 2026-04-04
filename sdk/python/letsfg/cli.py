@@ -220,9 +220,43 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
 
 
 def _offer_price(offer: dict) -> float:
-    """Extract comparable offer price; missing/invalid values sort last."""
+    """Extract comparable offer price; missing/invalid values sort last.
+
+    Prefers price_normalized (already converted to the search currency by the
+    engine) so that offers from different source currencies sort correctly.
+    Falls back to raw price when price_normalized is absent.
+    """
     try:
+        v = offer.get("price_normalized")
+        if v is not None:
+            return float(v)
         return float(offer.get("price", float("inf")))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _offer_price_in_target(
+    offer: dict,
+    target_currency: str,
+    eur_rates: dict[str, float],
+    default_currency: str,
+) -> float:
+    """Extract comparable offer price in target currency; invalid values sort last."""
+    raw_currency = (offer.get("currency", default_currency) or default_currency).upper()
+
+    # price_normalized may be stale/mis-labeled by upstream. Only trust it when
+    # the raw offer currency already matches the requested target currency.
+    normalized = offer.get("price_normalized")
+    if normalized is not None and raw_currency == target_currency:
+        try:
+            return float(normalized)
+        except (TypeError, ValueError):
+            pass
+
+    raw_price = offer.get("price", float("inf"))
+    converted, _ = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
+    try:
+        return float(converted)
     except (TypeError, ValueError):
         return float("inf")
 
@@ -238,12 +272,20 @@ def _offer_duration_seconds(offer: dict) -> int:
         return int(1e18)
 
 
-def _final_sort_offers(offers: list[dict], sort: str) -> None:
+def _final_sort_offers(
+    offers: list[dict],
+    sort: str,
+    *,
+    target_currency: str,
+    eur_rates: dict[str, float],
+    default_currency: str,
+) -> None:
     """Apply deterministic client-side sorting after merged results are fetched."""
+    price_key = lambda o: _offer_price_in_target(o, target_currency, eur_rates, default_currency)
     if sort == "duration":
-        offers.sort(key=lambda o: (_offer_duration_seconds(o), _offer_price(o)))
+        offers.sort(key=lambda o: (_offer_duration_seconds(o), price_key(o)))
         return
-    offers.sort(key=lambda o: (_offer_price(o), _offer_duration_seconds(o)))
+    offers.sort(key=lambda o: (price_key(o), _offer_duration_seconds(o)))
 
 
 def _format_leg_time(leg: dict, pos: str = "dep", include_day_offset: bool = False) -> str:
@@ -256,9 +298,15 @@ def _format_leg_time(leg: dict, pos: str = "dep", include_day_offset: bool = Fal
         return "-"
 
     if pos == "dep":
-        dt_str = segs[0].get("departure", "")
+        dt_val = segs[0].get("departure", "")
     else:
-        dt_str = segs[-1].get("arrival", "")
+        dt_val = segs[-1].get("arrival", "")
+
+    # Some sources may pass datetime objects instead of ISO strings.
+    if hasattr(dt_val, "isoformat"):
+        dt_str = dt_val.isoformat()
+    else:
+        dt_str = str(dt_val) if dt_val is not None else ""
 
     if not dt_str:
         return "-"
@@ -267,6 +315,16 @@ def _format_leg_time(leg: dict, pos: str = "dep", include_day_offset: bool = Fal
         time_part = dt_str.split("T")[1][:5] if "T" in dt_str else dt_str[:5]
     except (IndexError, TypeError):
         return "-"
+
+    # KLM route-fare feed is date-only; 00:00 is not a real schedule time.
+    # Show N/A instead of misleading midnight values.
+    if (
+        time_part == "00:00"
+        and (leg.get("total_duration_seconds") in (0, None))
+        and segs
+        and segs[0].get("airline") == "KL"
+    ):
+        return "N/A"
 
     if pos != "arr" or not include_day_offset:
         return time_part
@@ -312,6 +370,32 @@ def _convert_display_price(amount: float, from_cur: str, to_cur: str, eur_rates:
         return numeric_amount, from_cur
 
     return converted, to_cur
+
+
+def _offer_display_price(
+    offer: dict,
+    target_currency: str,
+    eur_rates: dict[str, float],
+    default_currency: str,
+) -> tuple[float, str]:
+    """Return the price/currency pair shown in tables.
+
+    Prefer price_normalized so the displayed value follows the same basis used
+    for sorting. Fall back to on-the-fly conversion from raw connector currency.
+    """
+    raw_currency = (offer.get("currency", default_currency) or default_currency).upper()
+
+    # Keep display/sort aligned: only trust normalized when raw currency already
+    # equals the requested target currency.
+    normalized = offer.get("price_normalized")
+    if normalized is not None and raw_currency == target_currency:
+        try:
+            return round(float(normalized), 2), target_currency
+        except (TypeError, ValueError):
+            pass
+
+    raw_price = offer.get("price", 0)
+    return _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
 
 
 # ── Search ────────────────────────────────────────────────────────────────
@@ -388,8 +472,20 @@ def search(
     offers = result.get("offers", [])
     total = result.get("total_results", len(offers))
 
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
     # Apply a final local sort after all connector/provider results are merged.
-    _final_sort_offers(offers, sort)
+    _final_sort_offers(
+        offers,
+        sort,
+        target_currency=target_currency,
+        eur_rates=eur_rates,
+        default_currency=currency,
+    )
 
     offers = offers[:limit]
 
@@ -431,12 +527,6 @@ def search(
     def _time_str(leg, pos="dep"):
         return _format_leg_time(leg, pos=pos, include_day_offset=(pos == "arr"))
 
-    target_currency = currency.upper()
-    try:
-        eur_rates = asyncio.run(fetch_rates("EUR"))
-    except Exception:
-        eur_rates = {}
-
     if HAS_RICH:
         table = Table(show_header=True, header_style="bold")
         table.add_column("#", style="dim", width=4)
@@ -456,9 +546,7 @@ def search(
             ib = o.get("inbound")
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             stops = str(ob.get("stopovers", 0))
-            raw_price = o.get("price", 0)
-            raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _offer_display_price(o, target_currency, eur_rates, currency)
             row = [str(i), f"{cur} {price:.2f}", airlines, _route_str(ob), _time_str(ob, "dep"), _time_str(ob, "arr"), _dur_str(ob), stops]
             if has_return:
                 row.append(_route_str(ib))
@@ -474,9 +562,7 @@ def search(
             ob_url = cond.get("outbound_booking_url", "")
             ib_url = cond.get("inbound_booking_url", "")
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
-            raw_price = o.get("price", 0)
-            raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _offer_display_price(o, target_currency, eur_rates, currency)
             offer_id = o.get("id", "")
             id_str = f"  [{offer_id}]" if offer_id else ""
             if ob_url and ib_url:
@@ -491,9 +577,7 @@ def search(
                 print(f"  {i:3d}. {cur} {price:.2f} {airlines}{id_str} — no booking URL")
     else:
         for i, o in enumerate(offers, 1):
-            raw_price = o.get("price", 0)
-            raw_currency = (o.get("currency", currency) or currency).upper()
-            price, cur = _convert_display_price(raw_price, raw_currency, target_currency, eur_rates)
+            price, cur = _offer_display_price(o, target_currency, eur_rates, currency)
             airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
             ob = o.get("outbound", {})
             ib = o.get("inbound")
@@ -515,6 +599,354 @@ def search(
 
     print()
 
+
+# ── Search Local ───────────────────────────────────────────────────────────
+
+@app.command("search-local")
+def search_local_cmd(
+    origin: str = typer.Argument(..., help="Departure IATA code (e.g., GDN, LON, JFK)"),
+    destination: str = typer.Argument(..., help="Arrival IATA code (e.g., BER, BCN, LAX)"),
+    date: str = typer.Argument(..., help="Departure date YYYY-MM-DD"),
+    return_date: Optional[str] = typer.Option(None, "--return", "-r", help="Return date for round-trip"),
+    adults: int = typer.Option(1, "--adults", "-a", help="Number of adults"),
+    children: int = typer.Option(0, "--children", help="Number of children"),
+    cabin: Optional[str] = typer.Option(None, "--cabin", "-c", help="M=economy W=premium C=business F=first"),
+    currency: str = typer.Option("EUR", "--currency", help="Currency code"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max results"),
+    sort: str = typer.Option("price", "--sort", help="Sort: price or duration"),
+    max_browsers: Optional[int] = typer.Option(None, "--max-browsers", "-b", help="Max concurrent browsers (1-32, default: auto-detect from RAM)"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
+):
+    """Alias for 'search'. Runs 180 airline connectors locally — FREE, no API key.
+
+    Use --max-browsers to tune performance: lower values (2-4) for low-RAM machines, higher (12-16) for powerful ones.
+    Default: auto-detected from your system RAM. Run 'letsfg system-info' to see your profile.
+    """
+    import asyncio
+    import logging
+    import os
+    import sys
+    import warnings
+    from letsfg.local import search_local
+
+    # Only show errors in CLI mode — suppress connector warning noise
+    logging.basicConfig(level=logging.ERROR, stream=sys.stderr, format="%(message)s")
+
+    # Suppress asyncio transport warnings from Playwright subprocess cleanup
+    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed transport.*")
+
+    # Suppress asyncio __del__ "Exception ignored" noise on Python 3.13+
+    _orig_unraisable = sys.unraisablehook
+    def _quiet_unraisable(hook_args):
+        try:
+            if hook_args.exc_type is ValueError and "pipe" in str(hook_args.exc_value).lower():
+                return
+            if "transport" in str(getattr(hook_args, "object", "")):
+                return
+        except Exception:
+            return  # Suppress errors in the hook itself during shutdown
+        _orig_unraisable(hook_args)
+    sys.unraisablehook = _quiet_unraisable
+
+    # Suppress Node.js DEP0169 deprecation warnings from Playwright subprocesses
+    os.environ.setdefault("NODE_OPTIONS", "--no-deprecation")
+
+    async def _run():
+        # Suppress "Future exception was never retrieved" from Playwright cleanup
+        asyncio.get_event_loop().set_exception_handler(lambda loop, ctx: None)
+        return await search_local(
+            origin=origin,
+            destination=destination,
+            date_from=date,
+            return_date=return_date,
+            adults=adults,
+            children=children,
+            cabin_class=cabin,
+            currency=currency,
+            limit=limit,
+            max_browsers=max_browsers,
+        )
+
+    try:
+        result = asyncio.run(_run())
+    except Exception as e:
+        _err(f"Local search failed: {e}")
+
+    offers = result.get("offers", [])
+    total = result.get("total_results", len(offers))
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(
+        offers,
+        sort,
+        target_currency=target_currency,
+        eur_rates=eur_rates,
+        default_currency=currency,
+    )
+
+    offers = offers[:limit]
+
+    if output_json:
+        _json_out({"total_results": total, "offers": offers})
+        return
+
+    if not offers:
+        print(f"No flights found for {origin} → {destination} on {date}")
+        return
+
+    source_tiers = result.get("source_tiers", {})
+    has_backend = "paid" in source_tiers
+    mode_label = "LOCAL + BACKEND" if has_backend else "LOCAL only (set LETSFG_API_KEY for Amadeus/Duffel)"
+
+    print(f"\n  {total} offers  |  {origin} → {destination}  |  {date}  |  {mode_label}")
+
+    def _local_route(ob):
+        route = ob.get("route_str", "")
+        if not route:
+            segs = ob.get("segments", [])
+            if segs:
+                codes = [segs[0].get("origin", "")]
+                for s in segs:
+                    codes.append(s.get("destination", ""))
+                route = "→".join(c for c in codes if c)
+        return route or "-"
+
+    def _local_dur(ob):
+        dur_s = ob.get("total_duration_seconds")
+        if dur_s:
+            h, m = divmod(dur_s // 60, 60)
+            return f"{h}h {m:02d}m"
+        return "-"
+
+    def _local_time(leg, pos="dep"):
+        return _format_leg_time(leg, pos=pos, include_day_offset=(pos == "arr"))
+
+    if HAS_RICH:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Price", justify="right", style="green")
+        table.add_column("Airline")
+        table.add_column("Route")
+        table.add_column("Depart", justify="right")
+        table.add_column("Arrive", justify="right")
+        table.add_column("Duration", justify="right")
+        table.add_column("Stops", justify="center")
+
+        for i, o in enumerate(offers, 1):
+            ob = o.get("outbound", {})
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
+            stops = str(ob.get("stopovers", 0))
+            price, cur = _offer_display_price(o, target_currency, eur_rates, currency)
+            table.add_row(str(i), f"{cur} {price:.2f}", airlines, _local_route(ob),
+                          _local_time(ob, "dep"), _local_time(ob, "arr"),
+                          _local_dur(ob), stops)
+        console.print(table)
+    else:
+        for i, o in enumerate(offers, 1):
+            price, cur = _offer_display_price(o, target_currency, eur_rates, currency)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
+            ob = o.get("outbound", {})
+            dep = _local_time(ob, "dep")
+            arr = _local_time(ob, "arr")
+            print(f"  {i:3d}. {cur} {price:.2f}  {airlines}  {_local_route(ob)} {dep}→{arr}")
+
+    print()
+
+
+# ── Search Cloud ───────────────────────────────────────────────────────────
+
+@app.command("search-cloud")
+def search_cloud_cmd(
+    origin: str = typer.Argument(..., help="Departure IATA code (e.g., GDN, LON, JFK)"),
+    destination: str = typer.Argument(..., help="Arrival IATA code (e.g., BER, BCN, LAX)"),
+    date: str = typer.Argument(..., help="Departure date YYYY-MM-DD"),
+    return_date: Optional[str] = typer.Option(None, "--return", "-r", help="Return date for round-trip"),
+    adults: int = typer.Option(1, "--adults", "-a", help="Number of adults"),
+    children: int = typer.Option(0, "--children", help="Number of children"),
+    infants: int = typer.Option(0, "--infants", help="Number of infants"),
+    cabin: Optional[str] = typer.Option(None, "--cabin", "-c", help="M=economy W=premium C=business F=first"),
+    currency: str = typer.Option("EUR", "--currency", help="Currency code"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max results"),
+    sort: str = typer.Option("price", "--sort", help="Sort: price or duration"),
+    max_stops: Optional[int] = typer.Option(None, "--max-stops", "-s", help="Max stopovers (0=direct only, 1, 2). Default: backend default"),
+    direct: bool = typer.Option(False, "--direct", "-d", help="Direct flights only (shortcut for --max-stops 0)"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
+    base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
+):
+    """Search flights via cloud backend only (Amadeus, Duffel, Sabre, Travelport, etc.)."""
+    bt = _get_client(api_key, base_url)
+
+    # --direct is a shortcut for --max-stops 0
+    effective_max_stops = 0 if direct else max_stops
+
+    params = {
+        "origin": origin,
+        "destination": destination,
+        "date_from": date,
+        "adults": adults,
+        "children": children,
+        "infants": infants,
+        "currency": currency,
+        "limit": limit,
+        "sort": sort,
+    }
+    if return_date:
+        # Send both keys for compatibility across backend versions.
+        params["return_from"] = return_date
+        params["date_to"] = return_date
+    if cabin:
+        params["cabin"] = cabin
+    if effective_max_stops is not None:
+        params["max_stops"] = effective_max_stops
+
+    try:
+        data = bt._post("/api/v1/flights/search", params)
+    except LetsFGError as e:
+        _err(f"Cloud search failed: {e.message}")
+
+    offers = data.get("offers", [])
+    total = data.get("total_results", len(offers))
+
+    target_currency = currency.upper()
+    try:
+        eur_rates = asyncio.run(fetch_rates("EUR"))
+    except Exception:
+        eur_rates = {}
+
+    # Apply a final local sort after all connector/provider results are merged.
+    _final_sort_offers(
+        offers,
+        sort,
+        target_currency=target_currency,
+        eur_rates=eur_rates,
+        default_currency=currency,
+    )
+    offers = offers[:limit]
+
+    if output_json:
+        _json_out({"total_results": total, "offers": offers})
+        return
+
+    if not offers:
+        print(f"No cloud flights found for {origin} → {destination} on {date}")
+        return
+
+    has_return = any(o.get("inbound") for o in offers)
+    trip_label = f"{origin} ↔ {destination}" if return_date else f"{origin} → {destination}"
+    date_label = f"{date} → {return_date}" if return_date else date
+    print(f"\n  {total} offers  |  {trip_label}  |  {date_label}  |  CLOUD only")
+
+    def _cloud_leg_route(leg: dict) -> str:
+        if not leg:
+            return "-"
+        route = leg.get("route_str")
+        if route:
+            return route
+        segs = leg.get("segments") or []
+        if not segs:
+            return "-"
+        codes = [segs[0].get("origin", "")]
+        for seg in segs:
+            codes.append(seg.get("destination", ""))
+        codes = [c for c in codes if c]
+        return "→".join(codes) if codes else "-"
+
+    def _cloud_route(offer: dict) -> str:
+        route = offer.get("route")
+        if route:
+            return route
+        ob = offer.get("outbound") or {}
+        return _cloud_leg_route(ob)
+
+    def _cloud_leg_duration(leg: dict) -> str:
+        if not leg:
+            return "-"
+        dur_s = leg.get("total_duration_seconds")
+        if dur_s:
+            h, m = divmod(int(dur_s) // 60, 60)
+            return f"{h}h {m:02d}m"
+        return "-"
+
+    def _cloud_duration(offer: dict) -> str:
+        dur_s = offer.get("duration_seconds")
+        if not dur_s:
+            dur_s = (offer.get("outbound") or {}).get("total_duration_seconds")
+        if dur_s:
+            h, m = divmod(int(dur_s) // 60, 60)
+            return f"{h}h {m:02d}m"
+        return "-"
+
+    def _cloud_stops(offer: dict) -> str:
+        stops_val = offer.get("stopovers")
+        if stops_val is None:
+            ob = offer.get("outbound") or {}
+            stops_val = ob.get("stopovers")
+            if stops_val is None:
+                segs = ob.get("segments") or []
+                if segs:
+                    stops_val = max(len(segs) - 1, 0)
+        return str(stops_val) if stops_val is not None else "-"
+
+    def _cloud_leg_depart(leg: dict) -> str:
+        return _format_leg_time(leg, pos="dep", include_day_offset=False)
+
+    def _cloud_leg_arrive(leg: dict) -> str:
+        return _format_leg_time(leg, pos="arr", include_day_offset=True)
+
+    if HAS_RICH:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Price", justify="right", style="green")
+        table.add_column("Airline")
+        table.add_column("Route")
+        table.add_column("Depart", justify="right")
+        table.add_column("Arrive", justify="right")
+        table.add_column("Duration", justify="right")
+        table.add_column("Stops", justify="center")
+        if has_return:
+            table.add_column("Return")
+            table.add_column("Ret Dur", justify="right")
+
+        for i, o in enumerate(offers, 1):
+            price, cur = _offer_display_price(o, target_currency, eur_rates, currency)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
+            route = _cloud_route(o)
+            ob = o.get("outbound") or {}
+            depart = _cloud_leg_depart(ob)
+            arrive = _cloud_leg_arrive(ob)
+            dur = _cloud_duration(o)
+            stops = _cloud_stops(o)
+            ib = o.get("inbound") or {}
+
+            row = [str(i), f"{cur} {price:.2f}", airlines, route, depart, arrive, dur, stops]
+            if has_return:
+                row.append(_cloud_leg_route(ib))
+                row.append(_cloud_leg_duration(ib))
+
+            table.add_row(*row)
+        console.print(table)
+    else:
+        for i, o in enumerate(offers, 1):
+            price, cur = _offer_display_price(o, target_currency, eur_rates, currency)
+            airlines = _fmt_airline(o.get("owner_airline", ""), o.get("airlines", []))
+            route = _cloud_route(o)
+            ob = o.get("outbound") or {}
+            depart = _cloud_leg_depart(ob)
+            arrive = _cloud_leg_arrive(ob)
+            dur = _cloud_duration(o)
+            stops = _cloud_stops(o)
+            ib = o.get("inbound") or {}
+            ret = f"  ret:{_cloud_leg_route(ib)} {_cloud_leg_duration(ib)}" if has_return and ib else ""
+            print(f"  {i:3d}. {cur} {price:.2f}  {airlines}  {route}  {depart}→{arrive}  {dur}  stops:{stops}{ret}")
+
+    print()
 
 # ── Star (Link GitHub) ─────────────────────────────────────────────────────
 
