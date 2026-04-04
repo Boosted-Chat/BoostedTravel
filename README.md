@@ -28,9 +28,9 @@ Search 400+ airlines, book at raw prices, zero fees — forever.
 
 # Your AI agent just learned to book flights.
 
-**200 airlines. Real prices. One function call.**
+**180+ airlines. Real prices. One function call.**
 
-LetsFG gives your AI agent flight search and booking superpowers — 200 airline connectors fire in parallel, enterprise GDS sources (Amadeus, Sabre, Duffel) fill in the rest, and your agent gets the cheapest price on the planet. Zero markup. Real airline tickets.
+LetsFG gives your AI agent flight search and booking superpowers — 180+ airline connectors fire in parallel on your machine, scanning the entire world for the cheapest price. Zero markup. Real airline tickets.
 
 **The same flight costs $20–$50 less** because you skip OTA inflation, cookie tracking, and surge pricing.
 
@@ -71,7 +71,7 @@ We searched 5 routes on Google Flights and LetsFG on the same day (June 15, 2026
 
 > **$116 saved across 6 flights.** Google Flights inflates further on repeat searches. LetsFG returns the raw airline price every time.
 
-**Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 200+ website connectors including Google Flights itself, Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, etc.) and enterprise GDS/NDC sources (Amadeus, Sabre, Duffel). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
+**Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 180+ website connectors including Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, Spirit, Norwegian, AirAsia, and 170+ more). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
 
 ---
 
@@ -97,11 +97,11 @@ When you're ready to integrate it into your own agent, keep reading.
 |----------------|--------|--------|------|-------------|
 | **CLI / Python SDK / npm** | ✅ Free | ✅ Free | Ticket price only | Your machine |
 | **MCP Server (local)** | ✅ Free | ✅ Free | Ticket price only | Your machine |
-| **API / Messenger / Instagram** | ✅ Free | 1% (min $1) | Ticket price only | Our servers |
+| **Messenger / Instagram** | ✅ Free | 1% (min $1) | Ticket price only | Our servers |
 
-**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 200 airline connectors on your machine. No API key needed, no fees, no limits.
+**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 180+ airline connectors on your machine. No API key needed, no fees, no limits.
 
-**Server = free search + small unlock fee.** When you use our hosted API (or chat with us on Messenger/Instagram), search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
+**Messenger/Instagram = free search + small unlock fee.** When you chat with us on Messenger/Instagram, search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
 
 > ⭐ **First 1,000 stargazers get lifetime free access everywhere** — including server unlock. Star → verify → free forever.
 
@@ -112,7 +112,7 @@ When you're ready to integrate it into your own agent, keep reading.
 | | Google Flights / Expedia | **LetsFG** |
 |---|---|---|
 | Price | Inflated (tracking, cookies, surge) | **Raw airline price. $116 cheaper across 6 verified routes.** |
-| Coverage | Misses budget airlines | **200 connectors + 400 GDS airlines** |
+| Coverage | Misses budget airlines | **180+ airline connectors** |
 | Speed | 30s+ (loading, ads, redirects) | **~10 seconds** |
 | Repeat search raises price? | Yes | **Never** |
 | Works in AI agents? | No | **Native** (CLI, MCP, SDK) |
@@ -130,25 +130,19 @@ pip install letsfg
 Search flights immediately — **no API key, no registration, no account needed**:
 
 ```bash
-letsfg search-local LHR BCN 2026-06-15
+letsfg search LHR BCN 2026-06-15
 ```
 
-That single command fires 200 airline connectors on your machine and returns real-time prices. **Free. Unlimited. Zero setup.**
+That single command fires 180+ airline connectors on your machine and returns real-time prices. **Free. Unlimited. Zero setup.**
 
-Want to star the repo for unlimited access everywhere (including server/API)?
+Want to unlock and book? Star the repo for free access:
 
 ```bash
-# Star the repo on GitHub, then verify — that's it, no registration needed
+# Star the repo on GitHub, then verify
 letsfg star --github your-username
 ```
 
 The CLI auto-registers behind the scenes and saves your API key to `~/.letsfg/config.json`. No manual steps.
-
-Want enterprise GDS coverage too?
-
-```bash
-letsfg search LHR JFK 2026-04-15
-```
 
 <details>
 <summary><strong>Full search → unlock → book flow</strong></summary>
@@ -187,10 +181,10 @@ letsfg book off_xxx \
 }
 ```
 
-**That's it — search works immediately, no API key needed.** 200 airline connectors run locally.
+**That's it — search works immediately, no API key needed.** 180+ airline connectors run locally.
 
 <details>
-<summary>Add API key for unlock/book + GDS coverage</summary>
+<summary>Add API key for unlock/book</summary>
 
 ```json
 {
@@ -248,7 +242,7 @@ for offer in result.offers[:5]:
 
 | Package | Command | What you get |
 |---------|---------|--------------|
-| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 200 local airline connectors |
+| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 180+ local airline connectors |
 | **MCP Server** | `npx letsfg-mcp` | Claude, Cursor, Windsurf — no API key needed |
 | **JS/TS SDK** | `npm install -g letsfg` | SDK + CLI |
 | **Remote MCP** | `https://api.letsfg.co/mcp` | No install (API key required) |
@@ -279,18 +273,11 @@ All commands accept `--json` for structured output and `--api-key` to override t
 Search (free) → Unlock (free) → Book (ticket price only)
 ```
 
-1. **Search** — 200 local connectors + enterprise GDS sources fire in parallel. Returns full details: price, airlines, duration, stopovers, conditions.
+1. **Search** — 180+ local connectors fire in parallel on your machine. Returns full details: price, airlines, duration, stopovers, conditions.
 2. **Unlock** — confirms the live price with the airline and reserves the fare for 30 minutes.
 3. **Book** — creates a real airline PNR. E-ticket sent to the passenger's inbox.
 
-### Two search channels run simultaneously
-
-| Channel | What it does | Speed | Auth |
-|---------|-------------|-------|------|
-| **Local connectors** | 200 airline scrapers on your machine via Playwright + httpx | 5-25s | None |
-| **Cloud GDS/NDC** | Amadeus, Duffel, Sabre, Travelport, Kiwi via backend API | 2-15s | API key |
-
-Results are merged, deduplicated, currency-normalized, and sorted. Best price wins.
+All search runs locally via Playwright + httpx. Results are deduplicated, currency-normalized, and sorted. Best price wins.
 
 <details>
 <summary><strong>Virtual interlining</strong></summary>
@@ -313,19 +300,19 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 ```
 ┌─────────────────────────────────────────────────────┐
 │  AI Agents / CLI / SDK / MCP Server                 │
-├──────────────────┬──────────────────────────────────┤
-│  Local connectors │  Enterprise Cloud API            │
-│  (200 airlines via│  (Amadeus, Duffel, Sabre,        │
-│   Playwright)     │   Travelport, Kiwi — contract-   │
-│                   │   only GDS/NDC providers)        │
-├──────────────────┴──────────────────────────────────┤
-│            Merge + Dedup + Combo Engine              │
-│            (virtual interlining, currency norm)      │
+├─────────────────────────────────────────────────────┤
+│  Local connectors (180+ airlines via Playwright)    │
+│  Ryanair, EasyJet, Spirit, Southwest, AirAsia, etc  │
+├─────────────────────────────────────────────────────┤
+│  Dedup + Combo Engine + Currency Normalization      │
+│  (virtual interlining for cross-airline round-trips)│
+├─────────────────────────────────────────────────────┤
+│  Backend API (unlock, book, telemetry)              │
 └─────────────────────────────────────────────────────┘
 ```
 
 <details>
-<summary><strong>200 airline connectors — full list</strong></summary>
+<summary><strong>180+ airline connectors — full list</strong></summary>
 
 | Region | Airlines |
 |--------|----------|
