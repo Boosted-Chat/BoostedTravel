@@ -135,6 +135,15 @@ def _resolve_slug(iata: str) -> str | None:
     return _slug_cache.get(iata)
 
 
+def _build_booking_url(origin: str, destination: str) -> str:
+    """Build a working Virgin Atlantic booking URL using the airTRFX route page."""
+    o_slug = _resolve_slug(origin)
+    d_slug = _resolve_slug(destination)
+    if o_slug and d_slug:
+        return f"https://flights.virginatlantic.com/en-gb/flights-from-{o_slug}-to-{d_slug}"
+    return f"https://www.virginatlantic.com/flights?origin={origin}&destination={destination}"
+
+
 class VirginAtlanticConnectorClient:
     """Virgin Atlantic — EveryMundo airTRFX route pages via curl_cffi."""
 
@@ -315,12 +324,7 @@ class VirginAtlanticConnectorClient:
                     inbound=inbound,
                     airlines=["Virgin Atlantic"],
                     owner_airline="VS",
-                    booking_url=(
-                        f"https://www.virginatlantic.com/book/flights"
-                        f"?origin={req.origin}&destination={req.destination}"
-                        f"&outboundDate={target_date}"
-                        f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
-                    ),
+                    booking_url=_build_booking_url(req.origin, req.destination),
                     is_locked=False,
                     source="virginatlantic_direct",
                     source_tier="free",
@@ -444,12 +448,7 @@ class VirginAtlanticConnectorClient:
             inbound=None,
             airlines=["Virgin Atlantic"],
             owner_airline="VS",
-            booking_url=(
-                f"https://www.virginatlantic.com/book/flights"
-                f"?origin={req.origin}&destination={req.destination}"
-                f"&outboundDate={target_date}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
-            ),
+            booking_url=_build_booking_url(req.origin, req.destination),
             is_locked=False,
             source="virginatlantic_direct",
             source_tier="free",
@@ -575,12 +574,7 @@ class VirginAtlanticConnectorClient:
             inbound=None,
             airlines=["Virgin Atlantic"],
             owner_airline="VS",
-            booking_url=(
-                f"https://www.virginatlantic.com/book/flights"
-                f"?origin={req.origin}&destination={req.destination}"
-                f"&outboundDate={target_date}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
-            ),
+            booking_url=_build_booking_url(req.origin, req.destination),
             is_locked=False,
             source="virginatlantic_direct",
             source_tier="free",
