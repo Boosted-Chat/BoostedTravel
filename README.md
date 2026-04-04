@@ -28,9 +28,9 @@ Search 400+ airlines, book at raw prices, zero fees — forever.
 
 # Your AI agent just learned to book flights.
 
-**180+ airlines. Real prices. One function call.**
+**400+ airlines. Real prices. One function call.**
 
-LetsFG gives your AI agent flight search and booking superpowers — 180+ airline connectors fire in parallel on your machine, scanning the entire world for the cheapest price. Zero markup. Real airline tickets.
+LetsFG gives your AI agent flight search and booking superpowers — 200+ connectors fire in parallel on your machine, scanning the entire world for the cheapest price. Zero markup. Real airline tickets.
 
 **The same flight costs $20–$50 less** because you skip OTA inflation, cookie tracking, and surge pricing.
 
@@ -72,7 +72,7 @@ We searched 5 routes on Google Flights and LetsFG on the same day (June 15, 2026
 
 > **$116 saved across 6 flights.** Google Flights inflates further on repeat searches. LetsFG returns the raw airline price every time.
 
-**Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 180+ website connectors including Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, Spirit, Norwegian, AirAsia, and 170+ more). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
+**Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 200+ connectors including Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, Spirit, Norwegian, AirAsia, and 190+ more). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
 
 ---
 
@@ -100,7 +100,7 @@ When you're ready to integrate it into your own agent, keep reading.
 | **MCP Server (local)** | ✅ Free | ✅ Free | Ticket price only | Your machine |
 | **Messenger / Instagram** | ✅ Free | 1% (min $1) | Ticket price only | Our servers |
 
-**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 180+ airline connectors on your machine. No API key needed, no fees, no limits.
+**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 200+ connectors covering 400+ airlines on your machine. No API key needed, no fees, no limits.
 
 **Messenger/Instagram = free search + small unlock fee.** When you chat with us on Messenger/Instagram, search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
 
@@ -113,7 +113,7 @@ When you're ready to integrate it into your own agent, keep reading.
 | | Google Flights / Expedia | **LetsFG** |
 |---|---|---|
 | Price | Inflated (tracking, cookies, surge) | **Raw airline price. $116 cheaper across 6 verified routes.** |
-| Coverage | Misses budget airlines | **180+ airline connectors** |
+| Coverage | Misses budget airlines | **200+ connectors, 400+ airlines** |
 | Speed | 30s+ (loading, ads, redirects) | **~10 seconds** |
 | Repeat search raises price? | Yes | **Never** |
 | Works in AI agents? | No | **Native** (CLI, MCP, SDK) |
@@ -134,7 +134,7 @@ Search flights immediately — **no API key, no registration, no account needed*
 letsfg search LHR BCN 2026-06-15
 ```
 
-That single command fires 180+ airline connectors on your machine and returns real-time prices. **Free. Unlimited. Zero setup.**
+That single command fires 200+ connectors on your machine and returns real-time prices from 400+ airlines. **Free. Unlimited. Zero setup.**
 
 Want to unlock and book? Star the repo for free access:
 
@@ -182,7 +182,7 @@ letsfg book off_xxx \
 }
 ```
 
-**That's it — search works immediately, no API key needed.** 180+ airline connectors run locally.
+**That's it — search works immediately, no API key needed.** 200+ connectors covering 400+ airlines run locally.
 
 <details>
 <summary>Add API key for unlock/book</summary>
@@ -243,7 +243,7 @@ for offer in result.offers[:5]:
 
 | Package | Command | What you get |
 |---------|---------|--------------|
-| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 180+ local airline connectors |
+| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 200+ local connectors (400+ airlines) |
 | **MCP Server** | `npx letsfg-mcp` | Claude, Cursor, Windsurf — no API key needed |
 | **JS/TS SDK** | `npm install -g letsfg` | SDK + CLI |
 | **Remote MCP** | `https://api.letsfg.co/mcp` | No install (API key required) |
@@ -274,7 +274,7 @@ All commands accept `--json` for structured output and `--api-key` to override t
 Search (free) → Unlock (free) → Book (ticket price only)
 ```
 
-1. **Search** — 180+ local connectors fire in parallel on your machine. Returns full details: price, airlines, duration, stopovers, conditions.
+1. **Search** — 200+ local connectors fire in parallel on your machine, covering 400+ airlines. Returns full details: price, airlines, duration, stopovers, conditions.
 2. **Unlock** — confirms the live price with the airline and reserves the fare for 30 minutes.
 3. **Book** — creates a real airline PNR. E-ticket sent to the passenger's inbox.
 
@@ -302,7 +302,7 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 ┌─────────────────────────────────────────────────────┐
 │  AI Agents / CLI / SDK / MCP Server                 │
 ├─────────────────────────────────────────────────────┤
-│  Local connectors (180+ airlines via Playwright)    │
+│  Local connectors (200+ connectors, 400+ airlines)  │
 │  Ryanair, EasyJet, Spirit, Southwest, AirAsia, etc  │
 ├─────────────────────────────────────────────────────┤
 │  Dedup + Combo Engine + Currency Normalization      │
@@ -313,7 +313,7 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 ```
 
 <details>
-<summary><strong>180+ airline connectors — full list</strong></summary>
+<summary><strong>200+ connectors, 400+ airlines — full list</strong></summary>
 
 | Region | Airlines |
 |--------|----------|
