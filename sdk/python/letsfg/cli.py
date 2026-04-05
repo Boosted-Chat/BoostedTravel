@@ -195,6 +195,43 @@ _AIRLINE_NORMALIZED_TO_IATA.update(
     {_normalize_airline_name(name): code for name, code in _AIRLINE_ALIAS_TO_IATA.items()}
 )
 
+_NON_AIRLINE_DISPLAY_NAMES: set[str] = {
+    "travel trolley",
+    "kiwi",
+    "kiwi com",
+    "trip com",
+    "booking com",
+    "expedia",
+    "travelocity",
+    "orbitz",
+    "priceline",
+    "cheapoair",
+    "lastminute",
+    "lastminute com",
+    "edreams",
+    "opodo",
+    "gotogate",
+    "mytrip",
+    "kayak",
+    "skyscanner",
+    "google flights",
+}
+
+
+def _is_airline_like(name: str) -> bool:
+    normalized = _normalize_airline_name(name)
+    if not normalized:
+        return False
+    if normalized in _NON_AIRLINE_DISPLAY_NAMES:
+        return False
+    if re.fullmatch(r"[A-Z0-9]{2,3}", name):
+        return True
+    if name.lower() in _AIRLINE_TO_IATA:
+        return True
+    if normalized in _AIRLINE_NORMALIZED_TO_IATA:
+        return True
+    return True
+
 
 def _fmt_airline(owner: str, airlines: list[str]) -> str:
     """Return 'CODE-FullName' for the Airline display column."""
@@ -202,18 +239,26 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
         owner = next((a for a in airlines if a), "")
     if not owner:
         return "-"
+    if not _is_airline_like(owner):
+        fallback = next((a for a in airlines if _is_airline_like(a)), "")
+        if fallback:
+            owner = fallback
+        else:
+            return "-"
 
     # Combo offer — e.g. "Ryanair|Wizz Air" produced by combo_engine
     if "|" in owner:
         parts = [p.strip() for p in owner.split("|") if p.strip()]
-        return " + ".join(_fmt_airline(p, []) for p in parts)
+        parts = [p for p in parts if _is_airline_like(p)]
+        return " + ".join(_fmt_airline(p, []) for p in parts) if parts else "-"
 
     # Comma-separated multi-airline string (e.g. ixigo headerTextWeb)
     if "," in owner:
         parts = [p.strip() for p in owner.split(",") if p.strip()]
         seen: set[str] = set()
         unique = [p for p in parts if not (p in seen or seen.add(p))]
-        return " + ".join(_fmt_airline(p, []) for p in unique)
+        unique = [p for p in unique if _is_airline_like(p)]
+        return " + ".join(_fmt_airline(p, []) for p in unique) if unique else "-"
 
     # Pure IATA code (2–3 uppercase letters/digits)
     if re.fullmatch(r"[A-Z0-9]{2,3}", owner):
