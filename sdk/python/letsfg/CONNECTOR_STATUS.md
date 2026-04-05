@@ -198,6 +198,7 @@
 | 99 | cleartrip | OTA | `done` | Cleartrip (Flipkart). India's leading OTA. All Indian + intl airlines. |
 | 100 | despegar | OTA | `done` | Despegar/Decolar. Latin America's #1 OTA. All LATAM airlines. |
 | 101 | wego | OTA | `done` | Wego. Middle East/Asia metasearch. 700+ airlines, GCC focus. |
+| 102 | airasiax | D7 | Browser | `done` | AirAsia X. KUL hub → AU/JP/KR/IN long-haul. Playwright + API interception, D7/XJ carrier filter. [#91](https://github.com/LetsFG/LetsFG/issues/91) |
 
 ---
 

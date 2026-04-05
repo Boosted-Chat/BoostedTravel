@@ -36,6 +36,7 @@ from .kiwi import KiwiConnectorClient
 from .easyjet import EasyjetConnectorClient
 from .southwest import SouthwestConnectorClient
 from .airasia import AirAsiaConnectorClient
+from .airasiax import AirAsiaXConnectorClient
 from .indigo import IndiGoConnectorClient
 from .norwegian import NorwegianConnectorClient
 from .vueling import VuelingConnectorClient
@@ -239,7 +240,7 @@ logger = logging.getLogger(__name__)
 # These are throttled by a semaphore to prevent 20+ Chrome processes at once.
 # In cloud/headless environments without Chrome, these are skipped entirely.
 _BROWSER_SOURCES: set[str] = {
-    "airasia_direct", "allegiant_direct", "azul_direct", "batikair_direct",
+    "airasia_direct", "airasiax_direct", "allegiant_direct", "azul_direct", "batikair_direct",
     "cebupacific_direct", "condor_direct", "easyjet_direct", "eurowings_direct",
     "flybondi_direct", "flydubai_direct", "flynas_direct", "frontier_direct",
     "gol_direct", "indigo_direct", "jet2_direct", "jetsmart_direct",
@@ -351,6 +352,7 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("easyjet_direct", EasyjetConnectorClient, 25.0),
     ("southwest_direct", SouthwestConnectorClient, 25.0),
     ("airasia_direct", AirAsiaConnectorClient, 25.0),
+    ("airasiax_direct", AirAsiaXConnectorClient, 25.0),
     ("indigo_direct", IndiGoConnectorClient, 25.0),
     ("norwegian_direct", NorwegianConnectorClient, 25.0),
     ("vueling_direct", VuelingConnectorClient, 25.0),
