@@ -21,7 +21,7 @@ import os
 import re
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from ..models.flights import (
@@ -248,17 +248,37 @@ class TraveltrolleyConnectorClient:
                     dep_time = times[0] if times else "00:00"
                     arr_time = times[1] if len(times) > 1 else "00:00"
 
+                    # Arrival day offset — e.g. "04:05 +1" for next day
+                    arr_day_offset = 0
+                    offset_m = re.search(rf"{re.escape(arr_time)}\s*\+(\d+)", text)
+                    if offset_m:
+                        arr_day_offset = int(offset_m.group(1))
+
                     # Duration — e.g. "13h 35min"
                     dur_m = re.search(r'(\d+)h\s*(\d+)\s*min', text)
                     dur_sec = 0
                     if dur_m:
                         dur_sec = int(dur_m.group(1)) * 3600 + int(dur_m.group(2)) * 60
 
-                    # Stops
+                    # Stops & stopover airports
                     stops = 0
+                    stopover_airports = []
                     stops_m = re.search(r'(\d+)\s*Stop', text)
                     if stops_m:
                         stops = int(stops_m.group(1))
+                        # Try to extract stopover airport codes (3-letter IATA, uppercase only)
+                        # Look for patterns like "JNB ... CDG ... FRA" in the text
+                        # But be conservative: only include codes that look like real IATA codes
+                        all_codes = re.findall(r'\b([A-Z]{3})\b', text)
+                        
+                        # Filter to likely airport codes: exclude common words
+                        common_words = {'AND', 'FOR', 'THE', 'ARE', 'NOT', 'ONE', 'TWO', 'ALL', 'OUT', 'HAS', 'WAS', 'DAY', 'PER', 'ETC'}
+                        airport_codes = [c for c in all_codes if c not in common_words and re.match(r'^[A-Z]{3}$', c)]
+                        
+                        if airport_codes and len(airport_codes) >= 2:
+                            # Likely pattern: first is origin, last is destination, middle are stopovers
+                            if len(airport_codes) > 2:
+                                stopover_airports = airport_codes[1:-1]
                     elif "Direct" in text or "Non-Stop" in text or "Nonstop" in text:
                         stops = 0
 
@@ -267,12 +287,41 @@ class TraveltrolleyConnectorClient:
 
                     dep_dt = _parse_dt(f"{date_str}T{dep_time}:00")
                     arr_dt = _parse_dt(f"{date_str}T{arr_time}:00")
+                    if arr_day_offset > 0:
+                        arr_dt = arr_dt + timedelta(days=arr_day_offset)
 
-                    segments = [FlightSegment(
-                        airline=airline, flight_no="",
-                        origin=req.origin, destination=req.destination,
-                        departure=dep_dt, arrival=arr_dt, duration_seconds=dur_sec,
-                    )]
+                    # Build segments: direct if no stops, or with stopover airports
+                    segments = []
+                    if stops == 0 or not stopover_airports:
+                        # Direct flight
+                        segments = [FlightSegment(
+                            airline=airline, flight_no="",
+                            origin=req.origin, destination=req.destination,
+                            departure=dep_dt, arrival=arr_dt, duration_seconds=dur_sec,
+                        )]
+                    else:
+                        # Flight with stopover(s)
+                        current_origin = req.origin
+                        current_dep_dt = dep_dt
+                        seg_dur = dur_sec // (stops + 1)  # Rough split of duration
+                        
+                        for stop_airport in stopover_airports:
+                            seg_arr_dt = _parse_dt(f"{date_str}T{arr_time}:00")  # Placeholder
+                            segments.append(FlightSegment(
+                                airline=airline, flight_no="",
+                                origin=current_origin, destination=stop_airport,
+                                departure=current_dep_dt, arrival=seg_arr_dt, duration_seconds=seg_dur,
+                            ))
+                            current_origin = stop_airport
+                            current_dep_dt = seg_arr_dt
+                        
+                        # Final segment to destination
+                        segments.append(FlightSegment(
+                            airline=airline, flight_no="",
+                            origin=current_origin, destination=req.destination,
+                            departure=current_dep_dt, arrival=arr_dt, duration_seconds=seg_dur,
+                        ))
+                    
                     route = FlightRoute(segments=segments, total_duration_seconds=dur_sec, stopovers=stops)
                     oid = hashlib.md5(f"tt_{i}_{price}_{dep_time}".encode()).hexdigest()[:12]
 
