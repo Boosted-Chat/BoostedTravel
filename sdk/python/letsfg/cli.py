@@ -153,11 +153,12 @@ _IATA_TO_AIRLINE: dict[str, str] = {
     "CA": "Air China", "MU": "China Eastern Airlines",
     "CZ": "China Southern Airlines", "CI": "China Airlines",
     "HU": "Hainan Airlines", "BR": "EVA Air", "JX": "Starlux Airlines",
+    "BI": "Royal Brunei Airlines",
     "UX": "Air Europa",
     # Asia – LCC
     "AK": "AirAsia", "FD": "Thai AirAsia", "VJ": "VietJet Air",
     "TR": "Scoot", "MM": "Peach Aviation", "ZG": "ZIPAIR",
-    "7C": "Jeju Air", "TW": "T'way Air", "QG": "Citilink",
+    "7C": "Jeju Air", "TW": "T'way Air", "QG": "Citilink", "BX": "Air Busan",
     "OD": "Batik Air", "IU": "Super Air Jet", "8B": "TransNusa",
     "QP": "Akasa Air", "IX": "Air India Express", "6E": "IndiGo",
     "SG": "SpiceJet", "PG": "Bangkok Airways", "5J": "Cebu Pacific",
