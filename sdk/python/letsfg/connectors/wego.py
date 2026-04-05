@@ -135,17 +135,84 @@ async def _human_mouse_move(page, start_x: float, start_y: float, end_x: float, 
         await asyncio.sleep(random.uniform(0.004, 0.012))
 
 
+async def _cf_token_present(page) -> bool:
+    """Check if Cloudflare Turnstile has been solved (token set)."""
+    try:
+        token = await page.evaluate("""() => {
+            const el = document.querySelector('[name="cf-turnstile-response"]');
+            return el ? el.value : '';
+        }""")
+        return bool(token)
+    except Exception:
+        return False
+
+
+async def _simulate_human_idle(page):
+    """Simulate idle human behaviour — small mouse jitter + scroll."""
+    try:
+        vw = 1366
+        vh = 800
+        x = random.randint(200, vw - 200)
+        y = random.randint(200, vh - 200)
+        await page.mouse.move(x, y)
+        await asyncio.sleep(random.uniform(0.3, 0.8))
+        # Small scroll
+        await page.evaluate(f"window.scrollBy(0, {random.randint(-60, 60)})")
+    except Exception:
+        pass
+
+
 async def _solve_cf_turnstile(page) -> bool:
     """Actively attempt to solve Cloudflare Turnstile challenge.
 
-    Tries multiple strategies:
-    1. Click the checkbox inside the CF iframe (standard Turnstile).
-    2. Click the Turnstile widget container (managed/invisible modes).
-    3. Click any visible verify/confirm button on the page.
+    Strategies in order of reliability:
+    0. Check if already solved (patchright auto‑handled).
+    1. Bring page to front — patchright needs focus for auto‑solve.
+    2. Call turnstile JS API to force execution / re‑render.
+    3. Click the checkbox inside the CF iframe (standard Turnstile).
+    4. Click the iframe element itself (managed / invisible mode).
+    5. Click any turnstile widget container div.
+    6. Click any visible verify / confirm button.
     """
+    # ── Quick check: already solved? ──
+    if await _cf_token_present(page):
+        logger.info("WEGO: Turnstile already solved (token present)")
+        return True
+
+    # ── Ensure page focus (critical for patchright auto-solve) ──
+    try:
+        await page.bring_to_front()
+    except Exception:
+        pass
+
+    # ── Simulate a small mouse movement (triggers CF behaviour check) ──
+    await _simulate_human_idle(page)
+
+    # ── Strategy 1: Call Turnstile JS API ──
+    try:
+        api_result = await page.evaluate("""() => {
+            // turnstile global (CF injects this)
+            if (typeof turnstile !== 'undefined') {
+                try { turnstile.execute(); return 'executed'; } catch(_) {}
+                try { turnstile.reset();   return 'reset';    } catch(_) {}
+            }
+            if (window.turnstile) {
+                try { window.turnstile.execute(); return 'win_executed'; } catch(_) {}
+                try { window.turnstile.reset();   return 'win_reset';    } catch(_) {}
+            }
+            return null;
+        }""")
+        if api_result:
+            logger.info("WEGO: Turnstile JS API called: %s", api_result)
+            await asyncio.sleep(3)
+            if await _cf_token_present(page):
+                return True
+    except Exception as e:
+        logger.debug("WEGO: Turnstile JS API attempt: %s", e)
+
     solved = False
 
-    # Strategy 1: iframe checkbox
+    # ── Strategy 2: iframe checkbox ──
     try:
         cf_frame = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
         checkbox = cf_frame.locator('input[type="checkbox"]')
@@ -158,13 +225,14 @@ async def _solve_cf_turnstile(page) -> bool:
                 await _human_mouse_move(page, random.randint(50, 200), random.randint(50, 200), cx, cy)
                 await asyncio.sleep(random.uniform(0.15, 0.35))
                 await page.mouse.click(cx, cy)
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
+                if await _cf_token_present(page):
+                    return True
                 solved = True
     except Exception as e:
         logger.debug("WEGO: Turnstile iframe checkbox attempt: %s", e)
 
-    # Strategy 2: click the iframe element itself (triggers Turnstile
-    # in managed/invisible mode where there's no visible checkbox)
+    # ── Strategy 3: click the iframe element itself ──
     if not solved:
         try:
             iframe_el = page.locator('iframe[src*="challenges.cloudflare.com"]')
@@ -177,19 +245,21 @@ async def _solve_cf_turnstile(page) -> bool:
                     await _human_mouse_move(page, random.randint(50, 200), random.randint(50, 200), cx, cy)
                     await asyncio.sleep(random.uniform(0.1, 0.3))
                     await page.mouse.click(cx, cy)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
+                    if await _cf_token_present(page):
+                        return True
                     solved = True
         except Exception as e:
             logger.debug("WEGO: Turnstile iframe click attempt: %s", e)
 
-    # Strategy 3: click turnstile widget container
+    # ── Strategy 4: click turnstile widget container ──
     if not solved:
         try:
             for selector in [
-                '[class*="turnstile"]',
-                '[id*="turnstile"]',
-                '[class*="cf-turnstile"]',
                 'div.cf-turnstile',
+                '[class*="cf-turnstile"]',
+                '[id*="turnstile"]',
+                '[class*="turnstile"]',
             ]:
                 widget = page.locator(selector)
                 if await widget.count() > 0:
@@ -201,27 +271,31 @@ async def _solve_cf_turnstile(page) -> bool:
                         await _human_mouse_move(page, random.randint(50, 200), random.randint(50, 200), cx, cy)
                         await asyncio.sleep(random.uniform(0.1, 0.3))
                         await page.mouse.click(cx, cy)
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(3)
+                        if await _cf_token_present(page):
+                            return True
                         solved = True
                         break
         except Exception as e:
             logger.debug("WEGO: Turnstile widget click attempt: %s", e)
 
-    # Strategy 4: click any verify/confirm button
+    # ── Strategy 5: click any verify/confirm button ──
     if not solved:
         try:
-            for btn_text in ["Verify", "verify", "Confirm", "I am human"]:
+            for btn_text in ["Verify", "verify", "Confirm", "I am human", "I'm not a robot"]:
                 btn = page.locator(f'button:has-text("{btn_text}"), a:has-text("{btn_text}")')
                 if await btn.count() > 0:
                     logger.info("WEGO: clicking '%s' button", btn_text)
                     await btn.first.click()
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
+                    if await _cf_token_present(page):
+                        return True
                     solved = True
                     break
         except Exception as e:
             logger.debug("WEGO: verify button click attempt: %s", e)
 
-    return solved
+    return solved or await _cf_token_present(page)
 
 
 def _wego_slug(iata: str) -> str:
@@ -355,6 +429,28 @@ class WegoConnectorClient:
             )
             page = await context.new_page()
 
+            # ── API response interception ──
+            # Capture Wego's flight data API responses as they stream in.
+            intercepted_data: list[dict] = []
+
+            async def _on_response(response):
+                url = response.url
+                if any(kw in url for kw in (
+                    "srv.wego.com", "api/flights", "search/results",
+                    "api/v3/metasearch", "affiliate/flights",
+                    "api.wego.com", "flights/fares",
+                )):
+                    try:
+                        ct = response.headers.get("content-type", "")
+                        if "json" in ct:
+                            body = await response.json()
+                            intercepted_data.append(body)
+                            logger.debug("WEGO: intercepted API response from %s", url)
+                    except Exception:
+                        pass
+
+            page.on("response", _on_response)
+
             logger.info("WEGO: navigating to %s", search_url)
             try:
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=45000)
@@ -365,54 +461,82 @@ class WegoConnectorClient:
                     raise  # Will trigger retry with different proxy session
                 raise
 
-            # Handle Cloudflare challenge — patchright auto-solves most
-            # Turnstile variants, but we need to wait for completion and
-            # actively solve the checkbox variant if it appears.
+            # ── Handle Cloudflare Turnstile ──
+            # Patchright auto-solves most challenges but needs page focus.
+            # We poll via title AND token, simulate human idle behaviour,
+            # and actively solve on escalation.
+            try:
+                await page.bring_to_front()
+            except Exception:
+                pass
+
             cf_passed = False
-            for cf_wait in range(40):
+            for cf_wait in range(60):  # up to 60 s
+                # Check 1: title no longer shows challenge page
                 try:
-                    title = await page.title()
+                    title = (await page.title()).lower()
                 except Exception:
                     await asyncio.sleep(1)
                     continue
-                title_lower = title.lower()
-                is_cf = (
-                    "just a moment" in title_lower
-                    or "checking" in title_lower
-                    or "challenge" in title_lower
-                    or "attention required" in title_lower
-                )
+                is_cf = any(t in title for t in (
+                    "just a moment", "checking", "challenge",
+                    "attention required", "please wait",
+                ))
                 if not is_cf:
                     if cf_wait > 0:
                         logger.info("WEGO: Cloudflare passed after ~%ds", cf_wait)
                     cf_passed = True
                     break
+
+                # Check 2: token present (patchright may have solved silently)
+                if await _cf_token_present(page):
+                    logger.info("WEGO: Cloudflare token detected at ~%ds", cf_wait)
+                    cf_passed = True
+                    break
+
                 if cf_wait == 0:
                     logger.info("WEGO: Cloudflare challenge detected, waiting...")
-                # Every 5s try to actively solve Turnstile checkbox
-                if cf_wait > 0 and cf_wait % 5 == 0:
+
+                # Simulate human idle every 2s (mouse jitter, tiny scroll)
+                if cf_wait % 2 == 0:
+                    await _simulate_human_idle(page)
+
+                # Every 4s try to actively solve Turnstile
+                if cf_wait > 2 and cf_wait % 4 == 0:
                     await _solve_cf_turnstile(page)
+
                 await asyncio.sleep(1)
 
             if not cf_passed:
-                # Last resort: reload and wait again (sometimes clears stuck CF)
-                logger.warning("WEGO: Cloudflare still blocking after 40s, reloading...")
+                # Reload fallback — different proxy session on next attempt
+                logger.warning("WEGO: Cloudflare still blocking after 60s, reloading...")
                 try:
                     await page.reload(wait_until="domcontentloaded", timeout=30000)
                 except Exception:
                     pass
-                for cf_retry in range(20):
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
+                for cf_retry in range(25):
                     try:
-                        title = await page.title()
+                        title = (await page.title()).lower()
                     except Exception:
                         await asyncio.sleep(1)
                         continue
-                    title_lower = title.lower()
-                    if "just a moment" not in title_lower and "challenge" not in title_lower:
+                    if not any(t in title for t in (
+                        "just a moment", "challenge", "checking",
+                        "attention required",
+                    )):
                         logger.info("WEGO: Cloudflare passed after reload + %ds", cf_retry)
                         cf_passed = True
                         break
-                    if cf_retry % 5 == 0:
+                    if await _cf_token_present(page):
+                        cf_passed = True
+                        break
+                    if cf_retry % 2 == 0:
+                        await _simulate_human_idle(page)
+                    if cf_retry % 4 == 0:
                         await _solve_cf_turnstile(page)
                     await asyncio.sleep(1)
 
@@ -438,7 +562,26 @@ class WegoConnectorClient:
 
             # Get page HTML and try multiple extraction methods
             html = await page.content()
-            
+
+            # Method 0: Use intercepted API data (most reliable)
+            if intercepted_data:
+                logger.info("WEGO: %d API responses intercepted, parsing...", len(intercepted_data))
+                seen: set[str] = set()
+                api_offers: list[FlightOffer] = []
+                for data in intercepted_data:
+                    try:
+                        if isinstance(data, dict):
+                            api_offers.extend(self._parse_response(data, req, dt, seen))
+                        elif isinstance(data, list):
+                            # Some Wego endpoints return bare arrays
+                            for item in data:
+                                if isinstance(item, dict):
+                                    api_offers.extend(self._parse_response(item, req, dt, seen))
+                    except Exception as e:
+                        logger.debug("WEGO: intercepted data parse error: %s", e)
+                if api_offers:
+                    return api_offers
+
             # Method 1: Try DOM text parsing (most reliable for Wego)
             offers = await self._parse_dom_text(page, req, dt)
             if offers:
