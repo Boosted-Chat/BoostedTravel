@@ -277,14 +277,10 @@ async def _get_browser():
                 "--no-first-run",
                 "--no-sandbox",
             ]
-            if headless:
-                # Headless-specific args (Cloud Run has no display)
-                chrome_args.extend([
-                    "--window-position=-2400,-2400",
-                    "--window-size=1400,900",
-                ])
-            else:
-                chrome_args.append("--window-size=1400,900")
+            chrome_args.extend([
+                "--window-position=-2400,-2400",
+                "--window-size=1400,900",
+            ])
             
             _browser = await pw.chromium.launch(
                 headless=headless,
@@ -304,6 +300,7 @@ async def _get_browser():
                 "--no-first-run",
                 *proxy_chrome_args(),
                 "--disable-blink-features=AutomationControlled",
+                "--window-position=-2400,-2400",
                 "--window-size=1400,900",
                 "about:blank",
             ]

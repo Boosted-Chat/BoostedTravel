@@ -517,7 +517,7 @@ async def _get_context():
                 *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
-                "--window-position=50,50",  # Visible for manual captcha solving
+                "--window-position=-2400,-2400",
                 "--window-size=1400,900",
                 "about:blank",
             ]

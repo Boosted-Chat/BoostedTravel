@@ -409,7 +409,10 @@ class WegoConnectorClient:
             pw_instance = await async_playwright().start()
             
             # Build proxy config with session ID for different IP on retry
-            launch_kwargs = {"headless": False}
+            launch_kwargs = {
+                "headless": False,
+                "args": ["--window-position=-2400,-2400", "--window-size=1366,800"],
+            }
             if proxy_is_configured():
                 session_id = f"wego{int(time.time())}{attempt}"
                 launch_kwargs["proxy"] = {
