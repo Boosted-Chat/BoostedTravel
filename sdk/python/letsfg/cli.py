@@ -404,13 +404,11 @@ def _format_leg_time(leg: dict, pos: str = "dep", include_day_offset: bool = Fal
     except (IndexError, TypeError):
         return "-"
 
-    # KLM route-fare feed is date-only; 00:00 is not a real schedule time.
-    # Show N/A instead of misleading midnight values.
+    # Some route-fare/date-level feeds are date-only; 00:00 is not a real
+    # schedule time in that case. Show N/A instead of misleading midnight.
     if (
         time_part == "00:00"
         and (leg.get("total_duration_seconds") in (0, None))
-        and segs
-        and segs[0].get("airline") == "KL"
     ):
         return "N/A"
 
