@@ -198,6 +198,7 @@ _AIRLINE_NORMALIZED_TO_IATA.update(
 
 _NON_AIRLINE_DISPLAY_NAMES: set[str] = {
     "travel trolley",
+    "travelup",
     "kiwi",
     "kiwi com",
     "trip com",
