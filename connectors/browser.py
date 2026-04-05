@@ -147,6 +147,7 @@ def release_browser_slot():
 # ── Cleanup registry — tracks resources launched by connectors ───────────────
 _launched_procs: list[subprocess.Popen] = []
 _launched_pw_instances: list = []
+_launched_browsers: list = []  # browsers from launch_headed_browser(), closed before pw.stop()
 
 # ── Chrome discovery ────────────────────────────────────────────────────────────
 
@@ -640,6 +641,7 @@ async def launch_headed_browser(
             headless=headless,
             args=args if args else None,
         )
+    _launched_browsers.append(browser)  # track so cleanup_all_browsers() can close it
     logger.info("Browser launched (channel=%s, headless=%s)", channel, headless)
     return browser
 
@@ -735,11 +737,20 @@ async def cleanup_all_browsers():
     """
     closed = 0
 
+    # Close browsers first so Playwright deletes their scoped_dir* temp profiles.
+    # pw.stop() alone does not reliably clean up the temp dirs.
+    for browser in _launched_browsers:
+        try:
+            await browser.close()
+            closed += 1
+        except Exception:
+            pass
+    _launched_browsers.clear()
+
     # Stop Playwright instances launched by launch_headed_browser / connect_cdp
     for pw in _launched_pw_instances:
         try:
             await pw.stop()
-            closed += 1
         except Exception:
             pass
     _launched_pw_instances.clear()

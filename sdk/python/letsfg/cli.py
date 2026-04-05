@@ -98,6 +98,11 @@ def _json_out(data):
 
 # ── Airline display helpers ───────────────────────────────────────────────
 
+def _normalize_airline_name(name: str) -> str:
+    """Normalize airline names for tolerant reverse-lookup."""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", name.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
 _IATA_TO_AIRLINE: dict[str, str] = {
     # Alternative Airlines
     "W2": "FlexFlight",
@@ -117,10 +122,10 @@ _IATA_TO_AIRLINE: dict[str, str] = {
     "S4": "Azores Airlines", "CY": "Cyprus Airways", "VS": "Virgin Atlantic",
     "DE": "Condor", "4Y": "Discover Airlines", "J2": "Azerbaijan Airlines",
     # Europe – LCC
-    "FR": "Ryanair", "W6": "Wizz Air", "U2": "easyJet", "VY": "Vueling",
-    "EW": "Eurowings", "HV": "Transavia", "PC": "Pegasus", "DY": "Norwegian",
+    "FR": "Ryanair", "RK": "Ryanair UK", "W6": "Wizz Air", "U2": "easyJet", "EC": "easyJet Europe", "VY": "Vueling",
+    "EW": "Eurowings", "HV": "Transavia", "TO": "Transavia France", "PC": "Pegasus", "VF": "AJet", "DY": "Norwegian",
     "I2": "Iberia Express", "V7": "Volotea", "LS": "Jet2", "FI": "Icelandair",
-    "XQ": "SunExpress",
+    "XQ": "SunExpress", "W4": "Windrose Air", "SM": "Samair Express", "9F": "Aurora Airlines",
     # North America
     "AA": "American Airlines", "DL": "Delta Air Lines", "UA": "United Airlines",
     "WN": "Southwest Airlines", "AS": "Alaska Airlines", "B6": "JetBlue Airways",
@@ -137,22 +142,23 @@ _IATA_TO_AIRLINE: dict[str, str] = {
     "P5": "Wingo", "JA": "JetSMART", "FO": "Flybondi",
     # Africa
     "SA": "South African Airways", "FA": "FlySafair", "4Z": "Airlink", "5Z": "CemAir", "GE": "LIFT",
-    "ET": "Ethiopian Airlines", "KQ": "Kenya Airways",
-    "WB": "RwandAir", "P4": "Air Peace",
+    "ET": "Ethiopian Airlines", "KQ": "Kenya Airways", "MS": "EgyptAir",
+    "WB": "RwandAir", "P4": "Air Peace", "AH": "Air Algerie", "DT": "TAAG Angola Airlines",
     # Asia – full-service
     "SQ": "Singapore Airlines", "CX": "Cathay Pacific", "NH": "ANA",
     "JL": "Japan Airlines", "KE": "Korean Air", "OZ": "Asiana Airlines",
     "MH": "Malaysia Airlines", "TG": "Thai Airways", "GA": "Garuda Indonesia",
     "AI": "Air India", "PK": "PIA", "UL": "SriLankan Airlines",
     "VN": "Vietnam Airlines", "PR": "Philippine Airlines",
-    "CA": "Air China", "MU": "China Eastern Airlines",
+    "CA": "Air China", "MU": "China Eastern Airlines", "FM": "Shanghai Airlines",
     "CZ": "China Southern Airlines", "CI": "China Airlines",
     "HU": "Hainan Airlines", "BR": "EVA Air", "JX": "Starlux Airlines",
+    "HO": "Juneyao Air", "BI": "Royal Brunei Airlines", "UO": "HK Express",
     "UX": "Air Europa",
     # Asia – LCC
     "AK": "AirAsia", "FD": "Thai AirAsia", "VJ": "VietJet Air",
     "TR": "Scoot", "MM": "Peach Aviation", "ZG": "ZIPAIR",
-    "7C": "Jeju Air", "TW": "T'way Air", "QG": "Citilink",
+    "7C": "Jeju Air", "TW": "T'way Air", "QG": "Citilink", "BX": "Air Busan",
     "OD": "Batik Air", "IU": "Super Air Jet", "8B": "TransNusa",
     "QP": "Akasa Air", "IX": "Air India Express", "6E": "IndiGo",
     "SG": "SpiceJet", "PG": "Bangkok Airways", "5J": "Cebu Pacific",
@@ -176,6 +182,71 @@ _IATA_TO_AIRLINE: dict[str, str] = {
 }
 _AIRLINE_TO_IATA: dict[str, str] = {v.lower(): k for k, v in _IATA_TO_AIRLINE.items()}
 
+# Additional aliases for airline names that share the same IATA carrier code.
+_AIRLINE_ALIAS_TO_IATA: dict[str, str] = {
+    "Rwandair Express": "WB",
+    "Etihad": "EY",
+    "TAAG Air Angola": "DT",
+}
+
+_AIRLINE_NORMALIZED_TO_IATA: dict[str, str] = {
+    _normalize_airline_name(name): code for name, code in _AIRLINE_TO_IATA.items()
+}
+_AIRLINE_NORMALIZED_TO_IATA.update(
+    {_normalize_airline_name(name): code for name, code in _AIRLINE_ALIAS_TO_IATA.items()}
+)
+
+_NON_AIRLINE_DISPLAY_NAMES: set[str] = {
+    "travel trolley",
+    "travelup",
+    "kiwi",
+    "kiwi com",
+    "trip com",
+    "booking com",
+    "expedia",
+    "travelocity",
+    "orbitz",
+    "priceline",
+    "cheapoair",
+    "lastminute",
+    "lastminute com",
+    "edreams",
+    "opodo",
+    "gotogate",
+    "mytrip",
+    "kayak",
+    "skyscanner",
+    "google flights",
+}
+
+
+def _is_airline_like(name: str) -> bool:
+    normalized = _normalize_airline_name(name)
+    if not normalized:
+        return False
+    if normalized in _NON_AIRLINE_DISPLAY_NAMES:
+        return False
+    if re.fullmatch(r"[A-Z0-9]{2,3}", name):
+        return True
+    if name.lower() in _AIRLINE_TO_IATA:
+        return True
+    if normalized in _AIRLINE_NORMALIZED_TO_IATA:
+        return True
+    return True
+
+
+def _format_airline_parts(parts: list[str]) -> str:
+    """Format and de-duplicate airline labels while preserving input order."""
+    rendered: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        label = _fmt_airline(part, [])
+        if not label or label == "-" or label in seen:
+            continue
+        seen.add(label)
+        rendered.append(label)
+    return " + ".join(rendered) if rendered else "-"
+
 
 def _fmt_airline(owner: str, airlines: list[str]) -> str:
     """Return 'CODE-FullName' for the Airline display column."""
@@ -183,11 +254,26 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
         owner = next((a for a in airlines if a), "")
     if not owner:
         return "-"
+    if not _is_airline_like(owner):
+        fallback = next((a for a in airlines if _is_airline_like(a)), "")
+        if fallback:
+            owner = fallback
+        else:
+            return "-"
 
     # Combo offer — e.g. "Ryanair|Wizz Air" produced by combo_engine
     if "|" in owner:
         parts = [p.strip() for p in owner.split("|") if p.strip()]
-        return " + ".join(_fmt_airline(p, []) for p in parts)
+        parts = [p for p in parts if _is_airline_like(p)]
+        return _format_airline_parts(parts)
+
+    # Comma-separated multi-airline string (e.g. ixigo headerTextWeb)
+    if "," in owner:
+        parts = [p.strip() for p in owner.split(",") if p.strip()]
+        seen: set[str] = set()
+        unique = [p for p in parts if not (p in seen or seen.add(p))]
+        unique = [p for p in unique if _is_airline_like(p)]
+        return _format_airline_parts(unique)
 
     # Pure IATA code (2–3 uppercase letters/digits)
     if re.fullmatch(r"[A-Z0-9]{2,3}", owner):
@@ -216,6 +302,8 @@ def _fmt_airline(owner: str, airlines: list[str]) -> str:
 
     # Full airline name — attempt reverse lookup for its IATA code
     code = _AIRLINE_TO_IATA.get(owner.lower())
+    if not code:
+        code = _AIRLINE_NORMALIZED_TO_IATA.get(_normalize_airline_name(owner))
     return f"{code}-{owner}" if code else owner
 
 
@@ -316,13 +404,11 @@ def _format_leg_time(leg: dict, pos: str = "dep", include_day_offset: bool = Fal
     except (IndexError, TypeError):
         return "-"
 
-    # KLM route-fare feed is date-only; 00:00 is not a real schedule time.
-    # Show N/A instead of misleading midnight values.
+    # Some route-fare/date-level feeds are date-only; 00:00 is not a real
+    # schedule time in that case. Show N/A instead of misleading midnight.
     if (
         time_part == "00:00"
         and (leg.get("total_duration_seconds") in (0, None))
-        and segs
-        and segs[0].get("airline") == "KL"
     ):
         return "N/A"
 
