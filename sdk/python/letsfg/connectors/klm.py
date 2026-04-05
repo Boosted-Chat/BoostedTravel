@@ -308,7 +308,6 @@ class KlmConnectorClient:
         dep_date_str = fare.get("departureDate", "")[:10]
         if not dep_date_str:
             return None
-        return_date_str = fare.get("returnDate", "")[:10]
 
         currency = fare.get("currencyCode") or "EUR"
         origin_code = fare.get("originAirportCode") or req.origin
@@ -316,7 +315,9 @@ class KlmConnectorClient:
         cabin = (fare.get("formattedTravelClass") or "Economy").lower()
 
         outbound_date = target_date
-        inbound_date = req.return_from.strftime("%Y-%m-%d") if req.return_from else return_date_str
+        # Respect explicit user intent: one-way searches should not inherit
+        # a synthetic return date from provider fare metadata.
+        inbound_date = req.return_from.strftime("%Y-%m-%d") if req.return_from else None
 
         try:
             dep_dt = datetime.strptime(outbound_date, "%Y-%m-%d")

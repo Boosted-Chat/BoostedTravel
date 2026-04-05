@@ -52,6 +52,10 @@ def _as_date(value):
     return value
 
 
+def _trip_type_for_request(req: FlightSearchRequest) -> str:
+    return "ROUND_TRIP" if req.return_from else "ONE_WAY"
+
+
 def _build_route(origin, destination, travel_date):
     departure_dt = datetime.combine(travel_date, dt_time(0, 0))
     segment = FlightSegment(
@@ -141,7 +145,7 @@ class AirfranceConnectorClient:
             "budget": {"maximum": None},
             "passengers": {"adults": max(1, req.adults or 1)},
             "travelClasses": ["ECONOMY"],
-            "flightType": "ROUND_TRIP",
+            "flightType": _trip_type_for_request(req),
             "flexibleDates": True,
             "faresPerRoute": "10",
             "trfxRoutes": True,
@@ -186,6 +190,7 @@ class AirfranceConnectorClient:
 
     def _build_offers(self, cards, req):
         offers = []
+        wants_round_trip = req.return_from is not None
         # Expand city codes so "LON" matches LHR/LGW/STN etc. (includes input code itself)
         origin_set = city_match_set(req.origin)
         dest_set = city_match_set(req.destination)
@@ -202,7 +207,7 @@ class AirfranceConnectorClient:
             actual_origin = card["origin"]
             outbound = _build_route(actual_origin, req.destination, card["departure_date"])
             inbound = None
-            if card.get("return_date"):
+            if wants_round_trip and card.get("return_date"):
                 inbound = _build_route(req.destination, actual_origin, card["return_date"])
 
             price = round(card["price"], 2)
@@ -226,7 +231,7 @@ class AirfranceConnectorClient:
                 source="airfrance_direct",
                 source_tier="free",
                 conditions={
-                    "trip_type": card.get("trip_type", "round-trip"),
+                    "trip_type": "round-trip" if wants_round_trip else "one-way",
                     "cabin": str(card.get("cabin") or "Economy"),
                     "fare_note": "Promo fare from Air France embedded fare module",
                     "actual_origin": actual_origin,
