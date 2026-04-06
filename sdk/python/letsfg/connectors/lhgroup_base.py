@@ -226,7 +226,61 @@ class LHGroupBaseConnector:
                 logger.warning("%s: no JSON-LD on %s", self.AIRLINE_NAME, url)
                 return self._empty(req)
 
-            offers = self._build_offers(flights, product, req)
+            # RT: fetch reverse route page for inbound fares
+            ib_route = None
+            ib_price = 0.0
+            if req.return_from and dest_slug != origin_slug:
+                rev_url = f"{_BASE_URL}/flight-{dest_slug}-{origin_slug}"
+                try:
+                    rev_resp = None
+                    for fp2 in random.sample(_FINGERPRINTS, min(2, len(_FINGERPRINTS))):
+                        try:
+                            with creq.Session(impersonate=fp2, proxies=get_curl_cffi_proxies()) as s2:
+                                rev_resp = s2.get(rev_url, timeout=self.timeout, headers=_HEADERS)
+                            if rev_resp and rev_resp.status_code == 200:
+                                break
+                            rev_resp = None
+                        except Exception:
+                            pass
+                    if rev_resp and rev_resp.status_code == 200:
+                        ib_flights, ib_product = self._extract_jsonld(rev_resp.text)
+                        ib_p = ib_product["price"] if ib_product else 0
+                        ret_date = req.return_from
+                        ret_str = ret_date.strftime("%Y-%m-%d") if hasattr(ret_date, "strftime") else str(ret_date)
+                        if ib_flights:
+                            ib_flt = ib_flights[0]
+                            ib_prov = ib_flt.get("provider", {})
+                            ib_seg = FlightSegment(
+                                airline=ib_prov.get("iataCode", self.AIRLINE_CODE),
+                                airline_name=ib_prov.get("name", self.AIRLINE_NAME),
+                                flight_no=f"{ib_prov.get('iataCode', self.AIRLINE_CODE)}{ib_flt.get('flightNumber', '')}",
+                                origin=ib_flt.get("departureAirport", {}).get("iataCode", req.destination),
+                                destination=ib_flt.get("arrivalAirport", {}).get("iataCode", req.origin),
+                                departure=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                arrival=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                duration_seconds=0,
+                                cabin_class="economy",
+                            )
+                            ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+                            ib_price = ib_p
+                        elif ib_p > 0:
+                            ib_seg = FlightSegment(
+                                airline=self.AIRLINE_CODE,
+                                airline_name=self.AIRLINE_NAME,
+                                flight_no="",
+                                origin=req.destination,
+                                destination=req.origin,
+                                departure=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                arrival=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                duration_seconds=0,
+                                cabin_class="economy",
+                            )
+                            ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+                            ib_price = ib_p
+                except Exception as e:
+                    logger.debug("%s: reverse route fetch failed: %s", self.AIRLINE_NAME, e)
+
+            offers = self._build_offers(flights, product, req, ib_route=ib_route, ib_price=ib_price)
             elapsed = time.monotonic() - t0
 
             offers.sort(key=lambda o: o.price)
@@ -283,6 +337,9 @@ class LHGroupBaseConnector:
         flights: list[dict],
         product: Optional[dict],
         req: FlightSearchRequest,
+        *,
+        ib_route: Optional[FlightRoute] = None,
+        ib_price: float = 0.0,
     ) -> list[FlightOffer]:
         dep_date = req.date_from
         price = product["price"] if product else 0
@@ -302,6 +359,8 @@ class LHGroupBaseConnector:
                 price=price,
                 currency=currency,
                 req=req,
+                ib_route=ib_route,
+                ib_price=ib_price,
             )]
 
         offers: list[FlightOffer] = []
@@ -322,6 +381,8 @@ class LHGroupBaseConnector:
                 price=price,
                 currency=currency,
                 req=req,
+                ib_route=ib_route,
+                ib_price=ib_price,
             ))
 
         return offers
@@ -340,6 +401,8 @@ class LHGroupBaseConnector:
         price: float,
         currency: str,
         req: FlightSearchRequest,
+        ib_route: Optional[FlightRoute] = None,
+        ib_price: float = 0.0,
     ) -> FlightOffer:
         dep_dt = dep_date
         arr_dt = dep_date
@@ -382,6 +445,9 @@ class LHGroupBaseConnector:
             f"{self.AIRLINE_CODE}_{origin}{destination}{dep_date_str}{flight_no}{price}".encode()
         ).hexdigest()[:12]
 
+        total_price = round(price + ib_price, 2) if ib_route else round(price, 2)
+        offer_id = f"{self.AIRLINE_CODE.lower()}_rt_{fid}" if ib_route else f"{self.AIRLINE_CODE.lower()}_{fid}"
+
         booking_url = self.BOOKING_URL_TEMPLATE.format(
             origin=origin,
             destination=destination,
@@ -402,12 +468,12 @@ class LHGroupBaseConnector:
             )
 
         return FlightOffer(
-            id=f"{self.AIRLINE_CODE.lower()}_{fid}",
-            price=round(price, 2),
+            id=offer_id,
+            price=total_price,
             currency=currency,
-            price_formatted=f"{price:.0f} {currency}",
+            price_formatted=f"{total_price:.0f} {currency}",
             outbound=route,
-            inbound=None,
+            inbound=ib_route,
             airlines=[airline_name],
             owner_airline=airline_code or self.AIRLINE_CODE,
             booking_url=booking_url,

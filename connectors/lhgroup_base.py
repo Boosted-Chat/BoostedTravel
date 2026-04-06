@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -22,13 +23,14 @@ from typing import Optional
 
 from curl_cffi import requests as creq
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +142,11 @@ IATA_TO_SLUG: dict[str, str] = {
     # ── Oceania ──
     "SYD": "sydney", "MEL": "melbourne", "BNE": "brisbane",
     "PER": "perth", "AKL": "auckland",
+    # ── City codes (multi-airport cities) ──
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "ROM": "rome",
+    "MIL": "milan", "WAS": "washington", "CHI": "chicago", "TYO": "tokyo",
+    "OSA": "osaka", "SEL": "seoul", "BJS": "beijing", "SHA": "shanghai",
+    "BUE": "buenos-aires", "STO": "stockholm", "REK": "reykjavik",
 }
 
 _BASE_URL = "https://www.lufthansa.com/xx/en/flights"
@@ -148,6 +155,9 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+# Rotate fingerprints to avoid WAF blocks on a single TLS profile
+_FINGERPRINTS = ["chrome136", "chrome133a", "chrome131", "chrome124", "chrome120"]
 
 
 class LHGroupBaseConnector:
@@ -191,11 +201,24 @@ class LHGroupBaseConnector:
         url = f"{_BASE_URL}/flight-{origin_slug}-{dest_slug}"
 
         try:
-            with creq.Session(impersonate="chrome131") as sess:
-                resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
+            resp = None
+            last_exc = None
+            # Try up to 2 fingerprints before giving up
+            for fp in random.sample(_FINGERPRINTS, min(2, len(_FINGERPRINTS))):
+                try:
+                    with creq.Session(impersonate=fp, proxies=get_curl_cffi_proxies()) as sess:
+                        resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
+                    if resp.status_code == 200:
+                        break
+                    logger.warning("%s: %s returned %d (fp=%s)", self.AIRLINE_NAME, url, resp.status_code, fp)
+                    resp = None
+                except Exception as e:
+                    last_exc = e
+                    logger.debug("%s: fp=%s failed: %s", self.AIRLINE_NAME, fp, e)
 
-            if resp.status_code != 200:
-                logger.warning("%s: %s returned %d", self.AIRLINE_NAME, url, resp.status_code)
+            if resp is None or resp.status_code != 200:
+                if last_exc:
+                    logger.warning("%s: all fingerprints failed, last error: %s", self.AIRLINE_NAME, last_exc)
                 return self._empty(req)
 
             flights, product = self._extract_jsonld(resp.text)
@@ -203,7 +226,61 @@ class LHGroupBaseConnector:
                 logger.warning("%s: no JSON-LD on %s", self.AIRLINE_NAME, url)
                 return self._empty(req)
 
-            offers = self._build_offers(flights, product, req)
+            # RT: fetch reverse route page for inbound fares
+            ib_route = None
+            ib_price = 0.0
+            if req.return_from and dest_slug != origin_slug:
+                rev_url = f"{_BASE_URL}/flight-{dest_slug}-{origin_slug}"
+                try:
+                    rev_resp = None
+                    for fp2 in random.sample(_FINGERPRINTS, min(2, len(_FINGERPRINTS))):
+                        try:
+                            with creq.Session(impersonate=fp2, proxies=get_curl_cffi_proxies()) as s2:
+                                rev_resp = s2.get(rev_url, timeout=self.timeout, headers=_HEADERS)
+                            if rev_resp and rev_resp.status_code == 200:
+                                break
+                            rev_resp = None
+                        except Exception:
+                            pass
+                    if rev_resp and rev_resp.status_code == 200:
+                        ib_flights, ib_product = self._extract_jsonld(rev_resp.text)
+                        ib_p = ib_product["price"] if ib_product else 0
+                        ret_date = req.return_from
+                        ret_str = ret_date.strftime("%Y-%m-%d") if hasattr(ret_date, "strftime") else str(ret_date)
+                        if ib_flights:
+                            ib_flt = ib_flights[0]
+                            ib_prov = ib_flt.get("provider", {})
+                            ib_seg = FlightSegment(
+                                airline=ib_prov.get("iataCode", self.AIRLINE_CODE),
+                                airline_name=ib_prov.get("name", self.AIRLINE_NAME),
+                                flight_no=f"{ib_prov.get('iataCode', self.AIRLINE_CODE)}{ib_flt.get('flightNumber', '')}",
+                                origin=ib_flt.get("departureAirport", {}).get("iataCode", req.destination),
+                                destination=ib_flt.get("arrivalAirport", {}).get("iataCode", req.origin),
+                                departure=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                arrival=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                duration_seconds=0,
+                                cabin_class="economy",
+                            )
+                            ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+                            ib_price = ib_p
+                        elif ib_p > 0:
+                            ib_seg = FlightSegment(
+                                airline=self.AIRLINE_CODE,
+                                airline_name=self.AIRLINE_NAME,
+                                flight_no="",
+                                origin=req.destination,
+                                destination=req.origin,
+                                departure=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                arrival=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
+                                duration_seconds=0,
+                                cabin_class="economy",
+                            )
+                            ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+                            ib_price = ib_p
+                except Exception as e:
+                    logger.debug("%s: reverse route fetch failed: %s", self.AIRLINE_NAME, e)
+
+            offers = self._build_offers(flights, product, req, ib_route=ib_route, ib_price=ib_price)
             elapsed = time.monotonic() - t0
 
             offers.sort(key=lambda o: o.price)
@@ -260,6 +337,9 @@ class LHGroupBaseConnector:
         flights: list[dict],
         product: Optional[dict],
         req: FlightSearchRequest,
+        *,
+        ib_route: Optional[FlightRoute] = None,
+        ib_price: float = 0.0,
     ) -> list[FlightOffer]:
         dep_date = req.date_from
         price = product["price"] if product else 0
@@ -279,6 +359,8 @@ class LHGroupBaseConnector:
                 price=price,
                 currency=currency,
                 req=req,
+                ib_route=ib_route,
+                ib_price=ib_price,
             )]
 
         offers: list[FlightOffer] = []
@@ -299,6 +381,8 @@ class LHGroupBaseConnector:
                 price=price,
                 currency=currency,
                 req=req,
+                ib_route=ib_route,
+                ib_price=ib_price,
             ))
 
         return offers
@@ -317,6 +401,8 @@ class LHGroupBaseConnector:
         price: float,
         currency: str,
         req: FlightSearchRequest,
+        ib_route: Optional[FlightRoute] = None,
+        ib_price: float = 0.0,
     ) -> FlightOffer:
         dep_dt = dep_date
         arr_dt = dep_date
@@ -359,6 +445,9 @@ class LHGroupBaseConnector:
             f"{self.AIRLINE_CODE}_{origin}{destination}{dep_date_str}{flight_no}{price}".encode()
         ).hexdigest()[:12]
 
+        total_price = round(price + ib_price, 2) if ib_route else round(price, 2)
+        offer_id = f"{self.AIRLINE_CODE.lower()}_rt_{fid}" if ib_route else f"{self.AIRLINE_CODE.lower()}_{fid}"
+
         booking_url = self.BOOKING_URL_TEMPLATE.format(
             origin=origin,
             destination=destination,
@@ -367,14 +456,24 @@ class LHGroupBaseConnector:
             children=req.children,
             infants=req.infants,
         )
+        # Upgrade booking URL to round-trip when return date is present
+        if req.return_from:
+            ret_str = req.return_from.strftime("%Y-%m-%d") if hasattr(req.return_from, "strftime") else str(req.return_from)
+            booking_url = booking_url.replace(
+                "trip-type=ONE_WAY",
+                f"trip-type=ROUND_TRIP&inbound-date={ret_str}",
+            ).replace(
+                "tripType=ONE_WAY",
+                f"tripType=ROUND_TRIP&returnDate={ret_str}",
+            )
 
         return FlightOffer(
-            id=f"{self.AIRLINE_CODE.lower()}_{fid}",
-            price=round(price, 2),
+            id=offer_id,
+            price=total_price,
             currency=currency,
-            price_formatted=f"{price:.0f} {currency}",
+            price_formatted=f"{total_price:.0f} {currency}",
             outbound=route,
-            inbound=None,
+            inbound=ib_route,
             airlines=[airline_name],
             owner_airline=airline_code or self.AIRLINE_CODE,
             booking_url=booking_url,

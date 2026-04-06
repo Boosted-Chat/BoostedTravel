@@ -25,13 +25,14 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class HawaiianConnectorClient:
                 currency="USD",
                 offers=offers,
                 total_results=len(offers),
-                search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}",
+                search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
             )
         except Exception as e:
             logger.error("Hawaiian search error: %s", e)
@@ -133,6 +134,7 @@ class HawaiianConnectorClient:
         )
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
             try:
                 from playwright_stealth import stealth_async
                 await stealth_async(page)
@@ -199,7 +201,87 @@ class HawaiianConnectorClient:
                 logger.warning("Hawaiian: API error: %s", result)
                 return []
 
-            return self._parse_rows(result, req)
+            ob_offers = self._parse_rows(result, req)
+
+            # ── RT: fetch inbound slice ──
+            if req.return_from and ob_offers:
+                ret_str = req.return_from.strftime("%Y-%m-%d")
+                ib_result = await page.evaluate(
+                    """async ([origin, destination, dateStr, adults]) => {
+                        try {
+                            const body = {
+                                origins: [origin],
+                                destinations: [destination],
+                                dates: [dateStr],
+                                numADTs: adults,
+                                numINFs: 0,
+                                numCHDs: 0,
+                                fareView: 'Default',
+                                onba: false,
+                                dnba: false,
+                                discount: { code: '', type: 'NONE', memo: '' },
+                                isAlaska: false,
+                                isMobileApp: false,
+                                sliceId: 0,
+                                umnrAgeGroup: 'NONE',
+                                isAddingToAdultRes: false,
+                                lockFare: false,
+                                sessionID: '',
+                                solutionIDs: [],
+                                solutionSetIDs: [],
+                                qpxcVersion: '',
+                                trackingTags: [],
+                                isAwards: false,
+                                isMultiCity: false,
+                            };
+                            const r = await fetch('/search/api/flightresults', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(body),
+                            });
+                            if (!r.ok) return { error: r.status };
+                            return await r.json();
+                        } catch (e) {
+                            return { error: e.message };
+                        }
+                    }""",
+                    [req.destination, req.origin, ret_str, req.adults],
+                )
+                if ib_result and not ib_result.get("error"):
+                    # Build cheapest IB route
+                    ib_req = FlightSearchRequest(
+                        origin=req.destination,
+                        destination=req.origin,
+                        date_from=req.return_from,
+                        adults=req.adults,
+                    )
+                    ib_offers = self._parse_rows(ib_result, ib_req)
+                    if ib_offers:
+                        cheapest_ib = min(ib_offers, key=lambda o: o.price)
+                        ib_route = cheapest_ib.outbound
+                        ib_price = cheapest_ib.price
+                        # Wrap OB offers with IB route + combined price
+                        wrapped: list[FlightOffer] = []
+                        for ob in ob_offers:
+                            combined = round(ob.price + ib_price, 2)
+                            wrapped.append(FlightOffer(
+                                id=f"ha_rt_{ob.id[3:]}",
+                                price=combined,
+                                currency=ob.currency,
+                                price_formatted=f"${combined:.2f}",
+                                outbound=ob.outbound,
+                                inbound=ib_route,
+                                airlines=ob.airlines,
+                                owner_airline=ob.owner_airline,
+                                booking_url=ob.booking_url,
+                                is_locked=False,
+                                source="hawaiian_direct",
+                                source_tier="free",
+                                availability_seats=ob.availability_seats,
+                            ))
+                        return wrapped
+
+            return ob_offers
         finally:
             await context.close()
 
@@ -212,8 +294,10 @@ class HawaiianConnectorClient:
             f"https://www.hawaiianairlines.com/book/flights"
             f"?origin={req.origin}&destination={req.destination}"
             f"&departure={req.date_from.strftime('%Y-%m-%d')}"
-            f"&adults={req.adults}&tripType=OneWay"
+            f"&adults={req.adults}&tripType={'RoundTrip' if req.return_from else 'OneWay'}"
         )
+        if req.return_from:
+            booking_url += f"&return={req.return_from.strftime('%Y-%m-%d')}"
         offers: list[FlightOffer] = []
 
         for row in rows:
@@ -320,5 +404,5 @@ class HawaiianConnectorClient:
             currency="USD",
             offers=[],
             total_results=0,
-            search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}",
+            search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
         )

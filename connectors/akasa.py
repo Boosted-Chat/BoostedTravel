@@ -37,13 +37,14 @@ from typing import Any, Optional
 
 from curl_cffi import requests as cffi_requests
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ class AkasaConnectorClient:
 
     def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
-        self._sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        self._sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
 
     async def close(self):
         pass
@@ -124,22 +125,40 @@ class AkasaConnectorClient:
             return self._empty(req)
 
         dep_date = req.date_from.strftime("%Y-%m-%dT00:00:00")
-        search_body = json.dumps({
-            "criteria": [{
+        criteria = [{
+            "stations": {
+                "originStationCodes": [req.origin],
+                "destinationStationCodes": [req.destination],
+                "searchDestinationMacs": True,
+                "searchOriginMacs": True,
+            },
+            "dates": {"beginDate": dep_date},
+            "filters": {
+                "compressionType": 1,
+                "maxConnections": 8,
+                "productClasses": ["NB", "LB", "EC", "AV"],
+                "fareTypes": ["NB", "LB", "R", "V"],
+            },
+        }]
+        if req.return_from:
+            ret_date = req.return_from.strftime("%Y-%m-%dT00:00:00")
+            criteria.append({
                 "stations": {
-                    "originStationCodes": [req.origin],
-                    "destinationStationCodes": [req.destination],
+                    "originStationCodes": [req.destination],
+                    "destinationStationCodes": [req.origin],
                     "searchDestinationMacs": True,
                     "searchOriginMacs": True,
                 },
-                "dates": {"beginDate": dep_date},
+                "dates": {"beginDate": ret_date},
                 "filters": {
                     "compressionType": 1,
                     "maxConnections": 8,
                     "productClasses": ["NB", "LB", "EC", "AV"],
                     "fareTypes": ["NB", "LB", "R", "V"],
                 },
-            }],
+            })
+        search_body = json.dumps({
+            "criteria": criteria,
             "passengers": {
                 "types": [{"type": "ADT", "count": max(req.adults, 1)}],
                 "residentCountry": "",
@@ -175,7 +194,7 @@ class AkasaConnectorClient:
         )
 
         search_hash = hashlib.md5(
-            f"akasa{req.origin}{req.destination}{req.date_from}".encode()
+            f"akasa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         return FlightSearchResponse(
@@ -224,17 +243,48 @@ class AkasaConnectorClient:
             if key and value:
                 fare_lookup[key] = value
 
-        # Walk results → trips → journeysAvailableByMarket → journeys
-        for result_block in results:
-            for trip in result_block.get("trips", []):
+        # ── Parse IB from results[1] if RT ──
+        ib_route = None
+        ib_price = 0.0
+        if req.return_from and len(results) > 1:
+            ib_offers: list[FlightOffer] = []
+            for trip in results[1].get("trips", []):
                 for market in trip.get("journeysAvailableByMarket", []):
-                    journeys = market.get("value", [])
-                    for journey in journeys:
-                        offer = self._parse_journey(
-                            journey, fare_lookup, req, booking_url
-                        )
-                        if offer:
-                            offers.append(offer)
+                    for journey in market.get("value", []):
+                        o = self._parse_journey(journey, fare_lookup, req, booking_url)
+                        if o:
+                            ib_offers.append(o)
+            if ib_offers:
+                cheapest_ib = min(ib_offers, key=lambda o: o.price)
+                ib_route = cheapest_ib.outbound
+                ib_price = cheapest_ib.price
+
+        # Walk results[0] (outbound) → trips → journeysAvailableByMarket → journeys
+        for trip in results[0].get("trips", []):
+            for market in trip.get("journeysAvailableByMarket", []):
+                journeys = market.get("value", [])
+                for journey in journeys:
+                    offer = self._parse_journey(
+                        journey, fare_lookup, req, booking_url
+                    )
+                    if offer:
+                        if ib_route:
+                            combined = round(offer.price + ib_price, 2)
+                            offer = FlightOffer(
+                                id=f"qp_rt_{offer.id[3:]}",
+                                price=combined,
+                                currency=offer.currency,
+                                price_formatted=f"{combined:.2f} {offer.currency}",
+                                outbound=offer.outbound,
+                                inbound=ib_route,
+                                airlines=offer.airlines,
+                                owner_airline=offer.owner_airline,
+                                booking_url=offer.booking_url,
+                                is_locked=False,
+                                source="akasa_direct",
+                                source_tier="free",
+                            )
+                        offers.append(offer)
 
         return offers
 
@@ -372,15 +422,18 @@ class AkasaConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
-        return (
+        url = (
             f"https://www.akasaair.com/booking?origin={req.origin}"
             f"&destination={req.destination}&date={dep}"
-            f"&adults={req.adults}&tripType=O"
+            f"&adults={req.adults}&tripType={'R' if req.return_from else 'O'}"
         )
+        if req.return_from:
+            url += f"&returnDate={req.return_from.strftime('%Y-%m-%d')}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"akasa{req.origin}{req.destination}{req.date_from}".encode()
+            f"akasa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

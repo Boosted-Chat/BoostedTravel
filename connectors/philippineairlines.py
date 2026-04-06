@@ -24,13 +24,15 @@ from typing import Optional
 
 import httpx
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_httpx_proxy_url
+from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,8 @@ _HEADERS = {
 }
 
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "TYO": "tokyo",
     # Philippines domestic
     "MNL": "manila", "CEB": "cebu", "DVO": "davao-city",
     "ILO": "iloilo-city", "BCD": "bacolod-city", "CGY": "cagayan-de-oro-city",
@@ -91,8 +95,8 @@ class PhilippineAirlinesConnectorClient:
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True
-            )
+                timeout=self.timeout, headers=_HEADERS, follow_redirects=True,
+                proxy=get_httpx_proxy_url(),)
         return self._http
 
     async def close(self):
@@ -114,8 +118,8 @@ class PhilippineAirlinesConnectorClient:
 
         try:
             resp = await client.get(url)
-            if resp.status_code != 200:
-                logger.warning("Philippine Airlines: %s returned %d", url, resp.status_code)
+            if resp.status_code not in (200, 404) or "__NEXT_DATA__" not in resp.text:
+                logger.warning("Philippine Airlines: %s returned %d (no fare data)", url, resp.status_code)
                 return self._empty(req)
         except Exception as e:
             logger.error("Philippine Airlines fetch error: %s", e)
@@ -127,12 +131,62 @@ class PhilippineAirlinesConnectorClient:
             return self._empty(req)
 
         offers = self._build_offers(fares, req)
+
+        # RT: fetch reverse route for inbound fares
+        if req.return_from and offers and dest_slug:
+            try:
+                _rev_url = f"{_BASE}/en/flights-from-{dest_slug}-to-{origin_slug}"
+                _rev_resp = await client.get(_rev_url)
+                if _rev_resp.status_code == 200:
+                    _ib_fares = self._extract_fares(_rev_resp.text)
+                    _ib_best = float("inf")
+                    for _f in _ib_fares:
+                        _p = _f.get("totalPrice")
+                        if _p:
+                            try:
+                                _pf = float(_p)
+                                if 0 < _pf < _ib_best:
+                                    _ib_best = _pf
+                            except (ValueError, TypeError):
+                                pass
+                    if _ib_best < float("inf"):
+                        _ret = req.return_from
+                        _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                        _ib_seg = FlightSegment(
+                            airline="PR",
+                            airline_name="Philippine Airlines",
+                            flight_no="",
+                            origin=req.destination,
+                            destination=req.origin,
+                            departure=_ret_dt,
+                            arrival=_ret_dt,
+                            duration_seconds=0,
+                            cabin_class="economy",
+                        )
+                        _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
+                        for _i, _o in enumerate(offers):
+                            offers[_i] = FlightOffer(
+                                id=f"rt_{_o.id}",
+                                price=round(_o.price + _ib_best, 2),
+                                currency=_o.currency,
+                                price_formatted=f"{round(_o.price + _ib_best, 2):.2f} {_o.currency}",
+                                outbound=_o.outbound,
+                                inbound=_ib_route,
+                                airlines=_o.airlines,
+                                owner_airline=_o.owner_airline,
+                                booking_url=_o.booking_url,
+                                is_locked=False,
+                                source=_o.source,
+                                source_tier=_o.source_tier,
+                            )
+            except Exception:
+                pass
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
 
         elapsed = time.monotonic() - t0
         logger.info("Philippine Airlines %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
-        h = hashlib.md5(f"pal{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"pal{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,
@@ -181,13 +235,30 @@ class PhilippineAirlinesConnectorClient:
     def _build_offers(self, fares: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
 
+        # Separate exact-date and nearby fares (airTRFX shows cached snapshots)
+        exact_fares: list[dict] = []
+        nearby_fares: list[dict] = []
         for fare in fares:
             orig = fare.get("originAirportCode", "")
             dest = fare.get("destinationAirportCode", "")
-            if orig != req.origin or dest != req.destination:
+            if orig not in valid_origins or dest not in valid_dests:
                 continue
+            if not fare.get("totalPrice") or float(fare.get("totalPrice", 0)) <= 0:
+                continue
+            if fare.get("departureDate", "")[:10] == target_date:
+                exact_fares.append(fare)
+            else:
+                nearby_fares.append(fare)
 
+        # Prefer exact-date fares; fall back to all route fares
+        use_fares = exact_fares if exact_fares else nearby_fares
+
+        for fare in use_fares:
+            orig = fare.get("originAirportCode", "")
+            dest = fare.get("destinationAirportCode", "")
             dep_date = fare.get("departureDate", "")
 
             price = fare.get("totalPrice")
@@ -237,7 +308,7 @@ class PhilippineAirlinesConnectorClient:
                     f"https://www.philippineairlines.com/en/book-a-trip"
                     f"?origin={req.origin}&destination={req.destination}"
                     f"&date={target_date}"
-                    f"&adults={req.adults or 1}&tripType=O"
+                    f"&adults={req.adults or 1}&tripType={'R' if req.return_from else 'O'}"
                 ),
                 is_locked=False,
                 source="philippineairlines_direct",
@@ -247,7 +318,7 @@ class PhilippineAirlinesConnectorClient:
         return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"pal{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"pal{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,

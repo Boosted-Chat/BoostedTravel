@@ -101,6 +101,66 @@ class JejuAirConnectorClient:
             return self._empty(req)
 
         offers = self._parse_lowfare(data, req)
+
+        # RT: fetch reverse route lowfare for inbound
+        if req.return_from and offers:
+            try:
+                ret_str = req.return_from.strftime("%Y-%m-%d")
+                ret_end = (req.return_from + timedelta(days=6)).strftime("%Y-%m-%d")
+                ib_payload = {
+                    "tripRoute": [{
+                        "searchStartDate": ret_str,
+                        "searchEndDate": ret_end,
+                        "originAirport": req.destination,
+                        "destinationAirport": req.origin,
+                    }],
+                    "passengers": [{"type": "ADT", "count": str(req.adults)}],
+                }
+                async with httpx.AsyncClient(timeout=self.timeout,
+                    proxy=get_httpx_proxy_url(),) as ib_client:
+                    ib_resp = await ib_client.post(
+                        _LOWFARE_URL, headers=_HEADERS, json=ib_payload,
+                    )
+                if ib_resp.status_code == 200:
+                    ib_data = ib_resp.json()
+                    if ib_data.get("code") == "0000":
+                        ib_lowfares = ib_data.get("data", {}).get("lowfares", {})
+                        ib_markets = ib_lowfares if isinstance(ib_lowfares, list) else ib_lowfares.get("lowFareDateMarkets", [])
+                        ib_best = float("inf")
+                        for item in ib_markets:
+                            if not isinstance(item, dict) or item.get("noFlights"):
+                                continue
+                            fi = item.get("lowestFareAmount", {})
+                            if fi:
+                                t = (fi.get("fareAmount", 0) or 0) + (fi.get("taxesAndFeesAmount", 0) or 0)
+                                if 0 < t < ib_best:
+                                    ib_best = t
+                        if ib_best < float("inf"):
+                            _ret_dt = self._parse_dt(ret_str)
+                            _ib_seg = FlightSegment(
+                                airline="7C", airline_name="Jeju Air", flight_no="",
+                                origin=req.destination, destination=req.origin,
+                                departure=_ret_dt, arrival=_ret_dt, cabin_class="M",
+                            )
+                            _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
+                            for _i, _o in enumerate(offers):
+                                offers[_i] = FlightOffer(
+                                    id=f"rt_{_o.id}",
+                                    price=round(_o.price + ib_best, 2),
+                                    currency=_o.currency,
+                                    price_formatted=f"{round(_o.price + ib_best, 2):.0f} {_o.currency}",
+                                    outbound=_o.outbound,
+                                    inbound=_ib_route,
+                                    airlines=_o.airlines,
+                                    owner_airline=_o.owner_airline,
+                                    booking_url=_o.booking_url,
+                                    is_locked=False,
+                                    source=_o.source,
+                                    source_tier=_o.source_tier,
+                                )
+            except Exception:
+                pass
+
         elapsed = time.monotonic() - t0
         offers.sort(key=lambda o: o.price)
         logger.info(

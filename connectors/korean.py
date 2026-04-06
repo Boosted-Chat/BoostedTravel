@@ -26,18 +26,14 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
-from connectors.browser import (
-    find_chrome,
-    stealth_popen_kwargs,
-    _launched_procs,
-)
+from .browser import _launched_procs, auto_block_if_proxied, find_chrome, proxy_chrome_args, stealth_popen_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +52,9 @@ _browser_lock: Optional[asyncio.Lock] = None
 # EveryMundo uses city slugs, NOT airport codes.
 # "flights-from-incheon-to-tokyo" returns 404 but "flights-from-seoul-to-tokyo" works.
 _IATA_TO_SLUG: dict[str, str] = {
+    # City codes (multi-airport cities)
+    "LON": "london", "NYC": "new-york", "PAR": "paris", "ROM": "rome",
+    "TYO": "tokyo", "SEL": "seoul", "OSA": "osaka",
     # South Korea
     "ICN": "seoul",
     "GMP": "seoul",
@@ -226,6 +225,7 @@ async def _get_context():
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 f"--user-data-dir={_USER_DATA_DIR}",
                 "--no-first-run",
+                *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-http2",
@@ -276,6 +276,7 @@ class KoreanConnectorClient:
         try:
             context = await _get_context()
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -297,6 +298,62 @@ class KoreanConnectorClient:
                     return self._empty(req)
 
                 offers = self._build_offers(fares, req)
+
+                # RT: navigate to reverse route for inbound fares
+                if req.return_from and offers and dest_slug:
+                    try:
+                        _rev_url = f"{_BASE}/flights-from-{dest_slug}-to-{origin_slug}"
+                        await page.goto(_rev_url, wait_until="domcontentloaded", timeout=30000)
+                        await asyncio.sleep(2.0)
+                        _ib_json = await page.evaluate("""() => {
+                            const el = document.querySelector('script#__NEXT_DATA__');
+                            return el ? el.textContent : null;
+                        }""")
+                        if _ib_json:
+                            _ib_fares = self._extract_fares(_ib_json)
+                            _ib_best = float("inf")
+                            for _f in _ib_fares:
+                                _p = _f.get("totalPrice")
+                                if _p:
+                                    try:
+                                        _pv = float(_p)
+                                        if 0 < _pv < _ib_best:
+                                            _ib_best = _pv
+                                    except (ValueError, TypeError):
+                                        pass
+                            if _ib_best < float("inf"):
+                                _ret = req.return_from
+                                _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                                _ib_seg = FlightSegment(
+                                    airline="KE",
+                                    airline_name="Korean Air",
+                                    flight_no="",
+                                    origin=req.destination,
+                                    destination=req.origin,
+                                    departure=_ret_dt,
+                                    arrival=_ret_dt,
+                                    duration_seconds=0,
+                                    cabin_class="economy",
+                                )
+                                _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
+                                for _i, _o in enumerate(offers):
+                                    offers[_i] = FlightOffer(
+                                        id=f"rt_{_o.id}",
+                                        price=round(_o.price + _ib_best, 2),
+                                        currency=_o.currency,
+                                        price_formatted=f"{round(_o.price + _ib_best, 2):.2f} {_o.currency}",
+                                        outbound=_o.outbound,
+                                        inbound=_ib_route,
+                                        airlines=_o.airlines,
+                                        owner_airline=_o.owner_airline,
+                                        booking_url=_o.booking_url,
+                                        is_locked=False,
+                                        source=_o.source,
+                                        source_tier=_o.source_tier,
+                                    )
+                    except Exception:
+                        pass
+
                 offers.sort(key=lambda o: o.price)
 
                 elapsed = time.monotonic() - t0
@@ -306,7 +363,7 @@ class KoreanConnectorClient:
                 )
 
                 h = hashlib.md5(
-                    f"korean{req.origin}{req.destination}{req.date_from}".encode()
+                    f"korean{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                 ).hexdigest()[:12]
                 return FlightSearchResponse(
                     search_id=f"fs_{h}",
@@ -412,7 +469,7 @@ class KoreanConnectorClient:
                 f"?departureStation={origin_code}&arrivalStation={dest_code}"
                 f"&departureDate={dep_date or target_date}"
                 f"&adt={req.adults}&chd={req.children}&inf={req.infants}"
-                f"&tripType=OW&cabin=Y"
+                f"&tripType={'RT' if req.return_from else 'OW'}&cabin=Y"
             )
 
             offers.append(FlightOffer(
@@ -434,7 +491,7 @@ class KoreanConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"korean{req.origin}{req.destination}{req.date_from}".encode()
+            f"korean{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

@@ -30,7 +30,7 @@ import time
 from datetime import datetime, date as date_type, timedelta
 from typing import Optional
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
@@ -345,7 +345,7 @@ class ANAConnectorClient:
                         req.origin, req.destination, len(offers), elapsed)
 
             search_hash = hashlib.md5(
-                f"nh{req.origin}{req.destination}{req.date_from}".encode()
+                f"nh{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             return FlightSearchResponse(
@@ -370,7 +370,7 @@ class ANAConnectorClient:
     # ------------------------------------------------------------------
 
     def _parse_search(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
-        """Parse roundtrip-owd response into one-way FlightOffers."""
+        """Parse roundtrip-owd response into FlightOffers (with inbound for RT)."""
         offers: list[FlightOffer] = []
 
         # Get outbound travel solutions (bound[0])
@@ -383,6 +383,69 @@ class ANAConnectorClient:
         travel_solutions = outbound.get("travelSolutions", [])
         air_offers = data.get("airOffers", {})
         availability = data.get("airOffersSummary", {}).get("travelSolutionsAvailability", {})
+
+        # ── Build IB route if RT and bounds[1] exists ──
+        ib_route = None
+        ib_price = 0.0
+        has_ib = req.return_from and bounds_key == "roundtripBounds" and len(bounds) > 1
+        if has_ib:
+            ib_bound = bounds[1]
+            ib_ts_list = ib_bound.get("travelSolutions", [])
+            # Build IB price map (travelSolutionId starting with "i")
+            ib_prices: dict[str, tuple[float, str]] = {}
+            for _oid, offer in air_offers.items():
+                if offer.get("isUnselectable"):
+                    continue
+                for bnd in offer.get("bounds", []):
+                    ts_id = bnd.get("travelSolutionId", "")
+                    if not ts_id.startswith("i"):
+                        continue
+                    bp = bnd.get("totalPrice", {}).get("total", 0)
+                    cur = bnd.get("totalPrice", {}).get("currencyCode",
+                          offer.get("prices", {}).get("totalPrice", {}).get("currencyCode", "USD"))
+                    if bp <= 0:
+                        continue
+                    if ts_id not in ib_prices or bp < ib_prices[ts_id][0]:
+                        ib_prices[ts_id] = (bp, cur)
+
+            # Find cheapest IB travel solution and build route
+            best_ib_price = float("inf")
+            best_ib_ts = None
+            for ts in ib_ts_list:
+                ts_id = ts.get("travelSolutionId", "")
+                avail = availability.get(ts_id, {})
+                if avail.get("isUnavailable", False):
+                    continue
+                if ts_id in ib_prices and ib_prices[ts_id][0] < best_ib_price:
+                    best_ib_price = ib_prices[ts_id][0]
+                    best_ib_ts = ts
+
+            if best_ib_ts and best_ib_price < float("inf"):
+                ib_price = best_ib_price
+                ib_segs = []
+                for fl in best_ib_ts.get("flights", []):
+                    dep = fl.get("departure", {})
+                    arr = fl.get("arrival", {})
+                    ac = fl.get("marketingAirlineCode", "NH")
+                    fn = fl.get("marketingFlightNumber", "")
+                    aname = _AIRLINE_NAMES.get(ac, fl.get("operatingAirlineName", ac))
+                    ib_segs.append(FlightSegment(
+                        airline=ac, airline_name=aname,
+                        flight_no=f"{ac}{fn}",
+                        origin=dep.get("locationCode", ""),
+                        destination=arr.get("locationCode", ""),
+                        departure=_parse_nh_datetime(dep.get("dateTime", "")),
+                        arrival=_parse_nh_datetime(arr.get("dateTime", "")),
+                        duration_seconds=fl.get("duration", 0),
+                        cabin_class="economy",
+                        aircraft=fl.get("aircraftName", ""),
+                    ))
+                if ib_segs:
+                    ib_route = FlightRoute(
+                        segments=ib_segs,
+                        total_duration_seconds=best_ib_ts.get("duration", 0),
+                        stopovers=best_ib_ts.get("numberOfConnections", max(len(ib_segs) - 1, 0)),
+                    )
 
         # Build a map: travelSolutionId → cheapest price
         ts_prices: dict[str, tuple[float, str]] = {}
@@ -463,14 +526,16 @@ class ANAConnectorClient:
 
             all_airlines = list({s.airline for s in segments})
 
+            combined = round(price + ib_price, 2) if ib_route else price
+
             offers.append(
                 FlightOffer(
-                    id=f"nh_{offer_id}",
-                    price=price,
+                    id=f"nh_rt_{offer_id}" if ib_route else f"nh_{offer_id}",
+                    price=combined,
                     currency=currency,
-                    price_formatted=f"{price:,.2f} {currency}",
+                    price_formatted=f"{combined:,.2f} {currency}",
                     outbound=route,
-                    inbound=None,
+                    inbound=ib_route,
                     airlines=[_AIRLINE_NAMES.get(a, a) for a in all_airlines],
                     owner_airline="NH",
                     booking_url=self._booking_url(req),
@@ -489,17 +554,21 @@ class ANAConnectorClient:
     @staticmethod
     def _booking_url(req: FlightSearchRequest) -> str:
         dt = _to_datetime(req.date_from)
-        return (
+        url = (
             f"https://www.ana.co.jp/en/us/book-plan/search/flight-search/"
             f"?origin={req.origin}"
             f"&destination={req.destination}"
             f"&departureDate={dt.strftime('%Y-%m-%d')}"
             f"&adults={req.adults or 1}"
         )
+        if req.return_from:
+            rd = _to_datetime(req.return_from)
+            url += f"&returnDate={rd.strftime('%Y-%m-%d')}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"nh{req.origin}{req.destination}{req.date_from}".encode()
+            f"nh{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

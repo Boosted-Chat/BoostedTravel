@@ -246,17 +246,18 @@ class ChinaEasternConnectorClient:
             }""")
             await asyncio.sleep(1.0)
 
-            # One-way toggle — China Eastern uses ceair-radio with value="oneway"
-            await page.evaluate("""() => {
+            # Trip type toggle — China Eastern uses ceair-radio with value="oneway"/"roundtrip"
+            trip_val = "oneway" if not req.return_from else "roundtrip"
+            await page.evaluate("""(val) => {
                 const radios = document.querySelectorAll('input.ceair-radio__original');
                 for (const r of radios) {
-                    if (r.value === 'oneway') {
+                    if (r.value === val) {
                         const label = r.closest('label') || r.parentElement;
                         if (label) { label.click(); return; }
                         r.click(); return;
                     }
                 }
-            }""")
+            }""", trip_val)
             await asyncio.sleep(1.0)
 
             ok = await self._fill_airport(page, 'input[aria-label="From"]', req.origin)
@@ -272,6 +273,11 @@ class ChinaEasternConnectorClient:
             ok = await self._fill_date(page, req)
             if not ok:
                 return self._empty(req)
+
+            # Fill return date for round-trip
+            if req.return_from:
+                await self._fill_return_date(page, req)
+                await asyncio.sleep(0.5)
 
             # Click search — China Eastern: button.submit-btn
             await page.evaluate("""() => {
@@ -297,6 +303,9 @@ class ChinaEasternConnectorClient:
                     trip_type = m.group(1)
                     route_part = m.group(2)
                     fixed_url = f"https://www.ceair.com/shopping/{trip_type}/{route_part}/{expected_date}"
+                    if req.return_from:
+                        ret_date = req.return_from.strftime("%Y-%m-%d") if hasattr(req.return_from, "strftime") else str(req.return_from)
+                        fixed_url += f"/{ret_date}"
                     logger.info("ChinaEastern: fixing URL date: %s", fixed_url)
                     # Clear stale data from wrong-date response before re-navigating
                     search_data.clear()
@@ -461,6 +470,64 @@ class ChinaEasternConnectorClient:
             logger.warning("ChinaEastern: date error: %s", e)
             return False
 
+    async def _fill_return_date(self, page, req: FlightSearchRequest) -> bool:
+        """Fill return date in China Eastern calendar."""
+        try:
+            dt = req.return_from if isinstance(req.return_from, (datetime, date)) else datetime.strptime(str(req.return_from), "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return False
+        iso = dt.strftime("%Y-%m-%d")
+        try:
+            # Click the return date field to open calendar
+            ret_field = page.locator('input[aria-label="Return"]').first
+            await ret_field.click(timeout=5000)
+            await asyncio.sleep(1.5)
+
+            target_day = str(dt.day)
+            target_ym = dt.strftime("%Y-%m")
+            # Navigate calendar to target month
+            for _ in range(12):
+                month_text = await page.evaluate("""() => {
+                    const h = document.querySelectorAll(
+                        '[class*="calendar"] [class*="month"], [class*="calendar"] [class*="title"], ' +
+                        '.month-title, .calendar-title, th[colspan]'
+                    );
+                    return [...h].map(e => e.textContent.trim()).join('|');
+                }""")
+                if target_ym in month_text or dt.strftime("%B %Y").lower() in month_text.lower() or f"{dt.year}年{dt.month}月" in month_text:
+                    break
+                await page.evaluate("""() => {
+                    const n = document.querySelector(
+                        '[class*="next"], [aria-label*="next"], [class*="forward"], ' +
+                        'button[class*="arrow-right"], .next-month, [class*="right-arrow"]'
+                    );
+                    if (n && n.offsetHeight > 0) n.click();
+                }""")
+                await asyncio.sleep(0.5)
+
+            # Click the target day
+            clicked = await page.evaluate("""(day) => {
+                const cells = document.querySelectorAll(
+                    'td[class*="day"], td[role="gridcell"], [class*="calendar-day"], ' +
+                    '[class*="date-cell"], .day, td.available'
+                );
+                for (const c of cells) {
+                    const text = c.textContent.trim();
+                    if (text === day && !c.classList.contains('disabled') &&
+                        c.getAttribute('aria-disabled') !== 'true' && c.offsetHeight > 0) {
+                        c.click(); return true;
+                    }
+                }
+                return false;
+            }""", target_day)
+            if clicked:
+                logger.info("ChinaEastern: return date clicked %s", iso)
+            await asyncio.sleep(1.0)
+            return True
+        except Exception as e:
+            logger.warning("ChinaEastern: return date error: %s", e)
+            return False
+
     def _parse_api_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         offers = []
 
@@ -495,12 +562,15 @@ class ChinaEasternConnectorClient:
 
     def _parse_brief_info(self, flight_items: list, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         """Parse China Eastern briefInfo API response structure."""
-        offers = []
         # Collect fare prices from segmentLowestPriceList or inline fares
         fare_prices = {}
         for seg_price in (data.get("segmentLowestPriceList") or []):
             if seg_price.get("lowestPrice"):
                 fare_prices[seg_price.get("flightDate", "")] = float(seg_price["lowestPrice"])
+
+        # First pass: build (route, price, currency) tuples and classify OB/IB
+        ob_entries = []
+        ib_entries = []
 
         for item in flight_items:
             for info in (item.get("flightInfos") or []):
@@ -581,16 +651,35 @@ class ChinaEasternConnectorClient:
                     total_duration_seconds=total_dur * 60 if total_dur else 0,
                     stopovers=max(0, len(segments) - 1),
                 )
-                offer_id = hashlib.md5(
-                    f"{self.IATA.lower()}_{segments[0].origin}_{segments[-1].destination}_{segments[0].departure}_{price}_{segments[0].flight_no}".encode()
-                ).hexdigest()[:12]
-                offers.append(FlightOffer(
-                    id=f"{self.IATA.lower()}_{offer_id}", price=round(price, 2), currency=currency,
-                    price_formatted=f"{currency} {price:,.0f}", outbound=route, inbound=None,
-                    airlines=list({s.airline for s in segments}), owner_airline=self.IATA,
-                    booking_url=self._booking_url(req), is_locked=False,
-                    source=self.SOURCE, source_tier="free",
-                ))
+
+                first_org = segments[0].origin
+                if req.return_from and first_org == req.destination:
+                    ib_entries.append((route, price, currency))
+                else:
+                    ob_entries.append((route, price, currency))
+
+        # Find cheapest inbound
+        ib_route = None
+        ib_price = 0.0
+        if ib_entries:
+            best = min(ib_entries, key=lambda e: e[1])
+            ib_route, ib_price, _ = best
+
+        # Build offers from outbound entries
+        offers = []
+        for route, price, currency in ob_entries:
+            combined = round(price + ib_price, 2) if ib_route else round(price, 2)
+            offer_id = hashlib.md5(
+                f"{self.IATA.lower()}_{route.segments[0].origin}_{route.segments[-1].destination}_{route.segments[0].departure}_{price}_{route.segments[0].flight_no}".encode()
+            ).hexdigest()[:12]
+            offers.append(FlightOffer(
+                id=f"{self.IATA.lower()}_rt_{offer_id}" if ib_route else f"{self.IATA.lower()}_{offer_id}",
+                price=combined, currency=currency,
+                price_formatted=f"{currency} {combined:,.0f}", outbound=route, inbound=ib_route,
+                airlines=list({s.airline for s in route.segments}), owner_airline=self.IATA,
+                booking_url=self._booking_url(req), is_locked=False,
+                source=self.SOURCE, source_tier="free",
+            ))
         return offers
 
     def _find_flights(self, data, depth=0) -> list:
@@ -781,7 +870,14 @@ class ChinaEasternConnectorClient:
             date_str = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, "strftime") else str(req.date_from)
         except Exception:
             date_str = ""
-        return f"https://us.ceair.com?from={req.origin}&to={req.destination}&date={date_str}"
+        url = f"https://us.ceair.com?from={req.origin}&to={req.destination}&date={date_str}"
+        if req.return_from:
+            try:
+                ret_str = req.return_from.strftime("%Y-%m-%d") if hasattr(req.return_from, "strftime") else str(req.return_from)
+            except Exception:
+                ret_str = ""
+            url += f"&returnDate={ret_str}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(f"chinaeastern{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]

@@ -334,12 +334,13 @@ class FinnairConnectorClient:
                 continue
 
             currency = dest_info.get("currency", "EUR")
-            booking_url = (
+            _burl = (
                 f"https://www.finnair.com/en/flights/{req.origin.lower()}-"
-                f"{req.destination.lower()}/{req.date_from.strftime('%Y%m%d')}/"
-                f"?adults={req.adults or 1}"
-                + (f"&return={req.return_from.strftime('%Y%m%d')}" if req.return_from else "")
+                f"{req.destination.lower()}"
             )
+            if req.return_from:
+                _burl += f"?returnDate={req.return_from}"
+            booking_url = _burl
 
             for tp in dest_info.get("travelClassPrices", []):
                 price = tp.get("price", 0)
@@ -368,17 +369,30 @@ class FinnairConnectorClient:
                     segments=[seg], total_duration_seconds=0, stopovers=0
                 )
 
+                # RT: add placeholder inbound (Finnair fares are already return-trip priced)
+                ib_route = None
+                if trip_type == "return" and req.return_from:
+                    ret_dt = datetime.combine(
+                        req.return_from, datetime.min.time().replace(hour=8)
+                    ) if not isinstance(req.return_from, datetime) else req.return_from
+                    ib_seg = FlightSegment(
+                        airline="AY", airline_name="Finnair", flight_no="AY",
+                        origin=req.destination, destination=req.origin,
+                        departure=ret_dt, arrival=ret_dt,
+                    )
+                    ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+
                 key = f"ay_{req.origin}{req.destination}{travel_class}{price}"
                 oid = hashlib.md5(key.encode()).hexdigest()[:12]
 
                 offers.append(
                     FlightOffer(
-                        id=f"ay_{oid}",
+                        id=f"ay_rt_{oid}" if ib_route else f"ay_{oid}",
                         price=round(float(price), 2),
                         currency=currency,
                         price_formatted=f"{price:.2f} {currency}",
                         outbound=route,
-                        inbound=None,
+                        inbound=ib_route,
                         airlines=["Finnair"],
                         owner_airline="AY",
                         conditions={

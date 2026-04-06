@@ -299,12 +299,19 @@ class SaudiaConnectorClient:
                 logger.warning("Saudia: page too small (%d), possibly WAF blocked", content_len)
                 return self._empty(req)
 
-            # Step 2: Click One Way radio
-            await page.evaluate("""() => {
-                for (const r of document.querySelectorAll('mat-radio-button'))
-                    if (/one.?way/i.test(r.textContent) && r.offsetHeight > 0)
-                        { r.querySelector('.mat-radio-outer-circle, label')?.click(); return; }
-            }""")
+            # Step 2: Click trip type radio
+            if not req.return_from:
+                await page.evaluate("""() => {
+                    for (const r of document.querySelectorAll('mat-radio-button'))
+                        if (/one.?way/i.test(r.textContent) && r.offsetHeight > 0)
+                            { r.querySelector('.mat-radio-outer-circle, label')?.click(); return; }
+                }""")
+            else:
+                await page.evaluate("""() => {
+                    for (const r of document.querySelectorAll('mat-radio-button'))
+                        if (/round.?trip|return/i.test(r.textContent) && r.offsetHeight > 0)
+                            { r.querySelector('.mat-radio-outer-circle, label')?.click(); return; }
+                }""")
             await asyncio.sleep(0.5)
 
             # Step 3: Fill origin
@@ -643,19 +650,54 @@ class SaudiaConnectorClient:
             logger.info("Saudia: clicked day %s %s %s", target_day, target_month, target_year)
             await asyncio.sleep(1.5)
 
-            # Range picker: second click = end date (same day for one-way)
-            await page.evaluate("""(args) => {
-                const [idx, day, month] = args;
-                const panel = document.querySelectorAll('.md-drppicker')[idx];
-                if (!panel) return;
-                for (const td of panel.querySelectorAll('td:not(.off)')) {
-                    if (td.offsetHeight === 0) continue;
-                    const span = td.querySelector('span');
-                    if (span && span.textContent.trim() === day) {
-                        td.click(); return;
+            # Range picker: second click = end date
+            # For round-trip, navigate to return month and click return day
+            # For one-way, click same departure day again
+            if req.return_from:
+                ret_dt = req.return_from if isinstance(req.return_from, (datetime, date)) else datetime.strptime(str(req.return_from), "%Y-%m-%d")
+                ret_month = ret_dt.strftime("%B")
+                ret_year = str(ret_dt.year)
+                ret_day = str(ret_dt.day)
+                # Navigate to return month if different
+                for _ in range(14):
+                    month_text = await page.evaluate("""(idx) => {
+                        const panel = document.querySelectorAll('.md-drppicker')[idx];
+                        if (!panel) return '';
+                        const hdr = panel.querySelector('th.month');
+                        return hdr ? hdr.textContent.trim() : '';
+                    }""", vis_idx)
+                    if ret_month.lower() in month_text.lower() and ret_year in month_text:
+                        break
+                    await page.evaluate("""(idx) => {
+                        const panel = document.querySelectorAll('.md-drppicker')[idx];
+                        if (panel) { const n = panel.querySelector('th.next'); if (n) n.click(); }
+                    }""", vis_idx)
+                    await asyncio.sleep(0.5)
+                await page.evaluate("""(args) => {
+                    const [idx, day, month] = args;
+                    const panel = document.querySelectorAll('.md-drppicker')[idx];
+                    if (!panel) return;
+                    for (const td of panel.querySelectorAll('td:not(.off)')) {
+                        if (td.offsetHeight === 0) continue;
+                        const span = td.querySelector('span');
+                        if (span && span.textContent.trim() === day) {
+                            td.click(); return;
+                        }
                     }
-                }
-            }""", [vis_idx, target_day, target_month])
+                }""", [vis_idx, ret_day, ret_month])
+            else:
+                await page.evaluate("""(args) => {
+                    const [idx, day, month] = args;
+                    const panel = document.querySelectorAll('.md-drppicker')[idx];
+                    if (!panel) return;
+                    for (const td of panel.querySelectorAll('td:not(.off)')) {
+                        if (td.offsetHeight === 0) continue;
+                        const span = td.querySelector('span');
+                        if (span && span.textContent.trim() === day) {
+                            td.click(); return;
+                        }
+                    }
+                }""", [vis_idx, target_day, target_month])
             await asyncio.sleep(1.0)
 
             # Close calendar
@@ -675,7 +717,7 @@ class SaudiaConnectorClient:
 
     def _parse_api_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         """Parse Saudia search API response."""
-        offers = []
+        raw_offers = []
 
         # Try various response shapes
         flights = (
@@ -699,9 +741,49 @@ class SaudiaConnectorClient:
         for flight in flights:
             offer = self._build_offer(flight, req)
             if offer:
-                offers.append(offer)
+                raw_offers.append(offer)
 
-        return offers
+        if not req.return_from or not raw_offers:
+            return raw_offers
+
+        # Classify OB/IB by first segment origin
+        ob_offers = []
+        ib_offers = []
+        for o in raw_offers:
+            first_org = o.outbound.segments[0].origin if o.outbound and o.outbound.segments else ""
+            if first_org == req.destination:
+                ib_offers.append(o)
+            else:
+                ob_offers.append(o)
+
+        if not ib_offers:
+            return raw_offers
+
+        # Find cheapest inbound
+        best_ib = min(ib_offers, key=lambda o: o.price)
+        ib_route = best_ib.outbound  # the "outbound" of the IB offer is actually the inbound route
+        ib_price = best_ib.price
+
+        # Combine OB offers with cheapest IB
+        combined = []
+        for o in ob_offers:
+            cp = round(o.price + ib_price, 2)
+            oid = hashlib.md5(f"sv_rt_{o.id}_{best_ib.id}".encode()).hexdigest()[:12]
+            combined.append(FlightOffer(
+                id=f"sv_rt_{oid}",
+                price=cp,
+                currency=o.currency,
+                price_formatted=f"{o.currency} {cp:,.0f}",
+                outbound=o.outbound,
+                inbound=ib_route,
+                airlines=o.airlines,
+                owner_airline="SV",
+                booking_url=self._booking_url(req),
+                is_locked=False,
+                source="saudia_direct",
+                source_tier="free",
+            ))
+        return combined
 
     def _find_flights(self, data, depth=0) -> list:
         """Recursively find flight arrays in nested data."""
@@ -1010,13 +1092,20 @@ class SaudiaConnectorClient:
         adults = req.adults or 1
         children = getattr(req, "children", 0) or 0
         infants = getattr(req, "infants", 0) or 0
-        return (
+        url = (
             f"https://www.saudia.com/en-SA/booking?"
             f"origin={req.origin}&destination={req.destination}"
             f"&departureDate={date_str}"
             f"&adults={adults}&children={children}&infants={infants}"
             f"&tripType={'RoundTrip' if req.return_from else 'OneWay'}&lang=en-SA"
         )
+        if req.return_from:
+            try:
+                ret_str = req.return_from.strftime("%Y-%m-%d") if hasattr(req.return_from, "strftime") else str(req.return_from)
+            except Exception:
+                ret_str = ""
+            url += f"&returnDate={ret_str}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(

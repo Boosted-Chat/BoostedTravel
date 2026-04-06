@@ -301,8 +301,11 @@ class IndiGoConnectorClient:
                 await page.mouse.move(x, y, steps=random.randint(5, 10))
                 await asyncio.sleep(random.uniform(0.2, 0.5))
 
-            # Select One Way trip type
-            await self._set_one_way(page)
+            # Select trip type (One Way or Round Trip)
+            if req.return_from:
+                await self._set_round_trip(page)
+            else:
+                await self._set_one_way(page)
             await asyncio.sleep(0.5)
 
             # Fill origin
@@ -325,6 +328,14 @@ class IndiGoConnectorClient:
                 logger.warning("IndiGo: date fill failed")
                 return self._empty(req)
             await asyncio.sleep(0.3)
+
+            # Fill return date for RT
+            if req.return_from:
+                ok = await self._fill_return_date(page, req)
+                if not ok:
+                    logger.warning("IndiGo: return date fill failed")
+                    # Continue anyway — API may still return RT data
+                await asyncio.sleep(0.3)
 
             # Click search
             await self._click_search(page)
@@ -418,6 +429,102 @@ class IndiGoConnectorClient:
                 await ow.click(timeout=3000)
         except Exception:
             pass
+
+    async def _set_round_trip(self, page) -> None:
+        """Select 'Round Trip' radio button on IndiGo form."""
+        try:
+            radio = page.locator("input#radio-input-triptype-roundTrip")
+            if await radio.count() > 0 and await radio.is_checked():
+                return
+        except Exception:
+            pass
+        try:
+            wrapper = page.locator("label[for='radio-input-triptype-roundTrip'], input#radio-input-triptype-roundTrip + *")
+            if await wrapper.count() > 0:
+                await wrapper.first.click(timeout=3000)
+                return
+        except Exception:
+            pass
+        try:
+            rt = page.get_by_text("Round Trip", exact=True).first
+            if rt and await rt.count() > 0:
+                await rt.click(timeout=3000)
+        except Exception:
+            pass
+
+    async def _fill_return_date(self, page, req: FlightSearchRequest) -> bool:
+        """Fill the return date calendar (react-date-range) for RT bookings."""
+        target = req.return_from
+        if not target:
+            return False
+        try:
+            # Click return date button to open calendar
+            ret_btn = page.locator("button[class*='returnDate'], .popover__wrapper.search-widget-form-body__return")
+            if await ret_btn.count() == 0:
+                ret_btn = page.locator("[aria-label*='returnDate']")
+            if await ret_btn.count() == 0:
+                # Try generic return selector
+                ret_btn = page.get_by_text("Return", exact=False).first
+            await ret_btn.first.click(timeout=5000)
+            await asyncio.sleep(0.8)
+
+            # Navigate to target month
+            target_month_year = target.strftime("%B %Y")
+            for _ in range(14):
+                month_names = page.locator(".rdrMonthName")
+                found = False
+                for i in range(await month_names.count()):
+                    mn_text = await month_names.nth(i).inner_text()
+                    if target_month_year.lower() in mn_text.lower():
+                        found = True
+                        break
+                if found:
+                    break
+                header = page.locator(".rdrMonthAndYearPickers")
+                if await header.count() > 0:
+                    text = await header.first.inner_text()
+                    if target_month_year.lower() in text.lower():
+                        break
+                nxt = page.locator(".rdrNextButton")
+                if await nxt.count() > 0:
+                    await nxt.first.click(timeout=2000)
+                    await asyncio.sleep(0.4)
+                else:
+                    break
+
+            # Click the target day
+            day_num = target.day
+            day_name = target.strftime("%A")
+            month_name = target.strftime("%B")
+            aria_label = f"{day_name}, {day_num} {month_name} {target.year}"
+
+            day_el = page.locator(f"span[aria-label='{aria_label}']")
+            if await day_el.count() > 0:
+                await asyncio.sleep(0.5)
+                await day_el.first.click(timeout=5000, force=True)
+                await asyncio.sleep(0.5)
+                return True
+
+            day_el = page.locator(f"span[aria-label*='{day_num} {month_name} {target.year}']")
+            if await day_el.count() > 0:
+                await asyncio.sleep(0.5)
+                await day_el.first.click(timeout=5000, force=True)
+                await asyncio.sleep(0.5)
+                return True
+
+            day_btns = page.locator(".rdrDay:not(.rdrDayDisabled) .rdrDayNumber span")
+            for i in range(await day_btns.count()):
+                btn = day_btns.nth(i)
+                txt = (await btn.inner_text()).strip()
+                if txt == str(day_num):
+                    await btn.click(timeout=3000)
+                    return True
+
+            logger.warning("IndiGo: could not find return day %s in calendar", day_num)
+            return False
+        except Exception as e:
+            logger.warning("IndiGo: return date error: %s", e)
+            return False
 
     async def _fill_airport_field(self, page, label: str, iata: str, index: int) -> bool:
         """
@@ -622,6 +729,29 @@ class IndiGoConnectorClient:
         trips = data.get("trips") or []
         if not trips:
             return offers
+
+        # ── Parse IB from trips[1] if RT ──
+        ib_route = None
+        ib_price = 0.0
+        if req.return_from and len(trips) > 1:
+            ib_journeys = trips[1].get("journeysAvailable") or []
+            best_ib = None
+            best_ib_p = float("inf")
+            for jrn in ib_journeys:
+                if jrn.get("isSold"):
+                    continue
+                ib_req = FlightSearchRequest(
+                    origin=req.destination, destination=req.origin,
+                    date_from=req.return_from, adults=req.adults,
+                )
+                o = self._parse_journey(jrn, ib_req, booking_url, currency)
+                if o and o.price < best_ib_p:
+                    best_ib_p = o.price
+                    best_ib = o
+            if best_ib:
+                ib_route = best_ib.outbound
+                ib_price = best_ib.price
+
         trip = trips[0]
         journeys = trip.get("journeysAvailable") or []
 
@@ -630,6 +760,22 @@ class IndiGoConnectorClient:
                 continue
             offer = self._parse_journey(journey, req, booking_url, currency)
             if offer:
+                if ib_route:
+                    combined = round(offer.price + ib_price, 2)
+                    offer = FlightOffer(
+                        id=f"6e_rt_{offer.id[3:]}",
+                        price=combined,
+                        currency=offer.currency,
+                        price_formatted=f"{combined:.2f} {offer.currency}",
+                        outbound=offer.outbound,
+                        inbound=ib_route,
+                        airlines=offer.airlines,
+                        owner_airline=offer.owner_airline,
+                        booking_url=offer.booking_url,
+                        is_locked=False,
+                        source="indigo_direct",
+                        source_tier="free",
+                    )
                 offers.append(offer)
         return offers
 
@@ -729,10 +875,13 @@ class IndiGoConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%d/%m/%Y")
-        return (
+        url = (
             f"https://www.goindigo.in/flight-booking?origin={req.origin}"
             f"&destination={req.destination}&date={dep}&adults={req.adults}&tripType={'R' if req.return_from else 'O'}"
         )
+        if req.return_from:
+            url += f"&returnDate={req.return_from.strftime('%d/%m/%Y')}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"indigo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]

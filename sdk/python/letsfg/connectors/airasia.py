@@ -226,12 +226,39 @@ class AirAsiaConnectorClient:
         search_results = data.get("searchResults")
         if isinstance(search_results, dict):
             trips = search_results.get("trips", [])
-            if isinstance(trips, list):
-                for trip in trips:
-                    for flight in trip.get("flightsList", []):
-                        offer = self._parse_airasia_flight(flight, currency, req, booking_url)
-                        if offer:
-                            offers.append(offer)
+            if isinstance(trips, list) and trips:
+                # trips[0] = outbound, trips[1] = inbound (if RT)
+                ob_trip = trips[0] if trips else {}
+                for flight in ob_trip.get("flightsList", []):
+                    offer = self._parse_airasia_flight(flight, currency, req, booking_url)
+                    if offer:
+                        offers.append(offer)
+
+                # RT: pair each OB with cheapest IB from trips[1]
+                if req.return_from and len(trips) > 1 and offers:
+                    ib_offers = []
+                    for flight in trips[1].get("flightsList", []):
+                        ib_offer = self._parse_airasia_flight(flight, currency, req, booking_url)
+                        if ib_offer:
+                            ib_offers.append(ib_offer)
+                    if ib_offers:
+                        _ib_best = min(ib_offers, key=lambda o: o.price)
+                        _ib_route = _ib_best.outbound  # IB offer's "outbound" is our inbound route
+                        for _i, _o in enumerate(offers):
+                            offers[_i] = FlightOffer(
+                                id=f"rt_{_o.id}",
+                                price=round(_o.price + _ib_best.price, 2),
+                                currency=_o.currency,
+                                price_formatted=f"{round(_o.price + _ib_best.price, 2):.2f} {_o.currency}",
+                                outbound=_o.outbound,
+                                inbound=_ib_route,
+                                airlines=_o.airlines,
+                                owner_airline=_o.owner_airline,
+                                booking_url=_o.booking_url,
+                                is_locked=False,
+                                source=_o.source,
+                                source_tier=_o.source_tier,
+                            )
         if offers:
             return offers
 
@@ -434,7 +461,7 @@ class AirAsiaConnectorClient:
     @staticmethod
     def _build_search_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%d/%m/%Y")
-        return (
+        url = (
             f"https://www.airasia.com/flights/search/"
             f"?origin={req.origin}&destination={req.destination}"
             f"&departDate={dep}&tripType={'R' if req.return_from else 'O'}"
@@ -442,6 +469,10 @@ class AirAsiaConnectorClient:
             f"&locale=en-gb&currency={req.currency}"
             f"&airlineProfile=k,d,g&type=paired&cabinClass=economy&uce=true"
         )
+        if req.return_from:
+            ret = req.return_from.strftime("%d/%m/%Y") if hasattr(req.return_from, "strftime") else str(req.return_from)
+            url += f"&returnDate={ret}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"airasia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]

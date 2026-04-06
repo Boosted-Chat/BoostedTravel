@@ -224,6 +224,17 @@ class QantasConnectorClient:
                 segments=[seg], total_duration_seconds=0, stopovers=0,
             )
 
+            # RT deals: add placeholder inbound route (price already includes return)
+            ib_route = None
+            if trip_type == "RETURN" and req.return_from:
+                ret_dt = datetime.combine(req.return_from, datetime.min.time()) if not isinstance(req.return_from, datetime) else req.return_from
+                ib_seg = FlightSegment(
+                    airline="QF", airline_name="Qantas", flight_no="QF",
+                    origin=dest, destination=origin,
+                    departure=ret_dt, arrival=ret_dt,
+                )
+                ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+
             key = f"qf_{origin}{dest}{target}{price}{fare_family}"
             oid = hashlib.md5(key.encode()).hexdigest()[:12]
 
@@ -233,14 +244,17 @@ class QantasConnectorClient:
                 f"&departure={target.replace('-', '')}"
                 f"&adults={req.adults or 1}"
             )
+            if req.return_from:
+                ret_str = req.return_from.strftime("%Y%m%d") if hasattr(req.return_from, "strftime") else str(req.return_from).replace("-", "")
+                booking_url += f"&return={ret_str}"
 
             offers.append(FlightOffer(
-                id=f"qf_{oid}",
+                id=f"qf_rt_{oid}" if ib_route else f"qf_{oid}",
                 price=round(price, 2),
                 currency=currency,
                 price_formatted=f"{price:,.2f} {currency}",
                 outbound=route,
-                inbound=None,
+                inbound=ib_route,
                 airlines=["Qantas"],
                 owner_airline="QF",
                 conditions={

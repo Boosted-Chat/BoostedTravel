@@ -616,29 +616,32 @@ class ITAAirwaysConnectorClient:
                 # can find it (not evaluate-based DOM queries). Previous runs
                 # confirmed this makes the button change to "Find flights" and
                 # removes the return date requirement.
-                logger.info("ITA: checking One-way checkbox in calendar")
-                ow_clicked = False
-                try:
-                    ow_loc = page.get_by_text("One way", exact=True)
-                    if await ow_loc.count() > 0:
-                        await ow_loc.first.click(timeout=3000)
-                        ow_clicked = True
-                        logger.info("ITA: One-way clicked via get_by_text")
-                except Exception as e:
-                    logger.debug("ITA: get_by_text One way: %s", e)
-
-                if not ow_clicked:
+                if not req.return_from:
+                    logger.info("ITA: checking One-way checkbox in calendar")
+                    ow_clicked = False
                     try:
-                        ow_loc2 = page.locator("text=One way")
-                        if await ow_loc2.count() > 0:
-                            await ow_loc2.first.click(timeout=3000)
+                        ow_loc = page.get_by_text("One way", exact=True)
+                        if await ow_loc.count() > 0:
+                            await ow_loc.first.click(timeout=3000)
                             ow_clicked = True
-                            logger.info("ITA: One-way clicked via text= locator")
+                            logger.info("ITA: One-way clicked via get_by_text")
                     except Exception as e:
-                        logger.debug("ITA: text=One way: %s", e)
+                        logger.debug("ITA: get_by_text One way: %s", e)
 
-                if ow_clicked:
-                    await asyncio.sleep(1.0)
+                    if not ow_clicked:
+                        try:
+                            ow_loc2 = page.locator("text=One way")
+                            if await ow_loc2.count() > 0:
+                                await ow_loc2.first.click(timeout=3000)
+                                ow_clicked = True
+                                logger.info("ITA: One-way clicked via text= locator")
+                        except Exception as e:
+                            logger.debug("ITA: text=One way: %s", e)
+
+                    if ow_clicked:
+                        await asyncio.sleep(1.0)
+                else:
+                    logger.info("ITA: keeping Round trip (default) for RT search")
 
                 # Navigate to target month using Playwright locator clicks
                 for nav_i in range(12):
@@ -1248,9 +1251,68 @@ class ITAAirwaysConnectorClient:
         if not groups:
             return offers
 
+        # Classify groups into outbound vs inbound
+        ob_groups = []
+        ib_groups = []
+        for g in groups:
+            olc = g.get("boundDetails", {}).get("originLocationCode", "")
+            if req.return_from and olc == req.destination:
+                ib_groups.append(g)
+            else:
+                ob_groups.append(g)
+
+        # Build cheapest inbound route
+        ib_route = None
+        ib_price = 0.0
+        if ib_groups:
+            best_ib_price = float("inf")
+            best_ib_group = None
+            for g in ib_groups:
+                for ab in g.get("airBounds", []):
+                    tp = ab.get("airOffer", {}).get("totalPrice", {})
+                    pc = tp.get("value")
+                    if pc is None:
+                        tps = ab.get("prices", {}).get("totalPrices", [])
+                        if tps:
+                            pc = tps[0].get("total")
+                    if pc and 0 < pc < best_ib_price:
+                        best_ib_price = pc
+                        best_ib_group = g
+                        break
+            if best_ib_group:
+                ib_price = round(best_ib_price / 100, 2)
+                ib_bd = best_ib_group.get("boundDetails", {})
+                ib_segs: list[FlightSegment] = []
+                for sref in ib_bd.get("segments", []):
+                    fid = sref.get("flightId", "")
+                    fl = flight_dict.get(fid, {})
+                    dep = fl.get("departure", {})
+                    arr = fl.get("arrival", {})
+                    mkt_code = fl.get("marketingAirlineCode", "AZ")
+                    mkt_num = fl.get("marketingFlightNumber", "")
+                    airline_name = airline_dict.get(mkt_code, "ITA Airways")
+                    ib_segs.append(FlightSegment(
+                        airline=mkt_code, airline_name=airline_name,
+                        flight_no=f"{mkt_code}{mkt_num}",
+                        origin=dep.get("locationCode", req.destination),
+                        destination=arr.get("locationCode", req.origin),
+                        departure=self._parse_dt(dep.get("dateTime")),
+                        arrival=self._parse_dt(arr.get("dateTime")),
+                    ))
+                ib_route = FlightRoute(
+                    segments=ib_segs or [FlightSegment(
+                        airline="AZ", airline_name="ITA Airways", flight_no="AZ",
+                        origin=req.destination, destination=req.origin,
+                        departure=datetime.combine(req.return_from, datetime.min.time().replace(hour=8)),
+                        arrival=datetime.combine(req.return_from, datetime.min.time().replace(hour=8)),
+                    )],
+                    total_duration_seconds=ib_bd.get("duration", 0),
+                    stopovers=max(len(ib_segs) - 1, 0),
+                )
+
         seen_keys: set[str] = set()
 
-        for group in groups:
+        for group in ob_groups:
             bd = group.get("boundDetails", {})
             origin_code = bd.get("originLocationCode", req.origin)
             dest_code = bd.get("destinationLocationCode", req.destination)
@@ -1315,15 +1377,16 @@ class ITAAirwaysConnectorClient:
                     continue
                 seen_keys.add(dedup_key)
 
+                combined = round(price + ib_price, 2) if ib_route else price
                 oid = hashlib.md5(dedup_key.encode()).hexdigest()[:12]
                 airlines_list = sorted(airlines_set) if airlines_set else ["ITA Airways"]
                 offers.append(FlightOffer(
-                    id=f"az_{oid}",
-                    price=price,
+                    id=f"az_rt_{oid}" if ib_route else f"az_{oid}",
+                    price=combined,
                     currency=currency,
-                    price_formatted=f"{price:.2f} {currency}",
+                    price_formatted=f"{combined:.2f} {currency}",
                     outbound=route,
-                    inbound=None,
+                    inbound=ib_route,
                     airlines=airlines_list,
                     owner_airline="AZ",
                     booking_url=booking_url,
@@ -1439,11 +1502,14 @@ class ITAAirwaysConnectorClient:
     @staticmethod
     def _booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%d/%m/%Y")
-        return (
+        url = (
             f"https://www.ita-airways.com/gb/en/book-and-prepare/book-flights.html"
             f"?from={req.origin}&to={req.destination}"
             f"&departureDate={dep}&adults={req.adults or 1}&tripType={'RT' if req.return_from else 'OW'}"
         )
+        if req.return_from:
+            url += f"&returnDate={req.return_from.strftime('%d/%m/%Y')}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         sh = hashlib.md5(

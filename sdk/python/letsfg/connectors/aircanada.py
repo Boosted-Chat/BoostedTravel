@@ -132,6 +132,57 @@ class AirCanadaConnectorClient:
             return self._empty(req)
 
         offers = self._build_offers(fares, req)
+
+        # RT: fetch reverse route for inbound fares
+        if req.return_from and offers:
+            try:
+                _rev_url = f"{_BASE}/flights/en-ca/flights-from-{dest_slug}-to-{origin_slug}"
+                _rev_resp = await client.get(_rev_url)
+                if _rev_resp.status_code == 200:
+                    _ib_fares = self._extract_fares(_rev_resp.text)
+                    _ib_best = float("inf")
+                    for _f in _ib_fares:
+                        _p = _f.get("totalPrice")
+                        if _p:
+                            try:
+                                _pf = float(_p)
+                                if 0 < _pf < _ib_best:
+                                    _ib_best = _pf
+                            except (ValueError, TypeError):
+                                pass
+                    if _ib_best < float("inf"):
+                        _ret = req.return_from
+                        _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                        _ib_seg = FlightSegment(
+                            airline="AC",
+                            airline_name="Air Canada",
+                            flight_no="",
+                            origin=req.destination,
+                            destination=req.origin,
+                            departure=_ret_dt,
+                            arrival=_ret_dt,
+                            duration_seconds=0,
+                            cabin_class="economy",
+                        )
+                        _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
+                        for _i, _o in enumerate(offers):
+                            offers[_i] = FlightOffer(
+                                id=f"rt_{_o.id}",
+                                price=round(_o.price + _ib_best, 2),
+                                currency=_o.currency,
+                                price_formatted=f"{round(_o.price + _ib_best, 2):.2f} {_o.currency}",
+                                outbound=_o.outbound,
+                                inbound=_ib_route,
+                                airlines=_o.airlines,
+                                owner_airline=_o.owner_airline,
+                                booking_url=_o.booking_url,
+                                is_locked=False,
+                                source=_o.source,
+                                source_tier=_o.source_tier,
+                            )
+            except Exception:
+                pass
+
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
 
         elapsed = time.monotonic() - t0

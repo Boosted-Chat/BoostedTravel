@@ -114,6 +114,50 @@ class AirNiuginiConnectorClient:
             return self._empty(req)
 
         offers = self._extract_offers(html, req)
+
+        # RT: fetch reverse route for inbound fares
+        if req.return_from and offers:
+            _rev_url = f"{_BASE}/{_SITE_EDITION}/flights-from-{dest_slug}-to-{origin_slug}"
+            try:
+                _rev_html = await asyncio.get_event_loop().run_in_executor(
+                    None, self._fetch_sync, _rev_url
+                )
+                if _rev_html:
+                    _ib_offers = self._extract_offers(_rev_html, req)
+                    _ib_valid = [o for o in _ib_offers if o.price > 0]
+                    if _ib_valid:
+                        _ib_best = min(_ib_valid, key=lambda o: o.price)
+                        _ret = req.return_from
+                        _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                        _ib_seg = FlightSegment(
+                            airline="PX",
+                            airline_name="Air Niugini",
+                            flight_no="",
+                            origin=req.destination,
+                            destination=req.origin,
+                            departure=_ret_dt,
+                            arrival=_ret_dt,
+                            duration_seconds=0,
+                            cabin_class="economy",
+                        )
+                        _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
+                        for _i, _o in enumerate(offers):
+                            offers[_i] = FlightOffer(
+                                id=f"rt_{_o.id}",
+                                price=round(_o.price + _ib_best.price, 2),
+                                currency=_o.currency,
+                                price_formatted=f"{round(_o.price + _ib_best.price, 2):.2f} {_o.currency}",
+                                outbound=_o.outbound,
+                                inbound=_ib_route,
+                                airlines=_o.airlines,
+                                owner_airline=_o.owner_airline,
+                                booking_url=_o.booking_url,
+                                is_locked=False,
+                                source=_o.source,
+                                source_tier=_o.source_tier,
+                            )
+            except Exception:
+                pass
         _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
         exact = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
         offers = exact if exact else offers
