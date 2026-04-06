@@ -1,11 +1,20 @@
 """
-Virtual interlining combo engine — cross-airline one-way combinations.
+Round-trip combo engine — same-airline RT + cross-airline virtual interlining.
 
-For round-trip searches, splits into one-way outbound + one-way return
-across ALL direct scrapers, then builds cross-airline combos.
+For round-trip searches the engine fires every connector twice (outbound +
+reversed inbound).  This module pairs those one-way legs into proper offers:
 
-This replicates what Kiwi.com does (Ryanair out + Wizzair back)
-but uses our own direct API connections for the freshest prices.
+  1. **Same-airline RT** — outbound + return from the SAME connector.
+     Presented as native round-trip offers (source = connector, no
+     "virtual_interlining" label, proper booking URL).  Processed first
+     so they appear before cross-airline combos in the results.
+
+  2. **Cross-airline combos** — outbound from one airline, return from
+     another (e.g. Ryanair out + Wizzair back).  Labelled as virtual
+     interlining with split booking URLs.
+
+Every connector instantly "supports" round-trip through this engine —
+no per-connector RT code needed.
 """
 
 from __future__ import annotations
@@ -13,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
 )
@@ -42,11 +51,13 @@ def build_combos(
     target_currency: str,
 ) -> list[FlightOffer]:
     """
-    Build cross-airline combo offers from one-way outbound + one-way return legs.
+    Build round-trip offers from one-way outbound + one-way return legs.
 
-    Each input offer should be a one-way offer (has outbound, no inbound).
-    Returns new FlightOffer objects combining outbound from one + return from another,
-    skipping same-source pairs (those are already built by the provider's own round-trip logic).
+    Same-source pairs are presented as native RT offers (``rt_`` prefix,
+    connector's own source/airline).  Cross-source pairs become virtual-
+    interlining combos (``combo_`` prefix, split booking URLs).
+
+    Same-airline RT offers are generated first so they take priority.
     """
     if not outbound_offers or not return_offers:
         return []
@@ -94,82 +105,131 @@ def build_combos(
     combos: list[FlightOffer] = []
     seen_combo_keys: set[str] = set()
 
-    # Build cross-source combos: source_a outbound × source_b return (a ≠ b)
+    # ── Separate same-source (same-airline RT) and cross-source pairs ──
+    # Same-source combos look like native round-trip offers (not "virtual
+    # interlining") — they carry the connector's own source, airline name,
+    # and booking URL so the UX is indistinguishable from a connector that
+    # natively searched round-trip.  Cross-source combos keep the existing
+    # virtual-interlining presentation (split booking URLs, combo: source).
     out_sources = list(out_trimmed.keys())
     ret_sources = list(ret_trimmed.keys())
 
-    # Collect all cross-source pairs, sorted by cheapest potential combo
-    cross_pairs: list[tuple[FlightOffer, FlightOffer]] = []
+    same_source_pairs: list[tuple[FlightOffer, FlightOffer]] = []
+    cross_source_pairs: list[tuple[FlightOffer, FlightOffer]] = []
+
     for src_a in out_sources:
         for src_b in ret_sources:
-            if src_a == src_b:
-                continue
             for ob in out_trimmed[src_a]:
                 for rt in ret_trimmed[src_b]:
-                    cross_pairs.append((ob, rt))
+                    if src_a == src_b:
+                        same_source_pairs.append((ob, rt))
+                    else:
+                        cross_source_pairs.append((ob, rt))
 
-    # Sort by estimated total price (normalized) for best-first generation
-    cross_pairs.sort(key=lambda pair: _sort_price(pair[0]) + _sort_price(pair[1]))
+    same_source_pairs.sort(key=lambda p: _sort_price(p[0]) + _sort_price(p[1]))
+    cross_source_pairs.sort(key=lambda p: _sort_price(p[0]) + _sort_price(p[1]))
 
-    for ob, rt in cross_pairs:
-        if len(combos) >= _MAX_COMBOS:
-            break
-
-        # Dedup by flight identity (regardless of source)
-        ob_key = _leg_key(ob.outbound)
-        rt_key = _leg_key(rt.outbound)
-        combo_key = f"{ob_key}::{rt_key}"
-        if combo_key in seen_combo_keys:
-            continue
-        seen_combo_keys.add(combo_key)
-
-        # Need compatible currencies for price sum
-        # Use price_normalized if available, otherwise raw price
+    def _make_offer(
+        ob: FlightOffer, rt: FlightOffer, *, same_source: bool,
+    ) -> FlightOffer:
+        """Build a combined RT offer from outbound + return one-way legs."""
+        # Price
         if ob.price_normalized is not None and rt.price_normalized is not None:
             total_normalized = ob.price_normalized + rt.price_normalized
         else:
             total_normalized = None
 
-        total_price = ob.price + rt.price  # Raw sum (may be mixed currency)
-
-        # Determine combo currency: if same, use it; if different, use target
+        total_price = ob.price + rt.price
         if ob.currency == rt.currency:
             combo_currency = ob.currency
             combo_price = total_price
         else:
-            # Mixed currencies — use normalized prices in target currency
             combo_currency = target_currency
             combo_price = total_normalized if total_normalized else total_price
 
-        # Collect airlines from both legs
+        # Airlines
         ob_airlines = set(ob.airlines) if ob.airlines else set()
         rt_airlines = set(rt.airlines) if rt.airlines else set()
         all_airlines = sorted(ob_airlines | rt_airlines)
 
-        ob_id = ob.id[:8]
-        rt_id = rt.id[:8]
-        combo_hash = hashlib.md5(f"{ob_id}{rt_id}".encode()).hexdigest()[:12]
+        combo_hash = hashlib.md5(
+            f"{ob.id[:8]}{rt.id[:8]}".encode()
+        ).hexdigest()[:12]
 
-        # Return leg is an outbound-only offer — its "outbound" route becomes our "inbound"
-        combo = FlightOffer(
+        if same_source:
+            # Same-airline round-trip — looks like a native RT offer
+            return FlightOffer(
+                id=f"rt_{combo_hash}",
+                price=round(combo_price, 2),
+                currency=combo_currency,
+                price_formatted=f"{combo_price:.2f} {combo_currency}",
+                price_normalized=total_normalized,
+                outbound=ob.outbound,
+                inbound=rt.outbound,
+                airlines=all_airlines,
+                owner_airline=ob.owner_airline or (all_airlines[0] if all_airlines else ""),
+                conditions=ob.conditions or {},
+                booking_url=ob.booking_url or "",
+                is_locked=False,
+                source=ob.source,
+                source_tier="free",
+            )
+        # Cross-airline virtual interlining
+        return FlightOffer(
             id=f"combo_{combo_hash}",
             price=round(combo_price, 2),
             currency=combo_currency,
             price_formatted=f"{combo_price:.2f} {combo_currency}",
             price_normalized=total_normalized,
             outbound=ob.outbound,
-            inbound=rt.outbound,  # return leg's outbound becomes our inbound
+            inbound=rt.outbound,
             airlines=all_airlines,
             owner_airline="|".join(all_airlines),
+            conditions={
+                "combo_type": "virtual_interlining",
+                "outbound_booking_url": ob.booking_url or "",
+                "inbound_booking_url": rt.booking_url or "",
+                "outbound_source": ob.source,
+                "inbound_source": rt.source,
+            },
             booking_url="",
             is_locked=False,
             source=f"combo:{ob.source}+{rt.source}",
             source_tier="free",
         )
-        combos.append(combo)
+
+    rt_count = 0
+    cross_count = 0
+
+    # ── Phase 1: Same-airline round-trips (processed first — higher quality) ──
+    for ob, rt in same_source_pairs:
+        if len(combos) >= _MAX_COMBOS:
+            break
+        ob_key = _leg_key(ob.outbound)
+        rt_key = _leg_key(rt.outbound)
+        combo_key = f"{ob_key}::{rt_key}"
+        if combo_key in seen_combo_keys:
+            continue
+        seen_combo_keys.add(combo_key)
+        combos.append(_make_offer(ob, rt, same_source=True))
+        rt_count += 1
+
+    # ── Phase 2: Cross-airline virtual interlining ──
+    for ob, rt in cross_source_pairs:
+        if len(combos) >= _MAX_COMBOS:
+            break
+        ob_key = _leg_key(ob.outbound)
+        rt_key = _leg_key(rt.outbound)
+        combo_key = f"{ob_key}::{rt_key}"
+        if combo_key in seen_combo_keys:
+            continue
+        seen_combo_keys.add(combo_key)
+        combos.append(_make_offer(ob, rt, same_source=False))
+        cross_count += 1
 
     logger.info(
-        "Combo engine: %d combos from %d sources out × %d sources ret",
-        len(combos), len(out_sources), len(ret_sources),
+        "Combo engine: %d RT (same-airline) + %d cross-airline combos "
+        "from %d sources out × %d sources ret",
+        rt_count, cross_count, len(out_sources), len(ret_sources),
     )
     return combos
