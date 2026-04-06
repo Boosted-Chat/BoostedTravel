@@ -231,7 +231,7 @@ class AirmauritiusConnectorClient:
             inbound=inbound,
             airlines=["Air Mauritius"],
             owner_airline="MK",
-            booking_url=_HOME_URL,
+            booking_url=f"{_HOME_URL}booking?origin={origin_code}&destination={dest_code}&date={dep_date_str}&adults={req.adults or 1}",
             is_locked=False,
             source="airmauritius_direct",
             source_tier="free",

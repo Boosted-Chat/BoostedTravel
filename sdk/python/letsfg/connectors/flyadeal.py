@@ -253,7 +253,7 @@ class FlyadealConnectorClient:
                     inbound=inbound,
                     airlines=["flyadeal"],
                     owner_airline="F3",
-                    booking_url=_HOME_URL,
+                    booking_url=f"{_HOME_URL}/booking?origin={req.origin}&destination={req.destination}&date={card['departure_date'].isoformat()}&adults={req.adults or 1}",
                     is_locked=False,
                     source="flyadeal_direct",
                     source_tier="free",

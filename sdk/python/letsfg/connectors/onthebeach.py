@@ -192,8 +192,9 @@ class OnthebeachConnectorClient:
                 await asyncio.sleep(2)
 
                 if api_data:
+                    results_url = page.url
                     for data in api_data:
-                        parsed = self._parse_api(data, req, date_str)
+                        parsed = self._parse_api(data, req, date_str, results_url)
                         offers.extend(parsed)
                     if offers:
                         break
@@ -337,7 +338,7 @@ class OnthebeachConnectorClient:
         except Exception:
             pass
 
-    def _parse_api(self, data: dict, req: FlightSearchRequest, date_str: str) -> list[FlightOffer]:
+    def _parse_api(self, data: dict, req: FlightSearchRequest, date_str: str, results_url: str = "") -> list[FlightOffer]:
         offers: list[FlightOffer] = []
         items = (
             data.get("flights") or data.get("results") or data.get("offers") or
@@ -364,7 +365,7 @@ class OnthebeachConnectorClient:
                         price_formatted=f"£{price:.2f}",
                         outbound=route, inbound=None,
                         airlines=[str(airline)], owner_airline=str(airline),
-                        booking_url=_BASE,
+                        booking_url=results_url or _BASE,
                         is_locked=False, source="onthebeach_ota", source_tier="free",
                     ))
                 except Exception:
@@ -373,6 +374,7 @@ class OnthebeachConnectorClient:
 
     async def _scrape_dom(self, page, req: FlightSearchRequest, date_str: str) -> list[FlightOffer]:
         offers: list[FlightOffer] = []
+        results_url = page.url
         try:
             cards = page.locator('.flight-result, .result-card, .flight-card, .search-result, [data-testid*="flight"], .offer-card')
             count = await cards.count()
@@ -424,7 +426,7 @@ class OnthebeachConnectorClient:
                         price_formatted=f"£{price:.2f}",
                         outbound=route, inbound=None,
                         airlines=[airline], owner_airline=airline,
-                        booking_url=_BASE,
+                        booking_url=results_url or _BASE,
                         is_locked=False, source="onthebeach_ota", source_tier="free",
                     ))
                 except Exception:

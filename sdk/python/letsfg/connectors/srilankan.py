@@ -253,7 +253,7 @@ class SrilankanConnectorClient:
                     inbound=inbound,
                     airlines=["SriLankan Airlines"],
                     owner_airline="UL",
-                    booking_url=_HOME_URL,
+                    booking_url=f"{_HOME_URL}plan-and-book/book-a-flight?origin={req.origin}&destination={req.destination}&date={card['departure_date'].isoformat()}&adults={req.adults or 1}",
                     is_locked=False,
                     source="srilankan_direct",
                     source_tier="free",

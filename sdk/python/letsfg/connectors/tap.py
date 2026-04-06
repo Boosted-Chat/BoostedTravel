@@ -279,7 +279,7 @@ class TapConnectorClient:
                     inbound=inbound,
                     airlines=["TAP Air Portugal"],
                     owner_airline="TP",
-                    booking_url=f"{_BASE}/booking/flights",
+                    booking_url=f"{_BASE}/en-us/booking?origin={orig}&destination={dest}&date={dep_str}&adults={req.adults or 1}&type=OW",
                     is_locked=False,
                     source="tap_direct",
                     source_tier="free",
