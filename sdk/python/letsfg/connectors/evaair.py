@@ -284,12 +284,7 @@ class EvaAirConnectorClient:
             inbound=None,
             airlines=["EVA Air"],
             owner_airline="BR",
-            booking_url=(
-                f"https://www.evaair.com/en-us/booking/flight-search/"
-                f"?origin={req.origin}&destination={req.destination}"
-                f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
-            ),
+            booking_url="https://www.evaair.com/en-global/index.html",
             is_locked=False,
             source="evaair_direct",
             source_tier="free",

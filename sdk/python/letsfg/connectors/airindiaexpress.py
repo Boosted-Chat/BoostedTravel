@@ -191,13 +191,7 @@ class AirIndiaExpressConnectorClient:
 
     @staticmethod
     def _booking_url(req: FlightSearchRequest) -> str:
-        d = req.date_from.strftime("%d/%m/%Y")
-        return (
-            f"https://www.airindiaexpress.com/booking?"
-            f"origin={req.origin}&destination={req.destination}"
-            f"&date={d}&adults={req.adults}&children={req.children}"
-            f"&infants={req.infants}&tripType=O"
-        )
+        return "https://www.airindiaexpress.com/"
 
     @staticmethod
     def _parse_dt(raw: str) -> Optional[datetime]:

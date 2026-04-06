@@ -258,10 +258,10 @@ class FijiAirwaysConnectorClient:
             airlines=["Fiji Airways"],
             owner_airline="FJ",
             booking_url=(
-                f"https://www.fijiairways.com/en-us/book-a-trip/"
-                f"?from={req.origin}&to={req.destination}"
-                f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
+                f"https://booking.fijiairways.com/dx/FJDX/#/flight-selection"
+                f"?cid=FJ&lang=en&adt={req.adults or 1}"
+                f"&chd={req.children or 0}&inf={req.infants or 0}"
+                f"&JourneyType=1&sectors={req.origin}-{req.destination}_{dep_date_str}"
             ),
             is_locked=False,
             source="fijiairways_direct",

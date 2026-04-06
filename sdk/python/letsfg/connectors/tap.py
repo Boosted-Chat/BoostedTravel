@@ -279,7 +279,7 @@ class TapConnectorClient:
                     inbound=inbound,
                     airlines=["TAP Air Portugal"],
                     owner_airline="TP",
-                    booking_url=f"{_BASE}/booking/flights",
+                    booking_url=f"{_BASE}/en-us/",
                     is_locked=False,
                     source="tap_direct",
                     source_tier="free",
@@ -426,11 +426,7 @@ class TapConnectorClient:
                 airlines=["TAP Air Portugal"],
                 owner_airline="TP",
                 conditions=conditions,
-                booking_url=(
-                    f"https://www.flytap.com/en-us/booking"
-                    f"?origin={req.origin}&destination={req.destination}"
-                    f"&date={target_date}&adults={req.adults or 1}&type=OW"
-                ),
+                booking_url="https://www.flytap.com/en-us/",
                 is_locked=False,
                 source="tap_direct",
                 source_tier="free",

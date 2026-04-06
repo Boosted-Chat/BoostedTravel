@@ -238,10 +238,10 @@ class AirSeychellesConnectorClient:
             airlines=["Air Seychelles"],
             owner_airline="HM",
             booking_url=(
-                f"https://www.airseychelles.com/plan-and-book/book-flights"
-                f"?from={req.origin}&to={req.destination}"
-                f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
+                f"https://book.airseychelles.com/"
+                f"?origin={req.origin}&destination={req.destination}"
+                f"&date={dep_date_str}"
+                f"&adults={req.adults or 1}"
             ),
             is_locked=False,
             source="airseychelles_direct",

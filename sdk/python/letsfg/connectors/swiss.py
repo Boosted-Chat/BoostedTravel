@@ -23,7 +23,7 @@ class SwissConnectorClient(LHGroupBaseConnector):
     SOURCE_KEY = "swiss_direct"
     DEFAULT_CURRENCY = "CHF"
     BOOKING_URL_TEMPLATE = (
-        "https://www.swiss.com/ch/en/book/offers/flights?"
+        "https://www.lufthansa.com/xx/en/flight-search?"
         "origin={origin}&destination={destination}"
         "&outbound-date={date}"
         "&adults={adults}&children={children}"

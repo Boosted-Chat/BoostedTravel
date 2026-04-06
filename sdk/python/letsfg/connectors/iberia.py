@@ -285,13 +285,7 @@ class IberiaConnectorClient:
             inbound=None,
             airlines=["Iberia"],
             owner_airline="IB",
-            booking_url=(
-                f"https://www.iberia.com/gb/flights/"
-                f"?market=gb&language=en"
-                f"&origin={req.origin}&destination={req.destination}"
-                f"&outbound={target_date}"
-                f"&adults={req.adults or 1}"
-            ),
+            booking_url="https://www.iberia.com/gb/",
             is_locked=False,
             source="iberia_direct",
             source_tier="free",

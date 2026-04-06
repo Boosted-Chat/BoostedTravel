@@ -258,10 +258,10 @@ class RexConnectorClient:
             airlines=["Rex Airlines"],
             owner_airline="ZL",
             booking_url=(
-                f"https://www.rex.com.au/Book/FlightSearch"
-                f"?from={req.origin}&to={req.destination}"
-                f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
+                f"https://ibe.rex.com.au/"
+                f"?origin={req.origin}&destination={req.destination}"
+                f"&departureDate={dep_date_str}"
+                f"&adults={req.adults or 1}"
             ),
             is_locked=False,
             source="rex_direct",

@@ -23,7 +23,7 @@ class BrusselsAirlinesConnectorClient(LHGroupBaseConnector):
     SOURCE_KEY = "brusselsairlines_direct"
     DEFAULT_CURRENCY = "EUR"
     BOOKING_URL_TEMPLATE = (
-        "https://www.brusselsairlines.com/be/en/book/offers/flights?"
+        "https://www.lufthansa.com/xx/en/flight-search?"
         "origin={origin}&destination={destination}"
         "&outbound-date={date}"
         "&adults={adults}&children={children}"

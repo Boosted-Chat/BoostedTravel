@@ -263,10 +263,7 @@ class RoyalAirMarocConnectorClient:
                 airlines=["Royal Air Maroc"],
                 owner_airline="AT",
                 booking_url=(
-                    f"https://www.royalairmaroc.com/book/"
-                    f"?origin={req.origin}&destination={req.destination}"
-                    f"&date={target_date}"
-                    f"&adults={req.adults or 1}&tripType=O"
+                    f"https://www.royalairmaroc.com/us-en"
                 ),
                 is_locked=False,
                 source="royalairmaroc_direct",

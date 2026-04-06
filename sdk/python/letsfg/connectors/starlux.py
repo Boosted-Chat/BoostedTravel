@@ -239,12 +239,7 @@ class StarluxConnectorClient:
             inbound=None,
             airlines=["Starlux Airlines"],
             owner_airline="JX",
-            booking_url=(
-                f"https://www.starlux-airlines.com/en-Global/booking/flight-search"
-                f"?origin={req.origin}&destination={req.destination}"
-                f"&departureDate={dep_date_str}"
-                f"&adult={req.adults or 1}&tripType=OW"
-            ),
+            booking_url="https://www.starlux-airlines.com/en-Global/booking",
             is_locked=False,
             source="starlux_direct",
             source_tier="free",

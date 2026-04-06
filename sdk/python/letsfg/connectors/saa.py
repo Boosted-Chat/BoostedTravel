@@ -268,12 +268,7 @@ class SouthAfricanAirwaysConnectorClient:
                 inbound=None,
                 airlines=["South African Airways"],
                 owner_airline="SA",
-                booking_url=(
-                    f"https://www.flysaa.com/book/flights"
-                    f"?origin={req.origin}&destination={req.destination}"
-                    f"&date={target_date}"
-                    f"&adults={req.adults or 1}"
-                ),
+                booking_url="https://www.flysaa.com/",
                 is_locked=False,
                 source="saa_direct",
                 source_tier="free",

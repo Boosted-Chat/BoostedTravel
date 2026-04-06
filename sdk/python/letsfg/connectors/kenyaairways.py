@@ -213,10 +213,7 @@ class KenyaAirwaysConnectorClient:
                 airlines=["Kenya Airways"],
                 owner_airline="KQ",
                 booking_url=(
-                    f"https://www.kenya-airways.com/en_ke/book/"
-                    f"?origin={req.origin}&destination={req.destination}"
-                    f"&date={card['departure_date'].isoformat()}"
-                    f"&adults={req.adults or 1}&tripType=O"
+                    f"https://www.kenya-airways.com/en-ke/"
                 ),
                 is_locked=False,
                 source="kenyaairways_direct",

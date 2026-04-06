@@ -235,7 +235,7 @@ class AzoresAirlinesConnectorClient:
             airlines=["Azores Airlines"],
             owner_airline="S4",
             booking_url=(
-                f"https://www.azoresairlines.pt/en/booking"
+                f"https://book.azoresairlines.pt/booking/"
                 f"?origin={req.origin}&destination={req.destination}"
                 f"&departureDate={dep_date_str}"
                 f"&adults={req.adults or 1}"
