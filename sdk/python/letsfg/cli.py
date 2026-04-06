@@ -20,11 +20,41 @@ import json
 import os
 import re
 import sys
+import subprocess
 import unicodedata
 from typing import Optional
 
+
+def _ensure_cli_deps():
+    """Auto-install CLI dependencies if missing (handles upgrades from old versions)."""
+    try:
+        import typer
+        return True
+    except ImportError:
+        pass
+    
+    print("Installing CLI dependencies (typer, rich)...", file=sys.stderr)
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "typer>=0.9.0", "rich>=13.0.0", "click>=8.0,<8.2"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print("Done! Re-run your command.", file=sys.stderr)
+        sys.exit(0)
+    except subprocess.CalledProcessError:
+        print(
+            "Failed to auto-install. Please run manually:\n\n"
+            "    pip install --upgrade letsfg\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+_ensure_cli_deps()
+import typer  # noqa: E402
+
 try:
-    import typer
     from rich.console import Console
     from rich.table import Table
     from rich import print as rprint

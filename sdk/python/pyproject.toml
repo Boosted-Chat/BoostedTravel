@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "letsfg"
-version = "2026.4.6"
+version = "2026.4.7"
 description = "Agent-native flight search & booking. 400+ airlines, 195 direct airline connectors run locally. Built for autonomous AI agents."
 readme = "README.md"
 license = {text = "MIT"}
@@ -39,18 +39,13 @@ dependencies = [
     "curl_cffi>=0.7.0",
     "playwright_stealth>=1.0.6",
     "aiohttp>=3.9.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "click>=8.0,<8.2",
 ]
 
 [project.optional-dependencies]
-cli = [
-    "typer>=0.9.0",
-    "rich>=13.0.0",
-    "click>=8.0,<8.2",
-]
 all = [
-    "typer>=0.9.0",
-    "rich>=13.0.0",
-    "click>=8.0,<8.2",
     "nodriver>=0.38",
     "patchright>=1.0",
 ]
