@@ -105,7 +105,7 @@ class SASConnectorClient:
         )
 
         sh = hashlib.md5(
-            f"sas{req.origin}{req.destination}{req.date_from}".encode()
+            f"sas{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{sh}",
@@ -177,7 +177,7 @@ class SASConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         sh = hashlib.md5(
-            f"sas{req.origin}{req.destination}{req.date_from}".encode()
+            f"sas{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{sh}",

@@ -126,8 +126,8 @@ class RoyalAirMarocConnectorClient:
 
         try:
             resp = await client.get(url)
-            if resp.status_code != 200:
-                logger.warning("Royal Air Maroc: %s returned %d", url, resp.status_code)
+            if resp.status_code not in (200, 404) or "__NEXT_DATA__" not in resp.text:
+                logger.warning("Royal Air Maroc: %s returned %d (no fare data)", url, resp.status_code)
                 return self._empty(req)
         except Exception as e:
             logger.error("Royal Air Maroc fetch error: %s", e)
@@ -144,7 +144,7 @@ class RoyalAirMarocConnectorClient:
         elapsed = time.monotonic() - t0
         logger.info("Royal Air Maroc %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
-        h = hashlib.md5(f"royalairmaroc{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"royalairmaroc{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,
@@ -263,7 +263,10 @@ class RoyalAirMarocConnectorClient:
                 airlines=["Royal Air Maroc"],
                 owner_airline="AT",
                 booking_url=(
-                    f"https://www.royalairmaroc.com/us-en"
+                    f"https://www.royalairmaroc.com/book/"
+                    f"?origin={req.origin}&destination={req.destination}"
+                    f"&date={target_date}"
+                    f"&adults={req.adults or 1}&tripType={'R' if req.return_from else 'O'}"
                 ),
                 is_locked=False,
                 source="royalairmaroc_direct",
@@ -273,7 +276,7 @@ class RoyalAirMarocConnectorClient:
         return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"royalairmaroc{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"royalairmaroc{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,

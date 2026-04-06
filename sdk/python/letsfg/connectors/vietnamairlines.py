@@ -27,7 +27,7 @@ from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
 
-_HOME_URL = "https://www.vietnamairlines.com/go/en/"
+_HOME_URL = "https://www.vietnamairlines.com/en"
 _API_URL = "https://openair-california.airtrfx.com/airfare-sputnik-service/v3/vn/fares/grouped-routes"
 _API_KEY = "HeQpRjsFI5xlAaSx2onkjc1HTK0ukqA1IrVvd5fvaMhNtzLTxInTpeYB1MK93pah"
 _HEADERS = {

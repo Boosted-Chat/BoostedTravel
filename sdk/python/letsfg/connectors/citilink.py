@@ -295,7 +295,7 @@ class CitilinkConnectorClient:
             logger.info("Citilink %s->%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
             h = hashlib.md5(
-                f"citilink{req.origin}{req.destination}{req.date_from}".encode()
+                f"citilink{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             return FlightSearchResponse(
                 search_id=f"fs_{h}",
@@ -726,7 +726,7 @@ class CitilinkConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"citilink{req.origin}{req.destination}{req.date_from}".encode()
+            f"citilink{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

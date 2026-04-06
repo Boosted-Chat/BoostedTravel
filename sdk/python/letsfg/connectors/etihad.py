@@ -375,7 +375,7 @@ class EtihadConnectorClient:
             )
 
             search_hash = hashlib.md5(
-                f"etihad{req.origin}{req.destination}{req.date_from}".encode()
+                f"etihad{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             return FlightSearchResponse(
@@ -741,7 +741,7 @@ class EtihadConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"etihad{req.origin}{req.destination}{req.date_from}".encode()
+            f"etihad{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

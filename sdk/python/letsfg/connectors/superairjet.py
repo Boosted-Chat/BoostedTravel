@@ -269,7 +269,7 @@ class SuperAirJetConnectorClient:
             )
 
             h = hashlib.md5(
-                f"saj{req.origin}{req.destination}{req.date_from}".encode()
+                f"saj{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             return FlightSearchResponse(
                 search_id=f"fs_{h}",
@@ -713,7 +713,7 @@ class SuperAirJetConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"saj{req.origin}{req.destination}{req.date_from}".encode()
+            f"saj{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

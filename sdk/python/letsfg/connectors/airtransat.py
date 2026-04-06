@@ -303,7 +303,7 @@ class AirTransatConnectorClient:
             logger.info("AirTransat %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
             search_hash = hashlib.md5(
-                f"airtransat{req.origin}{req.destination}{req.date_from}".encode()
+                f"airtransat{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             currency = offers[0].currency if offers else self.DEFAULT_CURRENCY
             return FlightSearchResponse(
@@ -720,7 +720,7 @@ class AirTransatConnectorClient:
         return f"https://www.airtransat.com/en-CA?from={req.origin}&to={req.destination}&date={date_str}"
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        search_hash = hashlib.md5(f"airtransat{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(f"airtransat{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=self.DEFAULT_CURRENCY, offers=[], total_results=0,

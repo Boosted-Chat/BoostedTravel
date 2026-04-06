@@ -323,7 +323,7 @@ class LotConnectorClient:
             )
 
             search_hash = hashlib.md5(
-                f"lo{req.origin}{req.destination}{req.date_from}".encode()
+                f"lo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             currency = "USD"
@@ -534,12 +534,12 @@ class LotConnectorClient:
             f"https://www.lot.com/us/en/offer/flights"
             f"?departureAirport={req.origin}&arrivalAirport={req.destination}"
             f"&departureDate={dt.strftime('%d.%m.%Y')}&adults={req.adults or 1}"
-            f"&cabinClass=ECONOMY&tripType=ONE_WAY"
+            f"&cabinClass=ECONOMY&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"lo{req.origin}{req.destination}{req.date_from}".encode()
+            f"lo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

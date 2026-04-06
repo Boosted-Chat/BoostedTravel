@@ -228,6 +228,16 @@ class AirSeychellesConnectorClient:
             f"hm_{origin_code}{dest_code}{dep_date_str}{price_f}{cabin}".encode()
         ).hexdigest()[:12]
 
+        _trip = "ROUND_TRIP" if req.return_from else "ONE_WAY"
+        _bk_url = (
+            f"https://www.airseychelles.com/plan-and-book/book-flights"
+            f"?from={req.origin}&to={req.destination}"
+            f"&outboundDate={dep_date_str}"
+            f"&adultCount={req.adults or 1}&tripType={_trip}"
+        )
+        if req.return_from:
+            _bk_url += f"&inboundDate={req.return_from.strftime('%Y-%m-%d')}"
+
         return FlightOffer(
             id=f"hm_{fid}",
             price=price_f,
@@ -237,12 +247,7 @@ class AirSeychellesConnectorClient:
             inbound=None,
             airlines=["Air Seychelles"],
             owner_airline="HM",
-            booking_url=(
-                f"https://book.airseychelles.com/"
-                f"?origin={req.origin}&destination={req.destination}"
-                f"&date={dep_date_str}"
-                f"&adults={req.adults or 1}"
-            ),
+            booking_url=_bk_url,
             is_locked=False,
             source="airseychelles_direct",
             source_tier="free",

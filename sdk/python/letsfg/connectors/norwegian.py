@@ -334,7 +334,8 @@ class NorwegianConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
-            await asyncio.sleep(3)
+            # Incapsula JS challenge needs ~5-6s to generate reese84 + visid cookies
+            await asyncio.sleep(6)
 
             cookies = await context.cookies()
             if cookies:

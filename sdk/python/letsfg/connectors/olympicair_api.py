@@ -72,7 +72,7 @@ class OlympicAirConnectorClient:
         )
 
         search_hash = hashlib.md5(
-            f"olympicair{req.origin}{req.destination}{req.date_from}".encode()
+            f"olympicair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",
@@ -90,7 +90,7 @@ class OlympicAirConnectorClient:
             f"{_BASE}/en/sys/lowfares/RouteLowFares/"
             f"?DepartureAirport={origin}"
             f"&ArrivalAirport={destination}"
-            f"&TripType=OW"
+            f"&TripType={'RT' if req.return_from else 'OW'}"
             f"&DepartureDate={month_value}"
             f"&ReturnDate={month_value}"
             f"&SelectedDepartureDate="
@@ -173,7 +173,7 @@ class OlympicAirConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"olympicair{req.origin}{req.destination}{req.date_from}".encode()
+            f"olympicair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

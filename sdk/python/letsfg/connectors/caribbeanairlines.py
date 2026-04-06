@@ -123,7 +123,7 @@ class CaribbeanAirlinesConnectorClient:
         )
 
         h = hashlib.md5(
-            f"caribbeanairlines{req.origin}{req.destination}{req.date_from}".encode()
+            f"caribbeanairlines{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -263,7 +263,8 @@ class CaribbeanAirlinesConnectorClient:
                 f"https://www.caribbean-airlines.com/#/book-trip"
                 f"?from={req.origin}&to={req.destination}"
                 f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
+                f"&adultCount={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
+                + (f"&inboundDate={req.return_from.strftime('%Y-%m-%d')}" if req.return_from else "")
             ),
             is_locked=False,
             source="caribbeanairlines_direct",
@@ -273,7 +274,7 @@ class CaribbeanAirlinesConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"caribbeanairlines{req.origin}{req.destination}{req.date_from}".encode()
+            f"caribbeanairlines{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

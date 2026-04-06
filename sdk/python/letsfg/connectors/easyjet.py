@@ -285,7 +285,7 @@ class EasyjetConnectorClient:
 
         all_offers.sort(key=lambda o: o.price)
         search_hash = hashlib.md5(
-            f"easyjet{req.origin}{req.destination}{req.date_from}".encode()
+            f"easyjet{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         return FlightSearchResponse(
@@ -297,10 +297,9 @@ class EasyjetConnectorClient:
             total_results=len(all_offers),
         )
 
-    async def _search_single(self, req: FlightSearchRequest, _retry: int = 0) -> FlightSearchResponse:
+    async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
         Search easyJet for a single origin→dest pair using CDP Chrome.
-        Retries once after Akamai block + profile reset.
         """
         t0 = time.monotonic()
 
@@ -403,15 +402,10 @@ class EasyjetConnectorClient:
             while not search_data and not akamai_blocked and time.monotonic() < deadline:
                 await asyncio.sleep(0.5)
 
-            # If Akamai blocked us, reset profile and retry once
+            # If Akamai blocked us, nuke the profile and bail
             if akamai_blocked:
-                logger.warning("easyJet: Akamai flagged session, clearing Chrome profile")
+                logger.warning("easyJet: Akamai flagged session, clearing Chrome profile for next run")
                 await _reset_chrome_profile()
-                if _retry < 1:
-                    logger.info("easyJet: retrying %s→%s with fresh profile", req.origin, req.destination)
-                    await asyncio.sleep(2.0)  # Brief pause before retry
-                    return await self._search_single(req, _retry=_retry + 1)
-                logger.warning("easyJet: Akamai blocked after retry, giving up")
                 return self._empty(req)
 
             if not search_data or not search_data.get("journeyPairs"):
@@ -430,7 +424,7 @@ class EasyjetConnectorClient:
             )
 
             search_hash = hashlib.md5(
-                f"easyjet{req.origin}{req.destination}{req.date_from}".encode()
+                f"easyjet{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             return FlightSearchResponse(
@@ -910,7 +904,7 @@ class EasyjetConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"easyjet{req.origin}{req.destination}{req.date_from}".encode()
+            f"easyjet{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

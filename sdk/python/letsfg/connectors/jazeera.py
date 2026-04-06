@@ -430,7 +430,7 @@ class JazeeraConnectorClient:
             req.origin, req.destination, len(offers), elapsed,
         )
         search_hash = hashlib.md5(
-            f"jazeera{req.origin}{req.destination}{req.date_from}".encode()
+            f"jazeera{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",
@@ -471,7 +471,7 @@ class JazeeraConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"jazeera{req.origin}{req.destination}{req.date_from}".encode()
+            f"jazeera{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

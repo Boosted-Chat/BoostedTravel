@@ -199,11 +199,64 @@ class TwayAirConnectorClient:
         result = await self._search_via_api(req)
         if result is not None:
             logger.info("TwayAir: curl_cffi fast path succeeded")
-            return result
+            return self._maybe_build_rt(result, req)
 
         # Strategy 2: CDP headed Chrome (Akamai blocks headless — must be headed)
         logger.info("TwayAir: trying CDP headed Chrome (tier 2)")
-        return await self._attempt_cdp(req)
+        result = await self._attempt_cdp(req)
+        if result is not None:
+            return self._maybe_build_rt(result, req)
+        return result
+
+    def _maybe_build_rt(self, outbound_offers: list[FlightOffer], req: FlightSearchRequest) -> list[FlightOffer]:
+        """If RT, fire a second OW search for return leg and build combos."""
+        if not req.return_from or not outbound_offers:
+            return outbound_offers
+
+        # Build return request (synchronous — reuse same cookie/CSRF)
+        from copy import copy
+        ret_req = copy(req)
+        ret_req.origin = req.destination
+        ret_req.destination = req.origin
+        ret_req.date_from = req.return_from
+        ret_req.return_from = None
+
+        # Try curl_cffi for return (sync within executor)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        inbound_offers = None
+        if HAS_CURL and _tw_cookies and _tw_csrf_token:
+            inbound_offers = self._search_via_api_sync(
+                ret_req, dict(_tw_cookies), _tw_csrf_token, _tw_csrf_header,
+            )
+
+        if not inbound_offers:
+            return outbound_offers
+
+        booking_url = self._build_booking_url(req)
+        rt_offers: list[FlightOffer] = []
+        for ob in outbound_offers[:15]:
+            for ib in inbound_offers[:10]:
+                combined = round(ob.price + ib.price, 2)
+                rt_id = hashlib.md5(
+                    f"tw_rt_{ob.id}_{ib.id}".encode()
+                ).hexdigest()[:12]
+                rt_offers.append(FlightOffer(
+                    id=f"tw_{rt_id}",
+                    price=combined,
+                    currency=ob.currency,
+                    price_formatted=f"{combined:,.0f} {ob.currency}",
+                    outbound=ob.outbound,
+                    inbound=ib.outbound,
+                    airlines=["T'way Air"],
+                    owner_airline="TW",
+                    booking_url=booking_url,
+                    is_locked=False,
+                    source="twayair_direct",
+                    source_tier="free",
+                ))
+        rt_offers.sort(key=lambda o: o.price)
+        return rt_offers[:50] if rt_offers else outbound_offers
 
     # ------------------------------------------------------------------
     # Tier 1: curl_cffi fast path (reuses Akamai cookies from browser)
@@ -397,7 +450,7 @@ class TwayAirConnectorClient:
             booking_type = "DOM" if is_domestic else "INT"
             currency = self._determine_currency(req, is_domestic)
 
-            body = f"tripType=OW&bookingType={booking_type}&currency={currency}&depAirport={req.origin}&arrAirport={req.destination}&baseDeptAirportCode={req.origin}&_csrf={csrf_token}"
+            body = f"tripType={'RT' if req.return_from else 'OW'}&bookingType={booking_type}&currency={currency}&depAirport={req.origin}&arrAirport={req.destination}&baseDeptAirportCode={req.origin}&_csrf={csrf_token}"
 
             logger.info("TwayAir [CDP]: calling getLowestFare (%s→%s, %s, %s)",
                         req.origin, req.destination, booking_type, currency)
@@ -583,7 +636,7 @@ class TwayAirConnectorClient:
         offers.sort(key=lambda o: o.price)
         logger.info("TwayAir %s→%s returned %d offers in %.1fs",
                      req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"twayair{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"twayair{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
@@ -592,10 +645,15 @@ class TwayAirConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
-        return (
+        trip = "RT" if req.return_from else "OW"
+        url = (
             f"https://www.twayair.com/app/booking/search?origin={req.origin}"
-            f"&destination={req.destination}&departure={dep}&adults={req.adults}&tripType=OW"
+            f"&destination={req.destination}&departure={dep}&adults={req.adults}&tripType={trip}"
         )
+        if req.return_from:
+            ret = req.return_from.strftime("%Y-%m-%d")
+            url += f"&return={ret}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"twayair{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]

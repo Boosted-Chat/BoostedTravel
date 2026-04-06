@@ -231,7 +231,7 @@ class TransaviaConnectorClient:
             )
 
             search_hash = hashlib.md5(
-                f"transavia{req.origin}{req.destination}{req.date_from}".encode()
+                f"transavia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             return FlightSearchResponse(
@@ -581,15 +581,16 @@ class TransaviaConnectorClient:
     # ------------------------------------------------------------------
 
     async def _fill_search_form(self, page, req: FlightSearchRequest) -> bool:
-        # One-way toggle
-        try:
-            ow = page.locator("#one-way")
-            if await ow.count() > 0:
-                await ow.click(force=True, timeout=3000)
-                await asyncio.sleep(0.5)
-                logger.info("Transavia: one-way selected")
-        except Exception as e:
-            logger.debug("Transavia: one-way toggle error: %s", e)
+        # One-way toggle (only for OW searches)
+        if not req.return_from:
+            try:
+                ow = page.locator("#one-way")
+                if await ow.count() > 0:
+                    await ow.click(force=True, timeout=3000)
+                    await asyncio.sleep(0.5)
+                    logger.info("Transavia: one-way selected")
+            except Exception as e:
+                logger.debug("Transavia: one-way toggle error: %s", e)
 
         # From airport
         ok = await self._fill_airport_by_id(page, "#first-from-departure", req.origin, "From")
@@ -840,7 +841,7 @@ class TransaviaConnectorClient:
 
     def _parse_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         booking_url = self._build_booking_url(req)
-        offers: list[FlightOffer] = []
+        outbound_offers: list[FlightOffer] = []
 
         # Primary format: outboundFlight.timeSlots (from /start/api/flight-availability)
         ob = data.get("outboundFlight")
@@ -850,39 +851,98 @@ class TransaviaConnectorClient:
                 for slot in slots:
                     offer = self._parse_timeslot(slot, req, booking_url)
                     if offer:
+                        outbound_offers.append(offer)
+
+        if not outbound_offers:
+            # Fallback: legacy API formats
+            currency = data.get("currency", req.currency or "EUR")
+            flights_raw = (
+                data.get("outboundFlights") or data.get("outbound")
+                or data.get("flights") or data.get("flightOffer")
+                or (data.get("journeys", {}).get("outbound") if isinstance(data.get("journeys"), dict) else None)
+                or []
+            )
+            if not isinstance(flights_raw, list):
+                flights_raw = []
+            for flight in flights_raw:
+                offer = self._parse_single_flight(flight, currency, req, booking_url)
+                if offer:
+                    outbound_offers.append(offer)
+            if not outbound_offers and "availableFlights" in data:
+                af = data["availableFlights"]
+                if isinstance(af, list):
+                    for flight in af:
+                        offer = self._parse_single_flight(flight, currency, req, booking_url)
+                        if offer:
+                            outbound_offers.append(offer)
+
+        # ── Parse inbound flights for RT + build combos ──
+        if req.return_from and outbound_offers:
+            inbound_offers = self._parse_inbound(data, req, booking_url)
+            if inbound_offers:
+                combos = self._build_rt_combos(outbound_offers, inbound_offers, req)
+                if combos:
+                    outbound_offers = combos + outbound_offers
+
+        return outbound_offers
+
+    def _parse_inbound(self, data: dict, req: FlightSearchRequest, booking_url: str) -> list[FlightOffer]:
+        """Parse inbound flights from the API response for RT combos."""
+        offers: list[FlightOffer] = []
+        ib = data.get("inboundFlight")
+        if ib and isinstance(ib, dict):
+            slots = ib.get("timeSlots", [])
+            if isinstance(slots, list):
+                for slot in slots:
+                    offer = self._parse_timeslot(slot, req, booking_url, is_return=True)
+                    if offer:
                         offers.append(offer)
-
-        if offers:
-            return offers
-
-        # Fallback: legacy API formats
-        currency = data.get("currency", req.currency or "EUR")
-        flights_raw = (
-            data.get("outboundFlights") or data.get("outbound")
-            or data.get("flights") or data.get("flightOffer")
-            or (data.get("journeys", {}).get("outbound") if isinstance(data.get("journeys"), dict) else None)
-            or []
-        )
-        if not isinstance(flights_raw, list):
-            flights_raw = []
-
-        for flight in flights_raw:
-            offer = self._parse_single_flight(flight, currency, req, booking_url)
-            if offer:
-                offers.append(offer)
-
-        if not offers and "availableFlights" in data:
-            af = data["availableFlights"]
-            if isinstance(af, list):
-                for flight in af:
+        if not offers:
+            # Try legacy inbound formats
+            currency = data.get("currency", req.currency or "EUR")
+            flights_raw = (
+                data.get("inboundFlights") or data.get("inbound")
+                or (data.get("journeys", {}).get("inbound") if isinstance(data.get("journeys"), dict) else None)
+                or []
+            )
+            if isinstance(flights_raw, list):
+                for flight in flights_raw:
                     offer = self._parse_single_flight(flight, currency, req, booking_url)
                     if offer:
                         offers.append(offer)
-
         return offers
 
+    def _build_rt_combos(
+        self,
+        outbound: list[FlightOffer],
+        inbound: list[FlightOffer],
+        req: FlightSearchRequest,
+    ) -> list[FlightOffer]:
+        """Combine outbound × inbound into RT offers."""
+        combos: list[FlightOffer] = []
+        for ob in outbound[:15]:
+            for ib in inbound[:10]:
+                price = round(ob.price + ib.price, 2)
+                combo_key = f"hv_rt_{ob.id}_{ib.id}"
+                combos.append(FlightOffer(
+                    id=f"hv_{hashlib.md5(combo_key.encode()).hexdigest()[:12]}",
+                    price=price,
+                    currency=ob.currency,
+                    price_formatted=f"{price:.2f} {ob.currency}",
+                    outbound=ob.outbound,
+                    inbound=ib.outbound,
+                    airlines=list(set(ob.airlines + ib.airlines)),
+                    owner_airline=ob.owner_airline,
+                    booking_url=self._build_booking_url(req),
+                    is_locked=False,
+                    source="transavia_direct",
+                    source_tier="free",
+                ))
+        combos.sort(key=lambda o: o.price)
+        return combos[:50]
+
     def _parse_timeslot(
-        self, slot: dict, req: FlightSearchRequest, booking_url: str,
+        self, slot: dict, req: FlightSearchRequest, booking_url: str, is_return: bool = False,
     ) -> Optional[FlightOffer]:
         """Parse a timeSlot from the flight-availability API."""
         price = slot.get("price")
@@ -1040,7 +1100,7 @@ class TransaviaConnectorClient:
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
         logger.info("Transavia %s→%s returned %d offers in %.1fs (fallback)", req.origin, req.destination, len(offers), elapsed)
-        search_hash = hashlib.md5(f"transavia{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(f"transavia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=offers[0].currency if offers else (req.currency or "EUR"),
@@ -1067,14 +1127,19 @@ class TransaviaConnectorClient:
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep_m = req.date_from.month
         dep_y = req.date_from.year
-        return (
+        url = (
             f"https://www.transavia.com/book/en-eu/search-a-flight"
             f"?ds={req.origin}&as={req.destination}"
-            f"&om={dep_m}&oy={dep_y}&r=False"
+            f"&om={dep_m}&oy={dep_y}"
         )
+        if req.return_from:
+            url += f"&rm={req.return_from.month}&ry={req.return_from.year}&r=True"
+        else:
+            url += "&r=False"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        search_hash = hashlib.md5(f"transavia{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(f"transavia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=req.currency or "EUR", offers=[], total_results=0,

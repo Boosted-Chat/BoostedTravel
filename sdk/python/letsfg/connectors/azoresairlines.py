@@ -99,7 +99,7 @@ class AzoresAirlinesConnectorClient:
         )
 
         h = hashlib.md5(
-            f"azoresairlines{req.origin}{req.destination}{req.date_from}".encode()
+            f"azoresairlines{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -235,7 +235,7 @@ class AzoresAirlinesConnectorClient:
             airlines=["Azores Airlines"],
             owner_airline="S4",
             booking_url=(
-                f"https://book.azoresairlines.pt/booking/"
+                f"https://www.azoresairlines.pt/en/booking"
                 f"?origin={req.origin}&destination={req.destination}"
                 f"&departureDate={dep_date_str}"
                 f"&adults={req.adults or 1}"
@@ -248,7 +248,7 @@ class AzoresAirlinesConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"azoresairlines{req.origin}{req.destination}{req.date_from}".encode()
+            f"azoresairlines{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

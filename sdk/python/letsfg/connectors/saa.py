@@ -132,8 +132,8 @@ class SouthAfricanAirwaysConnectorClient:
 
         try:
             resp = await client.get(url)
-            if resp.status_code != 200:
-                logger.warning("SAA: %s returned %d", url, resp.status_code)
+            if resp.status_code not in (200, 404) or "__NEXT_DATA__" not in resp.text:
+                logger.warning("SAA: %s returned %d (no fare data)", url, resp.status_code)
                 return self._empty(req)
         except Exception as e:
             logger.error("SAA fetch error: %s", e)
@@ -150,7 +150,7 @@ class SouthAfricanAirwaysConnectorClient:
         elapsed = time.monotonic() - t0
         logger.info("SAA %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
-        h = hashlib.md5(f"saa{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"saa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,
@@ -268,7 +268,12 @@ class SouthAfricanAirwaysConnectorClient:
                 inbound=None,
                 airlines=["South African Airways"],
                 owner_airline="SA",
-                booking_url="https://www.flysaa.com/",
+                booking_url=(
+                    f"https://www.flysaa.com/book/flights"
+                    f"?origin={req.origin}&destination={req.destination}"
+                    f"&date={target_date}"
+                    f"&adults={req.adults or 1}"
+                ),
                 is_locked=False,
                 source="saa_direct",
                 source_tier="free",
@@ -277,7 +282,7 @@ class SouthAfricanAirwaysConnectorClient:
         return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"saa{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"saa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,

@@ -76,23 +76,36 @@ class VivaAerobusConnectorClient:
         end_date = (req.date_from + timedelta(days=6)).strftime("%Y-%m-%d")
         adults = getattr(req, "adults", 1) or 1
 
+        routes = [{
+            "startDate": start_date,
+            "endDate": end_date,
+            "origin": {"code": req.origin, "type": "Airport"},
+            "destination": {"code": req.destination, "type": "Airport"},
+        }]
+        # Add return route for RT searches
+        if req.return_from:
+            ret_start = req.return_from.strftime("%Y-%m-%d")
+            ret_end = (req.return_from + timedelta(days=6)).strftime("%Y-%m-%d")
+            routes.append({
+                "startDate": ret_start,
+                "endDate": ret_end,
+                "origin": {"code": req.destination, "type": "Airport"},
+                "destination": {"code": req.origin, "type": "Airport"},
+            })
+
         body = {
             "currencyCode": req.currency or "USD",
             "promoCode": None,
             "bookingType": None,
             "referralCode": "",
             "passengers": [{"code": "ADT", "count": adults}],
-            "routes": [{
-                "startDate": start_date,
-                "endDate": end_date,
-                "origin": {"code": req.origin, "type": "Airport"},
-                "destination": {"code": req.destination, "type": "Airport"},
-            }],
+            "routes": routes,
             "sessionID": str(uuid.uuid4()),
             "language": "en-US",
         }
 
-        logger.info("VivaAerobus API: %s→%s %s–%s", req.origin, req.destination, start_date, end_date)
+        logger.info("VivaAerobus API: %s→%s %s–%s%s", req.origin, req.destination,
+                     start_date, end_date, f" RT→{req.return_from}" if req.return_from else "")
 
         try:
             resp = await client.post(f"{_API_BASE}/web/vb/v1/availability/lowfares", json=body, headers=_HEADERS)
@@ -103,14 +116,104 @@ class VivaAerobusConnectorClient:
                 return self._empty(req)
 
             api_json = resp.json()
-            offers = self._parse_lowfares(api_json, req)
-            if offers:
-                return self._build_response(offers, req, elapsed)
+            outbound_offers = self._parse_lowfares(api_json, req)
+
+            # Parse return leg + build combos
+            if req.return_from and outbound_offers:
+                inbound_offers = self._parse_lowfares_return(api_json, req)
+                if inbound_offers:
+                    combos = self._build_rt_combos(outbound_offers, inbound_offers, req)
+                    if combos:
+                        outbound_offers = combos + outbound_offers
+
+            if outbound_offers:
+                return self._build_response(outbound_offers, req, elapsed)
             return self._empty(req)
 
         except Exception as e:
             logger.error("VivaAerobus API error: %s", e)
             return self._empty(req)
+
+    def _parse_lowfares_return(self, api_json: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+        """Parse return leg lowfares from the API response (second route in response)."""
+        data = api_json.get("data", {})
+        low_fares_list = data.get("lowFares", [])
+        currency = data.get("currencyCode", req.currency)
+        # Return fares: filter for reverse direction (dest→origin)
+        offers: list[FlightOffer] = []
+        for fare in (low_fares_list if isinstance(low_fares_list, list) else []):
+            if not isinstance(fare, dict):
+                continue
+            origin_obj = fare.get("origin", {})
+            dest_obj = fare.get("destination", {})
+            origin_code = origin_obj.get("code", "") if isinstance(origin_obj, dict) else ""
+            dest_code = dest_obj.get("code", "") if isinstance(dest_obj, dict) else ""
+            # Only take return direction fares
+            if origin_code != req.destination or dest_code != req.origin:
+                continue
+            dep_date = fare.get("departureDate", "")
+            fare_obj = fare.get("fare", {})
+            fare_with_tua = fare.get("fareWithTua", {})
+            price = (fare_with_tua.get("amount") if fare_with_tua else None) or fare_obj.get("amount")
+            if price is None or price <= 0:
+                continue
+            dep_dt = self._parse_dt(dep_date)
+            segment = FlightSegment(
+                airline=fare.get("carrierCode", "VB"),
+                airline_name="VivaAerobus",
+                flight_no="",
+                origin=origin_code,
+                destination=dest_code,
+                departure=dep_dt,
+                arrival=dep_dt,
+                cabin_class=fare.get("fareProductClass", "M"),
+            )
+            route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
+            offer_key = f"vb_{origin_code}{dest_code}_{dep_date}_{price}"
+            offers.append(FlightOffer(
+                id=f"vb_{hashlib.md5(offer_key.encode()).hexdigest()[:12]}",
+                price=round(float(price), 2),
+                currency=currency,
+                price_formatted=f"{price:.2f} {currency}",
+                outbound=route,
+                inbound=None,
+                airlines=[fare.get("carrierCode", "VB")],
+                owner_airline="VB",
+                booking_url=self._build_booking_url(req),
+                is_locked=False,
+                source="vivaaerobus_direct",
+                source_tier="free",
+            ))
+        return offers
+
+    def _build_rt_combos(
+        self,
+        outbound: list[FlightOffer],
+        inbound: list[FlightOffer],
+        req: FlightSearchRequest,
+    ) -> list[FlightOffer]:
+        """Combine outbound × inbound into RT offers."""
+        combos: list[FlightOffer] = []
+        for ob in outbound[:15]:
+            for ib in inbound[:10]:
+                price = round(ob.price + ib.price, 2)
+                combo_key = f"vb_rt_{ob.id}_{ib.id}"
+                combos.append(FlightOffer(
+                    id=f"vb_{hashlib.md5(combo_key.encode()).hexdigest()[:12]}",
+                    price=price,
+                    currency=ob.currency,
+                    price_formatted=f"{price:.2f} {ob.currency}",
+                    outbound=ob.outbound,
+                    inbound=ib.outbound,
+                    airlines=list(set(ob.airlines + ib.airlines)),
+                    owner_airline="VB",
+                    booking_url=self._build_booking_url(req),
+                    is_locked=False,
+                    source="vivaaerobus_direct",
+                    source_tier="free",
+                ))
+        combos.sort(key=lambda o: o.price)
+        return combos[:50]
 
     # ------------------------------------------------------------------ #
     #  Lowfares API parsing                                                #
@@ -191,7 +294,7 @@ class VivaAerobusConnectorClient:
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
         logger.info("VivaAerobus %s→%s returned %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"vivaaerobus{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"vivaaerobus{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
@@ -224,7 +327,7 @@ class VivaAerobusConnectorClient:
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"vivaaerobus{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"vivaaerobus{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,

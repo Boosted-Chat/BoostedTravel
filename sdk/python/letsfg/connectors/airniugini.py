@@ -126,7 +126,7 @@ class AirNiuginiConnectorClient:
         )
 
         h = hashlib.md5(
-            f"airniugini{req.origin}{req.destination}{req.date_from}".encode()
+            f"airniugini{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -280,7 +280,8 @@ class AirNiuginiConnectorClient:
                 f"https://www.airniugini.com.pg"
                 f"?origin={req.origin}&destination={req.destination}"
                 f"&departureDate={dep_date_str}"
-                f"&adults={req.adults or 1}&tripType=ONE_WAY"
+                f"&adults={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
+                + (f"&inboundDate={req.return_from.strftime('%Y-%m-%d')}" if req.return_from else "")
             ),
             is_locked=False,
             source="airniugini_direct",
@@ -290,7 +291,7 @@ class AirNiuginiConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"airniugini{req.origin}{req.destination}{req.date_from}".encode()
+            f"airniugini{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

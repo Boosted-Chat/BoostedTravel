@@ -131,7 +131,7 @@ class EvaAirConnectorClient:
         )
 
         h = hashlib.md5(
-            f"evaair{req.origin}{req.destination}{req.date_from}".encode()
+            f"evaair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -284,7 +284,13 @@ class EvaAirConnectorClient:
             inbound=None,
             airlines=["EVA Air"],
             owner_airline="BR",
-            booking_url="https://www.evaair.com/en-global/index.html",
+            booking_url=(
+                f"https://www.evaair.com/en-us/booking/flight-search/"
+                f"?origin={req.origin}&destination={req.destination}"
+                f"&outboundDate={dep_date_str}"
+                f"&adultCount={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
+                + (f"&inboundDate={req.return_from.strftime('%Y-%m-%d')}" if req.return_from else "")
+            ),
             is_locked=False,
             source="evaair_direct",
             source_tier="free",
@@ -293,7 +299,7 @@ class EvaAirConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"evaair{req.origin}{req.destination}{req.date_from}".encode()
+            f"evaair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

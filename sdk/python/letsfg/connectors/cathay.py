@@ -111,7 +111,7 @@ class CathayConnectorClient:
             "LANGUAGE": "GB",
             "CABIN": "Y",
             "SITE": "CBEUCBEU",
-            "TRIP_TYPE": "O",
+            "TRIP_TYPE": "R" if req.return_from else "O",
         }
 
         logger.info("Cathay: API %s→%s on %s", req.origin, req.destination,
@@ -167,12 +167,33 @@ class CathayConnectorClient:
     def _parse_offers(self, data: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
         target_dest = req.destination.upper()
         target_date = req.date_from.strftime("%Y%m%d")
+        is_rt = req.return_from is not None
 
         # Build set of matching destination codes (handle multi-airport cities)
         dest_codes = _CITY_AIRPORTS.get(target_dest, {target_dest})
 
         booking_url = self._build_booking_url(req)
         offers: list[FlightOffer] = []
+
+        # Build inbound route stub for RT (calendar API returns combined RT price)
+        inbound_route = None
+        if is_rt and req.return_from:
+            ret_dt = datetime.combine(req.return_from, datetime.min.time())
+            inbound_seg = FlightSegment(
+                airline="CX",
+                airline_name="Cathay Pacific",
+                flight_no="",
+                origin=req.destination,
+                destination=req.origin,
+                departure=ret_dt,
+                arrival=ret_dt,
+                cabin_class="M",
+            )
+            inbound_route = FlightRoute(
+                segments=[inbound_seg],
+                total_duration_seconds=0,
+                stopovers=0,
+            )
 
         for entry in data:
             dest = entry.get("destination", "")
@@ -210,8 +231,9 @@ class CathayConnectorClient:
                 stopovers=0,
             )
 
+            rt_tag = f"_{req.return_from}" if is_rt else ""
             offer_id = hashlib.md5(
-                f"cx_{req.origin}_{dest}_{dep_date}_{total_fare}".encode()
+                f"cx_{req.origin}_{dest}_{dep_date}_{total_fare}{rt_tag}".encode()
             ).hexdigest()[:12]
 
             offers.append(FlightOffer(
@@ -220,7 +242,7 @@ class CathayConnectorClient:
                 currency=currency,
                 price_formatted=f"{total_fare:.0f} {currency}",
                 outbound=route,
-                inbound=None,
+                inbound=inbound_route,
                 airlines=["Cathay Pacific"],
                 owner_airline="CX",
                 booking_url=booking_url,
@@ -240,7 +262,7 @@ class CathayConnectorClient:
             req.origin, req.destination, len(offers), elapsed,
         )
         h = hashlib.md5(
-            f"cathay{req.origin}{req.destination}{req.date_from}".encode()
+            f"cathay{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -265,8 +287,12 @@ class CathayConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y%m%d")
-        return (
+        url = (
             f"https://www.cathaypacific.com/cx/en_HK.html"
             f"?origin={req.origin}&destination={req.destination}"
             f"&date={dep}"
         )
+        if req.return_from:
+            ret = req.return_from.strftime("%Y%m%d")
+            url += f"&returnDate={ret}&tripType=R"
+        return url

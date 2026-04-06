@@ -104,7 +104,7 @@ class StarluxConnectorClient:
         )
 
         h = hashlib.md5(
-            f"starlux{req.origin}{req.destination}{req.date_from}".encode()
+            f"starlux{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -239,7 +239,12 @@ class StarluxConnectorClient:
             inbound=None,
             airlines=["Starlux Airlines"],
             owner_airline="JX",
-            booking_url="https://www.starlux-airlines.com/en-Global/booking",
+            booking_url=(
+                f"https://www.starlux-airlines.com/en-Global/booking/flight-search"
+                f"?origin={req.origin}&destination={req.destination}"
+                f"&departureDate={dep_date_str}"
+                f"&adult={req.adults or 1}&tripType={'RT' if req.return_from else 'OW'}"
+            ),
             is_locked=False,
             source="starlux_direct",
             source_tier="free",
@@ -248,7 +253,7 @@ class StarluxConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"starlux{req.origin}{req.destination}{req.date_from}".encode()
+            f"starlux{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

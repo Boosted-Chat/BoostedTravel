@@ -223,7 +223,7 @@ class FlySafairConnectorClient:
         )
 
         search_hash = hashlib.md5(
-            f"flysafair{req.origin}{req.destination}{req.date_from}".encode()
+            f"flysafair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         return FlightSearchResponse(
@@ -329,12 +329,12 @@ class FlySafairConnectorClient:
         return (
             f"https://www.flysafair.co.za/flight/select"
             f"?origin={req.origin}&destination={req.destination}"
-            f"&date={dep}&adults={req.adults}&tripType=oneway"
+            f"&date={dep}&adults={req.adults}&tripType={'roundtrip' if req.return_from else 'oneway'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"flysafair{req.origin}{req.destination}{req.date_from}".encode()
+            f"flysafair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

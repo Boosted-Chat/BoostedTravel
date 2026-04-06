@@ -120,7 +120,7 @@ class WingoConnectorClient:
         elapsed = time.monotonic() - t0
         logger.info("Wingo %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
-        h = hashlib.md5(f"wingo{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"wingo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,
@@ -242,7 +242,7 @@ class WingoConnectorClient:
                     f"https://booking.wingo.com/search/"
                     f"?origin={req.origin}&destination={req.destination}"
                     f"&date={target_date}"
-                    f"&adults={req.adults or 1}&tripType=O"
+                    f"&adults={req.adults or 1}&tripType={'R' if req.return_from else 'O'}"
                 ),
                 is_locked=False,
                 source="wingo_direct",
@@ -252,7 +252,7 @@ class WingoConnectorClient:
         return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"wingo{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"wingo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,

@@ -141,8 +141,9 @@ class ElAlConnectorClient:
         }
 
     async def _fetch_cards(self, payload):
-        client = await self._client()
-        response = await client.post(_API_URL, json=payload)
+        from curl_cffi.requests import AsyncSession
+        async with AsyncSession(impersonate="chrome") as s:
+            response = await s.post(_API_URL, json=payload, headers=_HEADERS, timeout=self.timeout)
         response.raise_for_status()
 
         data = response.json()

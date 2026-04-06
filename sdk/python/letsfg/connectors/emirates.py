@@ -929,14 +929,24 @@ class EmiratesConnectorClient:
             date_str = dt.strftime("%Y-%m-%d") if hasattr(dt, 'strftime') else str(dt)
         except (ValueError, TypeError):
             date_str = ""
+        is_rt = req.return_from is not None
         search_req = {
-            "journeyType": "ONEWAY",
+            "journeyType": "RETURN" if is_rt else "ONEWAY",
             "bookingType": "REVENUE",
             "passengers": [{"type": "ADT", "count": req.adults or 1}],
             "segments": [
                 {"departure": req.origin, "arrival": req.destination, "departureDate": date_str}
             ],
         }
+        if is_rt:
+            try:
+                ret_dt = req.return_from if isinstance(req.return_from, (datetime, date)) else datetime.strptime(str(req.return_from), "%Y-%m-%d")
+                ret_str = ret_dt.strftime("%Y-%m-%d") if hasattr(ret_dt, 'strftime') else str(ret_dt)
+            except (ValueError, TypeError):
+                ret_str = ""
+            search_req["segments"].append(
+                {"departure": req.destination, "arrival": req.origin, "departureDate": ret_str}
+            )
         if req.children:
             search_req["passengers"].append({"type": "CHD", "count": req.children})
         if req.infants:

@@ -109,7 +109,7 @@ class JejuAirConnectorClient:
         )
 
         search_id = hashlib.md5(
-            f"jejuair{req.origin}{req.destination}{req.date_from}".encode()
+            f"jejuair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_id}",
@@ -229,12 +229,12 @@ class JejuAirConnectorClient:
         return (
             f"https://www.jejuair.net/en/ibe/booking/Availability.do"
             f"?origin={req.origin}&destination={req.destination}"
-            f"&departure={dep}&adults={req.adults}&tripType=OW"
+            f"&departure={dep}&adults={req.adults}&tripType={'RT' if req.return_from else 'OW'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"jejuair{req.origin}{req.destination}{req.date_from}".encode()
+            f"jejuair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

@@ -704,7 +704,7 @@ class IndiGoConnectorClient:
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
         logger.info("IndiGo %s→%s returned %d offers in %.1fs (Playwright)", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"indigo{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"indigo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
@@ -731,11 +731,11 @@ class IndiGoConnectorClient:
         dep = req.date_from.strftime("%d/%m/%Y")
         return (
             f"https://www.goindigo.in/flight-booking?origin={req.origin}"
-            f"&destination={req.destination}&date={dep}&adults={req.adults}&tripType=O"
+            f"&destination={req.destination}&date={dep}&adults={req.adults}&tripType={'R' if req.return_from else 'O'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"indigo{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"indigo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,

@@ -224,7 +224,7 @@ class NokAirConnectorClient:
         )
 
         search_hash = hashlib.md5(
-            f"nokair{req.origin}{req.destination}{req.date_from}".encode()
+            f"nokair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         return FlightSearchResponse(
@@ -327,12 +327,12 @@ class NokAirConnectorClient:
         dep = req.date_from.strftime("%Y-%m-%d")
         return (
             f"https://booking.nokair.com/en/search?origin={req.origin}"
-            f"&destination={req.destination}&departure={dep}&adults={req.adults}&tripType=OW"
+            f"&destination={req.destination}&departure={dep}&adults={req.adults}&tripType={'RT' if req.return_from else 'OW'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"nokair{req.origin}{req.destination}{req.date_from}".encode()
+            f"nokair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

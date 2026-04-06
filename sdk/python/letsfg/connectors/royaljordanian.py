@@ -364,7 +364,7 @@ class RoyalJordanianConnectorClient:
             logger.info("RoyalJordanian %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
             search_hash = hashlib.md5(
-                f"royaljordanian{req.origin}{req.destination}{req.date_from}".encode()
+                f"royaljordanian{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             currency = offers[0].currency if offers else self.DEFAULT_CURRENCY
             return FlightSearchResponse(
@@ -656,8 +656,9 @@ class RoyalJordanianConnectorClient:
         flights = await page.evaluate(r"""(params) => {
             const [origin, destination] = params;
             const results = [];
+            const seen = new Set();
             const cards = document.querySelectorAll(
-                '[class*="bound-inner"], [class*="recommendation"], [class*="flight-row"], ' +
+                '.bound-table-flightline, [class*="bound-inner"], [class*="recommendation"], [class*="flight-row"], ' +
                 '[class*="result-item"], [class*="flight-card"], [class*="itinerary"], ' +
                 '[class*="avail-row"], [class*="fare-row"], [class*="offer-row"], ' +
                 'tr.bound, tr.result, div.result, .c-flight-result, .c-offer, ' +
@@ -665,7 +666,7 @@ class RoyalJordanianConnectorClient:
             );
             for (const card of cards) {
                 const text = card.innerText || '';
-                if (text.length < 15) continue;
+                if (text.length < 15 || text.length > 600) continue;
                 const times = text.match(/\b(\d{1,2}:\d{2})\b/g) || [];
                 if (times.length < 2) continue;
                 const priceMatch = text.match(/(JOD|USD|EUR|GBP|[\$€£¥])\s*[\d,]+\.?\d*/i) ||
@@ -675,6 +676,9 @@ class RoyalJordanianConnectorClient:
                 const priceStr = priceMatch[0].replace(/[^0-9.]/g, '');
                 const price = parseFloat(priceStr);
                 if (!price || price <= 0 || price > 50000) continue;
+                const key = times[0] + '-' + times[1];
+                if (seen.has(key)) continue;
+                seen.add(key);
                 let currency = 'JOD';
                 if (/USD|\$/.test(priceMatch[0])) currency = 'USD';
                 else if (/EUR|€/.test(priceMatch[0])) currency = 'EUR';
@@ -744,7 +748,7 @@ class RoyalJordanianConnectorClient:
         return f"https://www.rj.com/en?from={req.origin}&to={req.destination}&date={date_str}"
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        search_hash = hashlib.md5(f"royaljordanian{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(f"royaljordanian{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=self.DEFAULT_CURRENCY, offers=[], total_results=0,

@@ -109,7 +109,7 @@ class SerpApiGoogleConnectorClient:
         )
 
         search_hash = hashlib.md5(
-            f"serpapi_google{req.origin}{req.destination}{req.date_from}".encode()
+            f"serpapi_google{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         return FlightSearchResponse(

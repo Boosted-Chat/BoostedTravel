@@ -150,6 +150,29 @@ async def _reset_profile():
 
 async def _dismiss_overlays(page) -> None:
     try:
+        # Handle Air Europa language/country modal — must be dismissed first
+        await page.evaluate("""() => {
+            // Try to close the language modal by clicking the X button or confirm button
+            const langModal = document.querySelector('#dxa-language-modal, common-select-language');
+            if (langModal && langModal.offsetHeight > 0) {
+                // Look for a "Continue" or "Confirm" or close button inside the modal
+                const btns = langModal.querySelectorAll('button');
+                for (const b of btns) {
+                    const t = (b.textContent || '').trim().toLowerCase();
+                    if (t.includes('confirm') || t.includes('continue') || t.includes('accept') || t.includes('save')) {
+                        b.click(); return;
+                    }
+                }
+                // Fallback: click any close/X button
+                const closeBtn = langModal.querySelector('button.close, button[mat-dialog-close], .mat-mdc-dialog-actions button');
+                if (closeBtn) { closeBtn.click(); return; }
+                // Last resort: remove the modal overlay entirely
+                const overlay = document.querySelector('.cdk-overlay-container');
+                if (overlay) overlay.innerHTML = '';
+            }
+        }""")
+        await asyncio.sleep(1.0)
+
         await page.evaluate("""() => {
             const accept = document.querySelector('#onetrust-accept-btn-handler');
             if (accept && accept.offsetHeight > 0) { accept.click(); return; }
@@ -347,7 +370,7 @@ class AirEuropaConnectorClient:
             logger.info("AirEuropa %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
             search_hash = hashlib.md5(
-                f"aireuropa{req.origin}{req.destination}{req.date_from}".encode()
+                f"aireuropa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             currency = offers[0].currency if offers else self.DEFAULT_CURRENCY
             return FlightSearchResponse(
@@ -689,7 +712,7 @@ class AirEuropaConnectorClient:
         return f"https://www.aireuropa.com/en/flights?from={req.origin}&to={req.destination}&date={date_str}"
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        search_hash = hashlib.md5(f"aireuropa{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(f"aireuropa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=self.DEFAULT_CURRENCY, offers=[], total_results=0,

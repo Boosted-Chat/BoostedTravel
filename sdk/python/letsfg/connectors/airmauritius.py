@@ -17,7 +17,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 
 import httpx
 
@@ -78,6 +78,7 @@ class AirmauritiusConnectorClient:
         if days_from_now < 1:
             days_from_now = 1
 
+        is_rt = bool(req.return_from)
         payload = {
             "origins": [req.origin],
             "destinations": [req.destination],
@@ -85,7 +86,7 @@ class AirmauritiusConnectorClient:
                 "min": max(0, days_from_now - 7),
                 "max": days_from_now + 14,
             },
-            "journeyType": "ONE_WAY",
+            "journeyType": "ROUND_TRIP" if is_rt else "ONE_WAY",
         }
 
         fares = await self._call_sputnik(payload)
@@ -111,7 +112,7 @@ class AirmauritiusConnectorClient:
         )
 
         h = hashlib.md5(
-            f"mk{req.origin}{req.destination}{req.date_from}".encode()
+            f"mk{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -193,8 +194,32 @@ class AirmauritiusConnectorClient:
             segments=[segment], total_duration_seconds=0, stopovers=0
         )
 
+        # Parse inbound (return) flight if present in the fare
+        inbound = None
+        ret_flight = fare.get("returnFlight") or fare.get("inboundFlight")
+        ret_date_str = fare.get("returnDate", "")[:10] if fare.get("returnDate") else ""
+        if ret_flight or ret_date_str:
+            ret_origin = (ret_flight or {}).get("departureAirportIataCode") or req.destination
+            ret_dest = (ret_flight or {}).get("arrivalAirportIataCode") or req.origin
+            try:
+                ret_dt = datetime.strptime(ret_date_str, "%Y-%m-%d") if ret_date_str else dep_dt
+            except ValueError:
+                ret_dt = dep_dt
+            ret_seg = FlightSegment(
+                airline="MK",
+                airline_name="Air Mauritius",
+                flight_no="",
+                origin=ret_origin,
+                destination=ret_dest,
+                departure=ret_dt,
+                arrival=ret_dt,
+                duration_seconds=0,
+                cabin_class=cabin_input.lower() if cabin_input else "economy",
+            )
+            inbound = FlightRoute(segments=[ret_seg], total_duration_seconds=0, stopovers=0)
+
         offer_hash = hashlib.md5(
-            f"mk_{origin_code}_{dest_code}_{dep_date_str}_{price_f}".encode()
+            f"mk_{origin_code}_{dest_code}_{dep_date_str}_{ret_date_str}_{price_f}".encode()
         ).hexdigest()[:12]
 
         return FlightOffer(
@@ -203,7 +228,7 @@ class AirmauritiusConnectorClient:
             currency=currency,
             price_formatted=f"{price_f:.2f} {currency}",
             outbound=outbound,
-            inbound=None,
+            inbound=inbound,
             airlines=["Air Mauritius"],
             owner_airline="MK",
             booking_url=_HOME_URL,

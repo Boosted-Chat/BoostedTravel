@@ -149,7 +149,7 @@ class TravelupConnectorClient:
             req.origin, req.destination, len(offers), elapsed,
         )
 
-        sh = hashlib.md5(f"travelup{req.origin}{req.destination}{date_str}".encode()).hexdigest()[:12]
+        sh = hashlib.md5(f"travelup{req.origin}{req.destination}{date_str}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{sh}",
             origin=req.origin,
@@ -160,7 +160,7 @@ class TravelupConnectorClient:
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"travelup{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"travelup{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency="GBP", offers=[], total_results=0,

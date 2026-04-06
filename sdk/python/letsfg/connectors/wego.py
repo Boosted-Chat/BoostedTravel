@@ -378,7 +378,7 @@ class WegoConnectorClient:
                         req.origin, req.destination, len(offers), elapsed,
                     )
                     h = hashlib.md5(
-                        f"wego{req.origin}{req.destination}{req.date_from}".encode()
+                        f"wego{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                     ).hexdigest()[:12]
                     return FlightSearchResponse(
                         search_id=f"fs_{h}",
@@ -1309,7 +1309,7 @@ class WegoConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"wego{req.origin}{req.destination}{req.date_from}".encode()
+            f"wego{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

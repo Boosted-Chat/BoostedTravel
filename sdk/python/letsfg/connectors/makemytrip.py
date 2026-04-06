@@ -337,12 +337,7 @@ def _parse_mmt(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 owner_airline=airlines[0] if airlines else "MakeMyTrip",
                 source="makemytrip",
                 source_tier="ota",
-                booking_url=(
-                    f"https://www.makemytrip.com/flights/flight-listing/"
-                    f"?itinerary={req.origin}-{req.destination}-{req.date_from.strftime('%d/%m/%Y')}"
-                    f"&tripType=O&paxType=A-{req.adults or 1}_C-{req.children or 0}_I-0"
-                    f"&cabinClass=E&sTime=1&ccde=IN&lang=eng"
-                ),
+                booking_url="https://www.makemytrip.com/",
             ))
         except Exception as e:
             logger.debug("MMT: skipped itinerary: %s", e)

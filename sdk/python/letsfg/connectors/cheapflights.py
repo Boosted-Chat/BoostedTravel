@@ -56,7 +56,7 @@ class CheapflightsConnectorClient:
                         req.origin, req.destination, len(offers), elapsed,
                     )
                     h = hashlib.md5(
-                        f"cheapflights{req.origin}{req.destination}{req.date_from}".encode()
+                        f"cheapflights{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                     ).hexdigest()[:12]
                     return FlightSearchResponse(
                         search_id=f"fs_cf_{h}",
@@ -123,12 +123,9 @@ class CheapflightsConnectorClient:
             page.on("response", on_response)
 
             dep_date = req.date_from.isoformat()
-            date_path = f"{dep_date}/"
-            if req.return_from:
-                date_path = f"{dep_date}/{req.return_from.isoformat()}/"
             url = (
                 f"https://www.cheapflights.com/flight-search/"
-                f"{req.origin}-{req.destination}/{date_path}"
+                f"{req.origin}-{req.destination}/{dep_date}/"
                 f"{req.adults or 1}adult"
                 f"?sort=price_a"
             )

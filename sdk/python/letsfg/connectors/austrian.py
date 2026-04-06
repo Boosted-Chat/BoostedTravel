@@ -23,7 +23,7 @@ class AustrianConnectorClient(LHGroupBaseConnector):
     SOURCE_KEY = "austrian_direct"
     DEFAULT_CURRENCY = "EUR"
     BOOKING_URL_TEMPLATE = (
-        "https://www.lufthansa.com/xx/en/flight-search?"
+        "https://www.austrian.com/at/en/book/offers/flights?"
         "origin={origin}&destination={destination}"
         "&outbound-date={date}"
         "&adults={adults}&children={children}"

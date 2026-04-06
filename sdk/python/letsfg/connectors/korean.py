@@ -307,7 +307,7 @@ class KoreanConnectorClient:
                 )
 
                 h = hashlib.md5(
-                    f"korean{req.origin}{req.destination}{req.date_from}".encode()
+                    f"korean{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                 ).hexdigest()[:12]
                 return FlightSearchResponse(
                     search_id=f"fs_{h}",
@@ -413,7 +413,7 @@ class KoreanConnectorClient:
                 f"?departureStation={origin_code}&arrivalStation={dest_code}"
                 f"&departureDate={dep_date or target_date}"
                 f"&adt={req.adults}&chd={req.children}&inf={req.infants}"
-                f"&tripType=OW&cabin=Y"
+                f"&tripType={'RT' if req.return_from else 'OW'}&cabin=Y"
             )
 
             offers.append(FlightOffer(
@@ -435,7 +435,7 @@ class KoreanConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"korean{req.origin}{req.destination}{req.date_from}".encode()
+            f"korean{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

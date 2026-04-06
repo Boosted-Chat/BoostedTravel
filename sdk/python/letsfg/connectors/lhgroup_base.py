@@ -1,16 +1,10 @@
 """
-Shared base for Lufthansa Group connectors (LH, LX, OS, SN, 4Y).
+Shared base for Lufthansa Group connectors (LH, LX, OS, SN).
 
-All LH Group airlines share the same aircore CMS platform. Two URL
-patterns provide JSON-LD structured data with flight schedules and
-lowest-fare Product entries:
-
-  1. /lhg/{locale}/en/o-d/cy-cy/{origin}-{dest}  (primary, ~11k routes per locale)
-  2. /xx/en/flights/flight-{origin}-{dest}         (fallback, fewer routes)
-
-The LHG pattern is locale-aware (de=Germany, ch=Switzerland, at=Austria,
-be=Belgium, etc.) and covers significantly more routes — including leisure
-destinations like Palma de Mallorca that are missing from the /flights/ pages.
+All LH Group airlines share the same aircore CMS platform. The
+lufthansa.com/xx/en/flights/ pages contain JSON-LD structured data
+with flight schedules and lowest-fare Product entries for routes
+across all LH Group hubs (FRA, MUC, ZRH, VIE, BRU, etc.).
 
 Each airline connector subclasses this with its own IATA code, name,
 booking URL pattern, and source identifier.
@@ -155,73 +149,6 @@ IATA_TO_SLUG: dict[str, str] = {
     "BUE": "buenos-aires", "STO": "stockholm", "REK": "reykjavik",
 }
 
-# ── LHG route pages (primary, better coverage) ─────────────────────────────
-# The /lhg/{locale}/en/o-d/cy-cy/{origin}-{dest} pages have ~11k routes
-# per locale — far more than the /flights/flight- pages. We pick the locale
-# by matching the origin airport to its home country.
-_LHG_BASE = "https://www.lufthansa.com/lhg"
-
-_IATA_TO_LOCALE: dict[str, str] = {
-    # Germany
-    "FRA": "de", "MUC": "de", "BER": "de", "HAM": "de", "DUS": "de",
-    "STR": "de", "CGN": "de", "HAJ": "de", "NUE": "de", "LEJ": "de",
-    "BRE": "de", "DTM": "de", "DRS": "de", "FMO": "de", "PAD": "de",
-    # Austria
-    "VIE": "at", "GRZ": "at", "SZG": "at", "INN": "at", "LNZ": "at",
-    # Switzerland
-    "ZRH": "ch", "GVA": "ch", "BSL": "ch", "BRN": "ch",
-    # Belgium
-    "BRU": "be",
-    # Netherlands
-    "AMS": "nl", "EIN": "nl", "RTM": "nl",
-    # UK & Ireland
-    "LHR": "gb", "LGW": "gb", "LCY": "gb", "STN": "gb", "MAN": "gb",
-    "EDI": "gb", "BHX": "gb", "GLA": "gb", "BRS": "gb", "NCL": "gb",
-    "DUB": "ie", "SNN": "ie", "ORK": "ie",
-    # France
-    "CDG": "fr", "ORY": "fr", "NCE": "fr", "LYS": "fr", "MRS": "fr",
-    "TLS": "fr", "BOD": "fr", "NTE": "fr", "SXB": "fr",
-    # Italy
-    "FCO": "it", "MXP": "it", "LIN": "it", "VCE": "it", "NAP": "it",
-    "CTA": "it", "PMO": "it", "BLQ": "it", "FLR": "it", "PSA": "it",
-    # Spain & Portugal
-    "BCN": "es", "MAD": "es", "PMI": "es", "AGP": "es", "VLC": "es",
-    "ALC": "es", "SVQ": "es", "BIO": "es", "TFS": "es", "LPA": "es",
-    "LIS": "pt", "OPO": "pt", "FAO": "pt",
-    # Scandinavia
-    "CPH": "dk", "ARN": "se", "GOT": "se", "OSL": "no", "BGO": "no",
-    "HEL": "fi",
-    # Eastern Europe
-    "WAW": "pl", "KRK": "pl", "GDN": "pl", "WRO": "pl", "POZ": "pl",
-    "PRG": "cz", "BUD": "hu", "OTP": "ro", "SOF": "bg", "BEG": "rs",
-    "ZAG": "hr", "SPU": "hr", "DBV": "hr", "LJU": "si",
-    # Baltics & others
-    "RIX": "lv", "TLL": "ee", "VNO": "lt",
-    # Turkey & Greece
-    "IST": "tr", "ESB": "tr", "AYT": "tr", "ATH": "gr", "SKG": "gr",
-    "HER": "gr",
-    # Americas
-    "JFK": "us", "EWR": "us", "IAD": "us", "ORD": "us", "LAX": "us",
-    "SFO": "us", "BOS": "us", "MIA": "us", "ATL": "us", "DFW": "us",
-    "YYZ": "ca", "YVR": "ca", "YUL": "ca",
-    "MEX": "mx", "GRU": "br", "EZE": "ar",
-    # Middle East
-    "DXB": "ae", "AUH": "ae", "DOH": "qa", "RUH": "sa", "JED": "sa",
-    "AMM": "jo", "TLV": "il", "CAI": "eg",
-    # Asia
-    "NRT": "jp", "HND": "jp", "KIX": "jp",
-    "PEK": "cn", "PVG": "cn", "HKG": "hk",
-    "ICN": "kr", "SIN": "sg", "BKK": "th", "KUL": "my",
-    "DEL": "in", "BOM": "in", "BLR": "in",
-    # Africa & Oceania
-    "JNB": "za", "CPT": "za", "NBO": "ke",
-    "SYD": "au", "MEL": "au", "AKL": "nz",
-    # City codes
-    "LON": "gb", "NYC": "us", "PAR": "fr", "ROM": "it", "MIL": "it",
-    "WAS": "us", "CHI": "us", "TYO": "jp", "BJS": "cn", "SHA": "cn",
-}
-
-# Fallback URL pattern (fewer routes but still works for some)
 _BASE_URL = "https://www.lufthansa.com/xx/en/flights"
 
 _HEADERS = {
@@ -271,35 +198,27 @@ class LHGroupBaseConnector:
         if not origin_slug or not dest_slug or origin_slug == dest_slug:
             return self._empty(req)
 
-        # Build URL candidates: LHG pattern first (better coverage), old pattern as fallback
-        urls: list[str] = []
-        locale = _IATA_TO_LOCALE.get(req.origin) or _IATA_TO_LOCALE.get(req.destination)
-        if locale:
-            urls.append(f"{_LHG_BASE}/{locale}/en/o-d/cy-cy/{origin_slug}-{dest_slug}")
-        urls.append(f"{_BASE_URL}/flight-{origin_slug}-{dest_slug}")
+        url = f"{_BASE_URL}/flight-{origin_slug}-{dest_slug}"
 
         try:
             resp = None
             last_exc = None
-            for url in urls:
-                # Try up to 2 fingerprints per URL before moving to next
-                for fp in random.sample(_FINGERPRINTS, min(2, len(_FINGERPRINTS))):
-                    try:
-                        with creq.Session(impersonate=fp, proxies=get_curl_cffi_proxies()) as sess:
-                            resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
-                        if resp.status_code == 200:
-                            break
-                        logger.debug("%s: %s returned %d (fp=%s)", self.AIRLINE_NAME, url, resp.status_code, fp)
-                        resp = None
-                    except Exception as e:
-                        last_exc = e
-                        logger.debug("%s: fp=%s failed: %s", self.AIRLINE_NAME, fp, e)
-                if resp is not None and resp.status_code == 200:
-                    break
+            # Try up to 2 fingerprints before giving up
+            for fp in random.sample(_FINGERPRINTS, min(2, len(_FINGERPRINTS))):
+                try:
+                    with creq.Session(impersonate=fp, proxies=get_curl_cffi_proxies()) as sess:
+                        resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
+                    if resp.status_code == 200:
+                        break
+                    logger.warning("%s: %s returned %d (fp=%s)", self.AIRLINE_NAME, url, resp.status_code, fp)
+                    resp = None
+                except Exception as e:
+                    last_exc = e
+                    logger.debug("%s: fp=%s failed: %s", self.AIRLINE_NAME, fp, e)
 
             if resp is None or resp.status_code != 200:
                 if last_exc:
-                    logger.warning("%s: all URLs failed, last error: %s", self.AIRLINE_NAME, last_exc)
+                    logger.warning("%s: all fingerprints failed, last error: %s", self.AIRLINE_NAME, last_exc)
                 return self._empty(req)
 
             flights, product = self._extract_jsonld(resp.text)
@@ -471,6 +390,16 @@ class LHGroupBaseConnector:
             children=req.children,
             infants=req.infants,
         )
+        # Upgrade booking URL to round-trip when return date is present
+        if req.return_from:
+            ret_str = req.return_from.strftime("%Y-%m-%d") if hasattr(req.return_from, "strftime") else str(req.return_from)
+            booking_url = booking_url.replace(
+                "trip-type=ONE_WAY",
+                f"trip-type=ROUND_TRIP&inbound-date={ret_str}",
+            ).replace(
+                "tripType=ONE_WAY",
+                f"tripType=ROUND_TRIP&returnDate={ret_str}",
+            )
 
         return FlightOffer(
             id=f"{self.AIRLINE_CODE.lower()}_{fid}",

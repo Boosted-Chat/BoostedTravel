@@ -499,7 +499,17 @@ class BookingcomConnectorClient:
                 )
 
                 # Booking URL using token
-                booking_url = f"https://flights.booking.com/checkout/pax?token={token}" if token else f"https://flights.booking.com/"
+                booking_url = (
+                    f"https://flights.booking.com/checkout/pax?token={token}" if token
+                    else (
+                        f"https://flights.booking.com/flights/"
+                        f"{req.origin}.AIRPORT-{req.destination}.AIRPORT/"
+                        f"?type=ONEWAY&adults={req.adults or 1}"
+                        f"&cabinClass=ECONOMY&sort=BEST"
+                        f"&travelPurpose=leisure"
+                        f"&departureDate={req.date_from.isoformat()}"
+                    )
+                )
 
                 oid = hashlib.md5(f"bc_{token[:20] if token else ''}_{price}".encode()).hexdigest()[:12]
                 offers.append(FlightOffer(
@@ -608,7 +618,14 @@ class BookingcomConnectorClient:
                         price_formatted=f"{currency} {price:.2f}",
                         outbound=route, inbound=None,
                         airlines=[airline], owner_airline=airline,
-                        booking_url=f"https://www.booking.com/flights/{req.origin}-{req.destination}/",
+                        booking_url=(
+                            f"https://flights.booking.com/flights/"
+                            f"{req.origin}.AIRPORT-{req.destination}.AIRPORT/"
+                            f"?type=ONEWAY&adults={req.adults or 1}"
+                            f"&cabinClass=ECONOMY&sort=BEST"
+                            f"&travelPurpose=leisure"
+                            f"&departureDate={req.date_from.isoformat()}"
+                        ),
                         is_locked=False, source="bookingcom_ota", source_tier="free",
                     ))
                 except Exception:
@@ -618,7 +635,7 @@ class BookingcomConnectorClient:
         return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"bc{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"bc{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency="EUR", offers=[], total_results=0,

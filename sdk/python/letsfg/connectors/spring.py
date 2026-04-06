@@ -82,7 +82,7 @@ class SpringConnectorClient:
             "Departure": req.origin,
             "Arrival": req.destination,
             "DepartureDate": date_str,
-            "ReturnDate": "",
+            "ReturnDate": req.return_from.strftime("%Y-%m-%d") if req.return_from else "",
             "IsIJFlight": "false",
             "SType": "0",
             "Currency": req.currency or "CNY",
@@ -92,35 +92,105 @@ class SpringConnectorClient:
         }
 
         # Try English site first, then Chinese site for domestic routes
+        outbound_offers: list[FlightOffer] = []
         for base, search_url, headers, cookies in (
             (_BASE, _SEARCH_URL, _HEADERS, {"lang": "en-us"}),
             (_BASE_CN, _SEARCH_URL_CN, _HEADERS_CN, {"lang": "zh-cn"}),
         ):
             data = await self._api_call(base, search_url, form_data, headers, cookies)
             if data and data.get("Code") == "0" and data.get("Route"):
-                offers = self._parse_routes(data, req)
-                if offers:
-                    elapsed = time.monotonic() - t0
-                    offers.sort(key=lambda o: o.price)
-                    logger.info(
-                        "Spring %s->%s returned %d offers in %.1fs (via %s)",
-                        req.origin, req.destination, len(offers), elapsed, base,
-                    )
-                    search_id = hashlib.md5(
-                        f"spring{req.origin}{req.destination}{req.date_from}".encode()
-                    ).hexdigest()[:12]
-                    return FlightSearchResponse(
-                        search_id=f"fs_{search_id}",
-                        origin=req.origin,
-                        destination=req.destination,
-                        currency=req.currency or "CNY",
-                        offers=offers,
-                        total_results=len(offers),
-                    )
+                outbound_offers = self._parse_routes(data, req)
+                if outbound_offers:
+                    break
 
-        # Neither site returned results
-        logger.info("Spring %s->%s: no results from either site", req.origin, req.destination)
-        return self._empty(req)
+        if not outbound_offers:
+            logger.info("Spring %s->%s: no results from either site", req.origin, req.destination)
+            return self._empty(req)
+
+        # ── Round-trip: search return leg + build combos ──
+        if req.return_from and outbound_offers:
+            inbound_offers = await self._search_return(req)
+            if inbound_offers:
+                combos = self._build_rt_combos(outbound_offers, inbound_offers, req)
+                if combos:
+                    outbound_offers = combos + outbound_offers
+
+        elapsed = time.monotonic() - t0
+        outbound_offers.sort(key=lambda o: o.price)
+        logger.info(
+            "Spring %s->%s returned %d offers in %.1fs",
+            req.origin, req.destination, len(outbound_offers), elapsed,
+        )
+        search_id = hashlib.md5(
+            f"spring{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
+        ).hexdigest()[:12]
+        return FlightSearchResponse(
+            search_id=f"fs_{search_id}",
+            origin=req.origin,
+            destination=req.destination,
+            currency=req.currency or "CNY",
+            offers=outbound_offers,
+            total_results=len(outbound_offers),
+        )
+
+    async def _search_return(self, req: FlightSearchRequest) -> list[FlightOffer]:
+        """Search return leg (reversed origin/dest on return date)."""
+        ret_date = req.return_from.strftime("%Y-%m-%d")
+        form_data = {
+            "Departure": req.destination,
+            "Arrival": req.origin,
+            "DepartureDate": ret_date,
+            "ReturnDate": "",
+            "IsIJFlight": "false",
+            "SType": "0",
+            "Currency": req.currency or "CNY",
+            "AdtNum": str(req.adults),
+            "ChdNum": str(req.children),
+            "InfNum": str(req.infants),
+        }
+        for base, search_url, headers, cookies in (
+            (_BASE, _SEARCH_URL, _HEADERS, {"lang": "en-us"}),
+            (_BASE_CN, _SEARCH_URL_CN, _HEADERS_CN, {"lang": "zh-cn"}),
+        ):
+            data = await self._api_call(base, search_url, form_data, headers, cookies)
+            if data and data.get("Code") == "0" and data.get("Route"):
+                from copy import deepcopy
+                ret_req = deepcopy(req)
+                ret_req.origin, ret_req.destination = req.destination, req.origin
+                ret_req.date_from = req.return_from
+                offers = self._parse_routes(data, ret_req)
+                if offers:
+                    return offers
+        return []
+
+    def _build_rt_combos(
+        self,
+        outbound: list[FlightOffer],
+        inbound: list[FlightOffer],
+        req: FlightSearchRequest,
+    ) -> list[FlightOffer]:
+        """Combine outbound × inbound into RT offers."""
+        combos: list[FlightOffer] = []
+        for ob in outbound[:15]:
+            for ib in inbound[:10]:
+                price = round(ob.price + ib.price, 2)
+                combo_key = f"9c_rt_{ob.id}_{ib.id}"
+                combos.append(FlightOffer(
+                    id=f"9c_{hashlib.md5(combo_key.encode()).hexdigest()[:12]}",
+                    price=price,
+                    currency=ob.currency,
+                    price_formatted=f"{price:.0f} {ob.currency}",
+                    outbound=ob.outbound,
+                    inbound=ib.outbound,
+                    airlines=list(set(ob.airlines + ib.airlines)),
+                    owner_airline="9C",
+                    booking_url=self._booking_url(req),
+                    is_locked=False,
+                    source="spring_direct",
+                    source_tier="free",
+                ))
+        combos.sort(key=lambda o: o.price)
+        return combos[:50]
 
     async def _api_call(
         self, base: str, search_url: str, form_data: dict,
@@ -277,13 +347,13 @@ class SpringConnectorClient:
         dep = req.date_from.strftime("%Y-%m-%d")
         return (
             f"https://en.ch.com/flights/{req.origin}-{req.destination}.html"
-            f"?departure={dep}&adults={req.adults}&tripType=OW"
+            f"?departure={dep}&adults={req.adults}&tripType={'RT' if req.return_from else 'OW'}"
         )
 
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         search_id = hashlib.md5(
-            f"spring{req.origin}{req.destination}{req.date_from}".encode()
+            f"spring{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_id}",

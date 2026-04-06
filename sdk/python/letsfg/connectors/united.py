@@ -123,7 +123,7 @@ class UnitedConnectorClient:
                 currency="USD",
                 offers=offers,
                 total_results=len(offers),
-                search_id=f"united_{req.origin}_{req.destination}_{req.date_from}",
+                search_id=f"united_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
             )
         except Exception as e:
             logger.error("United search error: %s", e)
@@ -414,5 +414,5 @@ class UnitedConnectorClient:
             currency="USD",
             offers=[],
             total_results=0,
-            search_id=f"united_{req.origin}_{req.destination}_{req.date_from}",
+            search_id=f"united_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
         )

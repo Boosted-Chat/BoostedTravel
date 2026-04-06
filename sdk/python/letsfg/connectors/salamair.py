@@ -146,7 +146,7 @@ class SalamAirConnectorClient:
         )
 
         search_hash = hashlib.md5(
-            f"salamair{req.origin}{req.destination}{req.date_from}".encode()
+            f"salamair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         return FlightSearchResponse(
@@ -325,16 +325,20 @@ class SalamAirConnectorClient:
     @staticmethod
     def _booking_url(req: FlightSearchRequest) -> str:
         d = req.date_from.strftime("%Y%m%d")
-        return (
-            f"{_BOOKING_ORIGIN}/en/search?tripType=oneway"
+        trip = "roundtrip" if req.return_from else "oneway"
+        url = (
+            f"{_BOOKING_ORIGIN}/en/search?tripType={trip}"
             f"&origin={req.origin}&destination={req.destination}"
             f"&departureDate={d}&adult={req.adults or 1}"
             f"&child={req.children or 0}&infant={req.infants or 0}"
         )
+        if req.return_from:
+            url += f"&returnDate={req.return_from.strftime('%Y%m%d')}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"salamair{req.origin}{req.destination}{req.date_from}".encode()
+            f"salamair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

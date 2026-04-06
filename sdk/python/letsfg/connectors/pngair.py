@@ -427,7 +427,7 @@ class PNGAirConnectorClient:
 
     def _sid(self, req: FlightSearchRequest) -> str:
         h = hashlib.md5(
-            f"pngair{req.origin}{req.destination}{req.date_from}".encode()
+            f"pngair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return f"fs_{h}"
 

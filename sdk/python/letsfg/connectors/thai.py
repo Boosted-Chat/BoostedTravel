@@ -171,7 +171,7 @@ class ThaiConnectorClient:
             )
 
             h = hashlib.md5(
-                f"thai{req.origin}{req.destination}{req.date_from}".encode()
+                f"thai{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             return FlightSearchResponse(
                 search_id=f"fs_{h}",
@@ -300,7 +300,7 @@ class ThaiConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"thai{req.origin}{req.destination}{req.date_from}".encode()
+            f"thai{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

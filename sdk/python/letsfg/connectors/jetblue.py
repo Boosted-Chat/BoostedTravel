@@ -454,7 +454,7 @@ class JetBlueConnectorClient:
             req.origin, req.destination, len(offers), elapsed, method,
         )
         h = hashlib.md5(
-            f"jetblue{req.origin}{req.destination}{req.date_from}".encode()
+            f"jetblue{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -476,7 +476,7 @@ class JetBlueConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"jetblue{req.origin}{req.destination}{req.date_from}".encode()
+            f"jetblue{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

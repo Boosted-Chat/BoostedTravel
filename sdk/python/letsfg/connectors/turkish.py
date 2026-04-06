@@ -264,7 +264,7 @@ class TurkishConnectorClient:
             "budget": {"maximum": None},
             "passengers": {"adults": max(1, req.adults or 1)},
             "travelClasses": ["ECONOMY"],
-            "flightType": "ROUND_TRIP",
+            "flightType": "ROUND_TRIP" if req.return_from else "ONE_WAY",
             "flexibleDates": True,
             "faresPerRoute": "10",
             "trfxRoutes": True,
@@ -274,17 +274,15 @@ class TurkishConnectorClient:
         }
 
         try:
-            async with httpx.AsyncClient(
-                timeout=15, headers=_SPUTNIK_HEADERS,
-                proxy=get_httpx_proxy_url(),
-            ) as client:
-                r = await client.post(_SPUTNIK_URL, json=payload)
-                if r.status_code != 200:
-                    logger.info("TK Sputnik: HTTP %d", r.status_code)
-                    return []
-                data = r.json()
-                if not isinstance(data, list):
-                    return []
+            from curl_cffi.requests import AsyncSession
+            async with AsyncSession(impersonate="chrome") as s:
+                r = await s.post(_SPUTNIK_URL, json=payload, headers=_SPUTNIK_HEADERS, timeout=15)
+            if r.status_code != 200:
+                logger.info("TK Sputnik: HTTP %d", r.status_code)
+                return []
+            data = r.json()
+            if not isinstance(data, list):
+                return []
         except Exception as e:
             logger.info("TK Sputnik error: %s", e)
             return []

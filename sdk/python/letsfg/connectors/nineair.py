@@ -136,7 +136,7 @@ class NineAirConnectorClient:
                 )
 
                 search_hash = hashlib.md5(
-                    f"9air{req.origin}{req.destination}{req.date_from}".encode()
+                    f"9air{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                 ).hexdigest()[:12]
                 return FlightSearchResponse(
                     search_id=f"fs_{search_hash}",
@@ -245,9 +245,11 @@ class NineAirConnectorClient:
         dep_cn = _IATA_CN.get(req.origin, req.origin)
         arr_cn = _IATA_CN.get(req.destination, req.destination)
         date_str = req.date_from.strftime("%Y-%m-%d")
+        ret_date_str = req.return_from.strftime("%Y-%m-%d") if req.return_from else ""
+        trip_type = "RT" if req.return_from else "OW"
 
         nav_ok = await page.evaluate(
-            r"""([depCode, depName, arrCode, arrName, dateStr]) => {
+            r"""([depCode, depName, arrCode, arrName, dateStr, retDateStr, tripType]) => {
                 const depCity = { name: depName, code: depCode, type: "CITY" };
                 const arrCity = { name: arrName, code: arrCode, type: "CITY" };
                 /* Close any open popovers */
@@ -258,11 +260,11 @@ class NineAirConnectorClient:
                 const formEl = document.querySelector('.flight-way');
                 if (!formEl || !formEl.__vue__) return false;
                 const fvm = formEl.__vue__;
-                fvm.tripType = 'OW';
+                fvm.tripType = tripType;
                 fvm.$set(fvm.form, 's_address', depCity);
                 fvm.$set(fvm.form, 'e_address', arrCity);
                 fvm.$set(fvm.form, 's_date', dateStr);
-                fvm.$set(fvm.form, 'e_date', '');
+                fvm.$set(fvm.form, 'e_date', retDateStr || '');
                 document.querySelectorAll('.fly-input').forEach(el => {
                     if (!el.__vue__) return;
                     const vm = el.__vue__;
@@ -273,12 +275,12 @@ class NineAirConnectorClient:
                         vm.showCityValue = arrName; vm.defaultCity = arrCity;
                     }
                 });
-                const searchData = { tripType: 'OW', form: fvm.form };
+                const searchData = { tripType: tripType, form: fvm.form };
                 fvm.$mstore.save(searchData, 'searchForm');
                 fvm.$parent.toSearch(searchData);
                 return true;
             }""",
-            [req.origin, dep_cn, req.destination, arr_cn, date_str],
+            [req.origin, dep_cn, req.destination, arr_cn, date_str, ret_date_str, trip_type],
         )
 
         if not nav_ok:
@@ -315,13 +317,12 @@ class NineAirConnectorClient:
 
         Response structure::
 
-            data.flights[0][] — array of flight objects, each with:
+            data.flights[0][] — array of outbound flight objects
+            data.flights[1][] — array of inbound flight objects (RT only)
+            Each flight has:
               .segments[] — leg details (departDate, departTime, arrivalTime, etc.)
               .fares[]    — cabin/price options (price, ticketPrice, taxPrice, cabinClass)
         """
-        offers: list[FlightOffer] = []
-        booking_url = self._booking_url(req)
-
         outer = data.get("data", {})
         if not isinstance(outer, dict):
             return []
@@ -330,10 +331,30 @@ class NineAirConnectorClient:
         if not flights_wrapper or not isinstance(flights_wrapper, list):
             return []
 
-        # flights is [[flight1, flight2, ...]] — first element is array of flights
+        # Outbound flights
         flight_list = flights_wrapper[0] if flights_wrapper else []
         if not isinstance(flight_list, list):
-            return []
+            flight_list = []
+        outbound_offers = self._parse_flight_list(flight_list, req, is_return=False)
+
+        # Inbound flights (RT only)
+        if req.return_from and len(flights_wrapper) > 1:
+            inbound_list = flights_wrapper[1]
+            if isinstance(inbound_list, list) and inbound_list:
+                inbound_offers = self._parse_flight_list(inbound_list, req, is_return=True)
+                if inbound_offers and outbound_offers:
+                    combos = self._build_rt_combos(outbound_offers, inbound_offers, req)
+                    if combos:
+                        return combos + outbound_offers
+
+        return outbound_offers
+
+    def _parse_flight_list(
+        self, flight_list: list, req: FlightSearchRequest, is_return: bool = False,
+    ) -> list[FlightOffer]:
+        offers: list[FlightOffer] = []
+        booking_url = self._booking_url(req)
+        fallback_date = req.return_from if is_return and req.return_from else req.date_from
 
         for flight in flight_list:
             if not isinstance(flight, dict):
@@ -367,8 +388,8 @@ class NineAirConnectorClient:
                 arr_date = seg.get("arrivalDate", "")
                 arr_time = seg.get("arrivalTime", "")
 
-                dep_dt = self._parse_datetime(dep_date, dep_time, req.date_from)
-                arr_dt = self._parse_datetime(arr_date, arr_time, req.date_from)
+                dep_dt = self._parse_datetime(dep_date, dep_time, fallback_date)
+                arr_dt = self._parse_datetime(arr_date, arr_time, fallback_date)
 
                 dur = seg.get("flightTime", 0) or 0
                 if dur == 0 and arr_dt > dep_dt:
@@ -396,8 +417,9 @@ class NineAirConnectorClient:
 
             stopovers = sum(s.get("stopoverCount", 0) for s in segments_raw)
 
+            rt_tag = "_rt" if is_return else ""
             fid = hashlib.md5(
-                f"aq_{req.origin}{req.destination}{flight.get('flightId', '')}{price}".encode()
+                f"aq_{req.origin}{req.destination}{flight.get('flightId', '')}{price}{rt_tag}".encode()
             ).hexdigest()[:12]
 
             route = FlightRoute(
@@ -411,8 +433,8 @@ class NineAirConnectorClient:
                 price=round(price, 2),
                 currency=currency,
                 price_formatted=f"{price:.0f} {currency}",
-                outbound=route,
-                inbound=None,
+                outbound=None if is_return else route,
+                inbound=route if is_return else None,
                 airlines=list({s.airline_name for s in parsed_segments}),
                 owner_airline="AQ",
                 booking_url=booking_url,
@@ -428,7 +450,7 @@ class NineAirConnectorClient:
                     continue
 
                 fare_fid = hashlib.md5(
-                    f"aq_{req.origin}{req.destination}{flight.get('flightId', '')}{fp}".encode()
+                    f"aq_{req.origin}{req.destination}{flight.get('flightId', '')}{fp}{rt_tag}".encode()
                 ).hexdigest()[:12]
 
                 fare_segments = []
@@ -445,17 +467,18 @@ class NineAirConnectorClient:
                         cabin_class=fare.get("cabinClass", ps.cabin_class),
                     ))
 
+                fare_route = FlightRoute(
+                    segments=fare_segments,
+                    total_duration_seconds=total_duration,
+                    stopovers=stopovers,
+                )
                 offers.append(FlightOffer(
                     id=f"aq_{fare_fid}",
                     price=round(fp, 2),
                     currency=currency,
                     price_formatted=f"{fp:.0f} {currency}",
-                    outbound=FlightRoute(
-                        segments=fare_segments,
-                        total_duration_seconds=total_duration,
-                        stopovers=stopovers,
-                    ),
-                    inbound=None,
+                    outbound=None if is_return else fare_route,
+                    inbound=fare_route if is_return else None,
                     airlines=list({s.airline_name for s in fare_segments}),
                     owner_airline="AQ",
                     booking_url=booking_url,
@@ -465,6 +488,37 @@ class NineAirConnectorClient:
                 ))
 
         return offers
+
+    def _build_rt_combos(
+        self,
+        outbound: list[FlightOffer],
+        inbound: list[FlightOffer],
+        req: FlightSearchRequest,
+    ) -> list[FlightOffer]:
+        combos: list[FlightOffer] = []
+        booking_url = self._booking_url(req)
+        for ob in outbound[:15]:
+            for ib in inbound[:10]:
+                total = (ob.price or 0) + (ib.price or 0)
+                combo_hash = hashlib.md5(
+                    f"{ob.id}_{ib.id}".encode()
+                ).hexdigest()[:10]
+                combos.append(FlightOffer(
+                    id=f"aq_rt_{combo_hash}",
+                    price=round(total, 2),
+                    currency=ob.currency,
+                    price_formatted=f"{total:.0f} {ob.currency}",
+                    outbound=ob.outbound,
+                    inbound=ib.inbound,
+                    airlines=["AQ"],
+                    owner_airline="AQ",
+                    booking_url=booking_url,
+                    is_locked=False,
+                    source="9air_direct",
+                    source_tier="free",
+                ))
+        combos.sort(key=lambda o: o.price or 0)
+        return combos[:50]
 
     @staticmethod
     def _parse_datetime(date_str: str, time_str: str, fallback_date) -> datetime:
@@ -488,17 +542,23 @@ class NineAirConnectorClient:
     @staticmethod
     def _booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
+        ret = req.return_from.strftime("%Y-%m-%d") if req.return_from else ""
+        trip = "RT" if req.return_from else "OW"
+        cond = (
+            f"index%3A0%3BdepCity%3A{req.origin}%3BarrCity%3A{req.destination}%3Bdate%3A{dep}"
+        )
+        if ret:
+            cond += f"%7Cindex%3A1%3BdepCity%3A{req.destination}%3BarrCity%3A{req.origin}%3Bdate%3A{ret}"
         return (
             f"https://www.9air.com/zh-CN/book/booking"
-            f"?tripType=OW&flightCondition=index%3A0%3BdepCity%3A{req.origin}"
-            f"%3BarrCity%3A{req.destination}%3Bdate%3A{dep}"
+            f"?tripType={trip}&flightCondition={cond}"
             f"&ADT=1&CHD=0&INF=0"
         )
 
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"9air{req.origin}{req.destination}{req.date_from}".encode()
+            f"9air{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

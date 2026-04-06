@@ -274,13 +274,18 @@ class AviancaConnectorClient:
 
     def _build_search_url(self, req: FlightSearchRequest) -> str:
         dt = _to_datetime(req.date_from)
-        return (
+        trip = "round-trip" if req.return_from else "one-way"
+        url = (
             f"https://booking.avianca.com/av/booking/avail"
-            f"?departureDate={dt.strftime('%Y-%m-%d')}&tripType=one-way"
+            f"?departureDate={dt.strftime('%Y-%m-%d')}&tripType={trip}"
             f"&from={req.origin}&to={req.destination}"
             f"&nbAdults={req.adults or 1}&nbYoungs=0&nbChildren=0&nbInfants=0"
             f"&language=EN&platform=WEBB2C&pointOfSale=US"
         )
+        if req.return_from:
+            ret_dt = _to_datetime(req.return_from)
+            url += f"&returnDate={ret_dt.strftime('%Y-%m-%d')}"
+        return url
 
     @staticmethod
     def _looks_like_flights(data: dict) -> bool:
@@ -574,12 +579,17 @@ class AviancaConnectorClient:
     @staticmethod
     def _user_url(req: FlightSearchRequest) -> str:
         dt = _to_datetime(req.date_from)
-        return (
+        trip = "round-trip" if req.return_from else "one-way"
+        url = (
             f"https://booking.avianca.com/av/booking/avail"
-            f"?departureDate={dt.strftime('%Y-%m-%d')}&tripType=one-way"
+            f"?departureDate={dt.strftime('%Y-%m-%d')}&tripType={trip}"
             f"&from={req.origin}&to={req.destination}"
             f"&nbAdults={req.adults or 1}&language=EN"
         )
+        if req.return_from:
+            ret_dt = _to_datetime(req.return_from)
+            url += f"&returnDate={ret_dt.strftime('%Y-%m-%d')}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"av{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]

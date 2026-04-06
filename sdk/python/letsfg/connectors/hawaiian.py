@@ -118,7 +118,7 @@ class HawaiianConnectorClient:
                 currency="USD",
                 offers=offers,
                 total_results=len(offers),
-                search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}",
+                search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
             )
         except Exception as e:
             logger.error("Hawaiian search error: %s", e)
@@ -214,7 +214,7 @@ class HawaiianConnectorClient:
             f"https://www.hawaiianairlines.com/book/flights"
             f"?origin={req.origin}&destination={req.destination}"
             f"&departure={req.date_from.strftime('%Y-%m-%d')}"
-            f"&adults={req.adults}&tripType=OneWay"
+            f"&adults={req.adults}&tripType={'RoundTrip' if req.return_from else 'OneWay'}"
         )
         offers: list[FlightOffer] = []
 
@@ -322,5 +322,5 @@ class HawaiianConnectorClient:
             currency="USD",
             offers=[],
             total_results=0,
-            search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}",
+            search_id=f"hawaiian_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
         )

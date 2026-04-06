@@ -311,11 +311,107 @@ class GolConnectorClient:
 
         elapsed = time.monotonic() - t0
         offers = self._parse_response(data, req)
+
+        # RT: do a second search for return direction
+        if req.return_from and offers:
+            return_offers = await self._search_return(page, uuid, req, t0)
+            if return_offers:
+                combos = self._build_rt_combos(offers, return_offers, req)
+                if combos:
+                    offers = combos + offers
+
         return self._build_response(offers, req, elapsed)
+
+    # ── Return direction search ────────────────────────────────────────────
+
+    async def _search_return(
+        self, page, uuid: str, req: FlightSearchRequest, t0: float,
+    ) -> list[FlightOffer]:
+        """Search for return direction by injecting reversed search params."""
+        ret_date = req.return_from.isoformat()
+        itinerary_parts = [{
+            "from": {"code": req.destination, "useNearbyLocations": False},
+            "to": {"code": req.origin, "useNearbyLocations": False},
+            "when": {"date": f"{ret_date}T00:00:00"},
+        }]
+        search_payload = {
+            "promocodebanner": False,
+            "destinationCountryToUSA": False,
+            "lastSearchCourtesyTicket": False,
+            "passengerCourtesyType": None,
+            "airSearch": {
+                "cabinClass": None,
+                "currency": None,
+                "pointOfSale": "BR",
+                "awardBooking": False,
+                "searchType": "BRANDED",
+                "promoCodes": [""],
+                "originalItineraryParts": itinerary_parts,
+                "itineraryParts": itinerary_parts,
+                "passengers": {
+                    "ADT": req.adults, "TEEN": 0,
+                    "CHD": req.children, "INF": req.infants, "UNN": 0,
+                },
+            },
+        }
+        await page.evaluate("""({uuid, search, passengers}) => {
+            sessionStorage.setItem(uuid + '_@SiteGolB2C:search', JSON.stringify(search));
+            sessionStorage.setItem(uuid + '_@SiteGolB2C:search-properties', JSON.stringify({journey: 'one-way'}));
+            sessionStorage.setItem(uuid + '_@SiteGolB2C:passengers', JSON.stringify(passengers));
+        }""", {
+            "uuid": uuid,
+            "search": search_payload,
+            "passengers": {
+                "ADT": req.adults, "TEEN": 0,
+                "CHD": req.children, "INF": req.infants, "UNN": 0,
+            },
+        })
+
+        captured_data: dict = {}
+        api_event = asyncio.Event()
+
+        async def on_response(response):
+            try:
+                if "bff-flight" in response.url and "search" in response.url and response.status == 200:
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct:
+                        data = await response.json()
+                        if data and isinstance(data, dict) and "offers" in data:
+                            captured_data["json"] = data
+                            api_event.set()
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+        try:
+            await page.goto(f"{_GOL_BASE}/compra/selecao-de-voo2/ida",
+                            wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
+            remaining = max(self.timeout - (time.monotonic() - t0), 5)
+            try:
+                await asyncio.wait_for(api_event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                logger.warning("GOL: timed out waiting for return BFF response")
+                return []
+        finally:
+            page.remove_listener("response", on_response)
+
+        data = captured_data.get("json", {})
+        if not data:
+            return []
+
+        # Navigate back for next search
+        try:
+            await page.goto(f"{_GOL_BASE}/compra",
+                            wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(1)
+        except Exception:
+            pass
+
+        return self._parse_response(data, req, is_return=True)
 
     # ── Response parsing (GOL BFF format) ───────────────────────────────────
 
-    def _parse_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+    def _parse_response(self, data: dict, req: FlightSearchRequest, is_return: bool = False) -> list[FlightOffer]:
         raw_offers = data.get("offers") or []
         if not raw_offers:
             return []
@@ -324,14 +420,15 @@ class GolConnectorClient:
         offers: list[FlightOffer] = []
 
         for offer_data in raw_offers:
-            parsed = self._parse_offer(offer_data, req, booking_url)
+            parsed = self._parse_offer(offer_data, req, booking_url, is_return=is_return)
             if parsed:
                 offers.append(parsed)
 
         return offers
 
     def _parse_offer(
-        self, offer_data: dict, req: FlightSearchRequest, booking_url: str
+        self, offer_data: dict, req: FlightSearchRequest, booking_url: str,
+        is_return: bool = False,
     ) -> Optional[FlightOffer]:
         itinerary = offer_data.get("itinerary", {})
         fare_family = offer_data.get("fareFamily", [])
@@ -378,15 +475,16 @@ class GolConnectorClient:
 
         dep = itinerary.get("departure", "")
         flight_nums = "-".join(str(s.get("flightNumber", "")) for s in segments_raw)
-        offer_key = f"{dep}_{flight_nums}"
+        rt_tag = "_rt" if is_return else ""
+        offer_key = f"{dep}_{flight_nums}{rt_tag}"
 
         return FlightOffer(
             id=f"g3_{hashlib.md5(offer_key.encode()).hexdigest()[:12]}",
             price=round(best_price, 2),
             currency=best_currency,
             price_formatted=f"{best_price:.2f} {best_currency}",
-            outbound=route,
-            inbound=None,
+            outbound=None if is_return else route,
+            inbound=route if is_return else None,
             airlines=list(set(s.airline for s in segments)),
             owner_airline="G3",
             booking_url=booking_url,
@@ -404,7 +502,7 @@ class GolConnectorClient:
             req.origin, req.destination, len(offers), elapsed,
         )
         h = hashlib.md5(
-            f"gol{req.origin}{req.destination}{req.date_from}".encode()
+            f"gol{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -434,15 +532,49 @@ class GolConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
-        return (
+        url = (
             f"{_GOL_BASE}/compra/selecao-de-voo2/ida"
             f"?origin={req.origin}&destination={req.destination}"
             f"&departure={dep}&adults={req.adults}"
         )
+        if req.return_from:
+            url += f"&returnDate={req.return_from.strftime('%Y-%m-%d')}&journeyType=round-trip"
+        return url
+
+    def _build_rt_combos(
+        self,
+        outbound: list[FlightOffer],
+        inbound: list[FlightOffer],
+        req: FlightSearchRequest,
+    ) -> list[FlightOffer]:
+        combos: list[FlightOffer] = []
+        booking_url = self._build_booking_url(req)
+        for ob in outbound[:15]:
+            for ib in inbound[:10]:
+                total = (ob.price or 0) + (ib.price or 0)
+                combo_hash = hashlib.md5(
+                    f"{ob.id}_{ib.id}".encode()
+                ).hexdigest()[:10]
+                combos.append(FlightOffer(
+                    id=f"g3_rt_{combo_hash}",
+                    price=round(total, 2),
+                    currency=ob.currency,
+                    price_formatted=f"{total:.2f} {ob.currency}",
+                    outbound=ob.outbound,
+                    inbound=ib.inbound,
+                    airlines=["G3"],
+                    owner_airline="G3",
+                    booking_url=booking_url,
+                    is_locked=False,
+                    source="gol_direct",
+                    source_tier="protocol",
+                ))
+        combos.sort(key=lambda o: o.price or 0)
+        return combos[:50]
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"gol{req.origin}{req.destination}{req.date_from}".encode()
+            f"gol{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

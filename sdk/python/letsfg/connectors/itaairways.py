@@ -1203,7 +1203,7 @@ class ITAAirwaysConnectorClient:
             logger.info("ITA %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
             sh = hashlib.md5(
-                f"ita{req.origin}{req.destination}{req.date_from}".encode()
+                f"ita{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             return FlightSearchResponse(
                 search_id=f"fs_{sh}",
@@ -1442,12 +1442,12 @@ class ITAAirwaysConnectorClient:
         return (
             f"https://www.ita-airways.com/gb/en/book-and-prepare/book-flights.html"
             f"?from={req.origin}&to={req.destination}"
-            f"&departureDate={dep}&adults={req.adults or 1}&tripType=OW"
+            f"&departureDate={dep}&adults={req.adults or 1}&tripType={'RT' if req.return_from else 'OW'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         sh = hashlib.md5(
-            f"ita{req.origin}{req.destination}{req.date_from}".encode()
+            f"ita{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{sh}",

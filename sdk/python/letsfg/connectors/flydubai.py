@@ -774,7 +774,7 @@ class FlydubaiConnectorClient:
         offers.sort(key=lambda o: o.price)
         source_label = "API" if offers and offers[0].source == "flydubai_api" else "Playwright"
         logger.info("FlyDubai %s→%s returned %d offers in %.1fs (%s)", req.origin, req.destination, len(offers), elapsed, source_label)
-        h = hashlib.md5(f"flydubai{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"flydubai{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
@@ -805,7 +805,7 @@ class FlydubaiConnectorClient:
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"flydubai{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"flydubai{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,

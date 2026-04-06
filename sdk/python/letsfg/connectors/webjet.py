@@ -197,7 +197,7 @@ class WebjetConnectorClient:
         search_url = (
             f"https://services.webjet.com.au/web/flights/matrix/"
             f"?Adults={adults}&Children={children}&Infants={infants}"
-            f"&TravelClass=Economy&TripType=Oneway"
+            f"&TravelClass=Economy&TripType={'Roundtrip' if req.return_from else 'Oneway'}"
             f"&OneWay={origin}-{origin}-{dest}ALL-{dest}ALL-{date_compact}"
             f"&CityCodeFrom={origin}&CityCodeTo={dest}"
         )
@@ -213,7 +213,7 @@ class WebjetConnectorClient:
                         req.origin, req.destination, len(offers), elapsed,
                     )
                     h = hashlib.md5(
-                        f"wbjt{req.origin}{req.destination}{req.date_from}".encode()
+                        f"wbjt{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                     ).hexdigest()[:12]
                     return FlightSearchResponse(
                         search_id=f"fs_{h}",
@@ -499,7 +499,7 @@ class WebjetConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"wbjt{req.origin}{req.destination}{req.date_from}".encode()
+            f"wbjt{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

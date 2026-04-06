@@ -61,6 +61,7 @@ class AirbalticConnectorClient:
 
         date_from = req.date_from
         date_to = req.date_to or date_from
+        is_rt = req.return_from is not None
 
         # Collect all months in the search range
         months: list[str] = []
@@ -82,25 +83,68 @@ class AirbalticConnectorClient:
             return self._empty(req)
 
         # Filter to requested date range and build offers
-        offers = self._build_offers(all_days, req, date_from, date_to)
-        elapsed = time.monotonic() - t0
+        outbound_offers = self._build_offers(all_days, req, date_from, date_to)
 
-        offers.sort(key=lambda o: o.price)
+        # For RT, fetch return leg calendar and build combos
+        if is_rt and outbound_offers:
+            ret_date = req.return_from
+            ret_months = [ret_date.replace(day=1).strftime("%Y-%m")]
+            from copy import copy
+            ret_req = copy(req)
+            ret_req.origin = req.destination
+            ret_req.destination = req.origin
+            try:
+                ret_days = await asyncio.get_event_loop().run_in_executor(
+                    None, self._fetch_months_sync, ret_req, ret_months
+                )
+            except Exception:
+                ret_days = []
+
+            if ret_days:
+                inbound_offers = self._build_offers(ret_days, ret_req, ret_date, ret_date)
+                if inbound_offers:
+                    booking_url = self._build_booking_url_rt(req)
+                    rt_offers = []
+                    for ob in outbound_offers[:15]:
+                        for ib in inbound_offers[:10]:
+                            combined = round(ob.price + ib.price, 2)
+                            rt_id = hashlib.md5(
+                                f"bt_rt_{ob.id}_{ib.id}".encode()
+                            ).hexdigest()[:12]
+                            rt_offers.append(FlightOffer(
+                                id=f"bt_{rt_id}",
+                                price=combined,
+                                currency="EUR",
+                                price_formatted=f"{combined:.2f} EUR",
+                                outbound=ob.outbound,
+                                inbound=ib.outbound,
+                                airlines=["airBaltic"],
+                                owner_airline="BT",
+                                booking_url=booking_url,
+                                is_locked=False,
+                                source="airbaltic_direct",
+                                source_tier="free",
+                            ))
+                    rt_offers.sort(key=lambda o: o.price)
+                    outbound_offers = rt_offers[:50] if rt_offers else outbound_offers
+
+        elapsed = time.monotonic() - t0
+        outbound_offers.sort(key=lambda o: o.price)
         logger.info(
             "airBaltic %s->%s returned %d offers in %.1fs",
-            req.origin, req.destination, len(offers), elapsed,
+            req.origin, req.destination, len(outbound_offers), elapsed,
         )
 
         h = hashlib.md5(
-            f"bt{req.origin}{req.destination}{req.date_from}".encode()
+            f"bt{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"bt_{h}",
             origin=req.origin,
             destination=req.destination,
             currency="EUR",
-            offers=offers,
-            total_results=len(offers),
+            offers=outbound_offers,
+            total_results=len(outbound_offers),
         )
 
     def _fetch_months_sync(self, req: FlightSearchRequest, months: list[str]) -> list[dict]:
@@ -205,7 +249,7 @@ class AirbalticConnectorClient:
             booking_url = (
                 f"https://www.airbaltic.com/en/book-flight"
                 f"?originCode={req.origin}&destinCode={req.destination}"
-                f"&tripType=oneway&numAdt={req.adults}"
+                f"&tripType={'roundtrip' if req.return_from else 'oneway'}&numAdt={req.adults}"
                 f"&numChd={req.children}&numInf={req.infants}"
             )
 
@@ -226,9 +270,18 @@ class AirbalticConnectorClient:
 
         return offers
 
+    @staticmethod
+    def _build_booking_url_rt(req: FlightSearchRequest) -> str:
+        return (
+            f"https://www.airbaltic.com/en/book-flight"
+            f"?originCode={req.origin}&destinCode={req.destination}"
+            f"&tripType=roundtrip&numAdt={req.adults}"
+            f"&numChd={req.children}&numInf={req.infants}"
+        )
+
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"bt{req.origin}{req.destination}{req.date_from}".encode()
+            f"bt{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"bt_{h}",

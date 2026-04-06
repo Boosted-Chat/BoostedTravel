@@ -348,7 +348,7 @@ class SingaporeConnectorClient:
             )
 
             search_hash = hashlib.md5(
-                f"singapore{req.origin}{req.destination}{req.date_from}".encode()
+                f"singapore{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             currency = offers[0].currency if offers else "SGD"
@@ -749,7 +749,7 @@ class SingaporeConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"singapore{req.origin}{req.destination}{req.date_from}".encode()
+            f"singapore{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

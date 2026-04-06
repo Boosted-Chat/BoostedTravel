@@ -660,7 +660,7 @@ class CopaConnectorClient:
             "budget": {"maximum": None},
             "passengers": {"adults": max(1, req.adults or 1)},
             "travelClasses": ["ECONOMY"],
-            "flightType": "ROUND_TRIP",
+            "flightType": "ROUND_TRIP" if req.return_from else "ONE_WAY",
             "flexibleDates": True,
             "faresPerRoute": "10",
             "trfxRoutes": True,

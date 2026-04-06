@@ -250,7 +250,7 @@ class YatraConnectorClient:
             elapsed = time.monotonic() - t0
             logger.info("Yatra %s→%s: %d offers in %.1fs (CDP Chrome)", req.origin, req.destination, len(offers), elapsed)
 
-            sh = hashlib.md5(f"yatra{req.origin}{req.destination}{date_str}".encode()).hexdigest()[:12]
+            sh = hashlib.md5(f"yatra{req.origin}{req.destination}{date_str}{req.return_from or ''}".encode()).hexdigest()[:12]
             return FlightSearchResponse(
                 search_id=f"fs_{sh}", origin=req.origin, destination=req.destination,
                 currency=offers[0].currency if offers else "INR",
@@ -345,7 +345,7 @@ class YatraConnectorClient:
         return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"yatra{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"yatra{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency="INR", offers=[], total_results=0,

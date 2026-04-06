@@ -275,7 +275,7 @@ class WestjetConnectorClient:
             )
 
             search_hash = hashlib.md5(
-                f"ws{req.origin}{req.destination}{req.date_from}".encode()
+                f"ws{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             flights = api_data.get("flights", [{}])
@@ -435,7 +435,7 @@ class WestjetConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"ws{req.origin}{req.destination}{req.date_from}".encode()
+            f"ws{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

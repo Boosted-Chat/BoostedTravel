@@ -76,25 +76,20 @@ class OmanairConnectorClient:
         if days_from_now < 1:
             days_from_now = 1
 
+        is_rt = bool(req.return_from)
         payload = {
             "origins": [req.origin],
             "destinations": [req.destination],
             "departureDaysInterval": {
-                "min": max(0, days_from_now - 1),
-                "max": days_from_now + 3,
+                "min": max(0, days_from_now - 7),
+                "max": days_from_now + 7,
             },
-            "journeyType": "ONE_WAY",
+            "journeyType": "ROUND_TRIP" if is_rt else "ONE_WAY",
         }
 
         fares = await self._call_sputnik(payload)
         offers = [
             o for o in (self._build_offer(f, req) for f in fares) if o is not None
-        ]
-        # Filter: only keep offers within ±1 day of the requested date
-        offers = [
-            o for o in offers
-            if o.outbound and o.outbound.segments
-            and abs((o.outbound.segments[0].departure.date() - dt).days) <= 1
         ]
         offers.sort(key=lambda o: o.price)
 
@@ -105,7 +100,7 @@ class OmanairConnectorClient:
         )
 
         h = hashlib.md5(
-            f"omanair{req.origin}{req.destination}{req.date_from}".encode()
+            f"omanair{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -118,15 +113,14 @@ class OmanairConnectorClient:
 
     async def _call_sputnik(self, payload: dict) -> list[dict]:
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS,
-                proxy=get_httpx_proxy_url(),) as client:
-                r = await client.post(_SPUTNIK_URL, json=payload)
-                if r.status_code != 200:
-                    logger.warning("OmanAir sputnik: %d %s", r.status_code, r.text[:200])
-                    return []
-                data = r.json()
-                return data if isinstance(data, list) else []
+            from curl_cffi.requests import AsyncSession
+            async with AsyncSession(impersonate="chrome") as s:
+                r = await s.post(_SPUTNIK_URL, json=payload, headers=_HEADERS, timeout=self.timeout)
+            if r.status_code != 200:
+                logger.warning("OmanAir sputnik: %d %s", r.status_code, r.text[:200])
+                return []
+            data = r.json()
+            return data if isinstance(data, list) else []
         except Exception as e:
             logger.error("OmanAir sputnik error: %s", e)
             return []
@@ -184,7 +178,31 @@ class OmanairConnectorClient:
         )
         route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
 
-        dedup = f"wy_{origin_code}{dest_code}{dep_date_str}{price_f}{cabin}"
+        # Parse inbound (return) flight if present in the fare
+        inbound = None
+        ret_flight = fare.get("returnFlight") or fare.get("inboundFlight")
+        ret_date_str = fare.get("returnDate", "")[:10] if fare.get("returnDate") else ""
+        if ret_flight or ret_date_str:
+            ret_origin = (ret_flight or {}).get("departureAirportIataCode") or dest_code
+            ret_dest = (ret_flight or {}).get("arrivalAirportIataCode") or origin_code
+            try:
+                ret_dt = datetime.strptime(ret_date_str, "%Y-%m-%d") if ret_date_str else dep_dt
+            except ValueError:
+                ret_dt = dep_dt
+            ret_seg = FlightSegment(
+                airline="WY",
+                airline_name="Oman Air",
+                flight_no="",
+                origin=ret_origin,
+                destination=ret_dest,
+                departure=ret_dt,
+                arrival=ret_dt,
+                duration_seconds=0,
+                cabin_class=cabin,
+            )
+            inbound = FlightRoute(segments=[ret_seg], total_duration_seconds=0, stopovers=0)
+
+        dedup = f"wy_{origin_code}{dest_code}{dep_date_str}{ret_date_str}{price_f}{cabin}"
         fid = hashlib.md5(dedup.encode()).hexdigest()[:12]
 
         try:
@@ -198,14 +216,15 @@ class OmanairConnectorClient:
             currency=currency,
             price_formatted=f"{price_f:.2f} {currency}",
             outbound=route,
-            inbound=None,
+            inbound=inbound,
             airlines=["Oman Air"],
             owner_airline="WY",
             booking_url=(
                 f"https://www.omanair.com/flights/en/"
                 f"?from={req.origin}&to={req.destination}"
                 f"&departDate={date_str}"
-                f"&tripType=OW&adults={req.adults or 1}"
+                f"&tripType={'RT' if inbound else 'OW'}&adults={req.adults or 1}"
+                + (f"&returnDate={ret_date_str}" if inbound and ret_date_str else "")
             ),
             is_locked=False,
             source="omanair_direct",

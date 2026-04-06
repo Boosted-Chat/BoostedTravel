@@ -57,7 +57,7 @@ class KayakConnectorClient:
                         req.origin, req.destination, len(offers), elapsed,
                     )
                     h = hashlib.md5(
-                        f"kayak{req.origin}{req.destination}{req.date_from}".encode()
+                        f"kayak{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                     ).hexdigest()[:12]
                     return FlightSearchResponse(
                         search_id=f"fs_ky_{h}",
@@ -123,12 +123,9 @@ class KayakConnectorClient:
             page.on("response", on_response)
 
             dep_date = req.date_from.isoformat()
-            date_path = dep_date
-            if req.return_from:
-                date_path = f"{dep_date}/{req.return_from.isoformat()}"
             url = (
                 f"https://www.kayak.com/flights/"
-                f"{req.origin}-{req.destination}/{date_path}"
+                f"{req.origin}-{req.destination}/{dep_date}"
                 f"?sort=price_a"
             )
 

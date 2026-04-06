@@ -167,7 +167,7 @@ class AerLingusConnectorClient:
                 logger.info("AerLingus: Sputnik empty, falling back to HTML %s", url)
                 try:
                     resp = await client.get(url)
-                    if resp.status_code == 200:
+                    if resp.status_code in (200, 404) and "__NEXT_DATA__" in resp.text:
                         fares = self._extract_fares(resp.text)
                         if fares:
                             offers = self._build_offers(fares, req)
@@ -215,7 +215,7 @@ class AerLingusConnectorClient:
             "budget": {"maximum": None},
             "passengers": {"adults": max(1, req.adults or 1)},
             "travelClasses": ["ECONOMY"],
-            "flightType": "ROUND_TRIP",
+            "flightType": "ROUND_TRIP" if req.return_from else "ONE_WAY",
             "flexibleDates": True,
             "faresPerRoute": "10",
             "trfxRoutes": True,
@@ -225,8 +225,9 @@ class AerLingusConnectorClient:
         }
 
         try:
-            client = await self._client()
-            r = await client.post(_API_URL, json=payload, headers=_SPUTNIK_HEADERS)
+            from curl_cffi.requests import AsyncSession
+            async with AsyncSession(impersonate="chrome") as s:
+                r = await s.post(_API_URL, json=payload, headers=_SPUTNIK_HEADERS, timeout=self.timeout)
             if r.status_code != 200:
                 logger.info("AerLingus Sputnik: HTTP %d", r.status_code)
                 return []

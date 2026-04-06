@@ -233,7 +233,7 @@ class IberiaConnectorClient:
         logger.info("IB %s→%s: %.2f %s in %.1fs", req.origin, req.destination, price_f, currency, elapsed)
 
         h = hashlib.md5(
-            f"ib{req.origin}{req.destination}{req.date_from}".encode()
+            f"ib{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -285,7 +285,13 @@ class IberiaConnectorClient:
             inbound=None,
             airlines=["Iberia"],
             owner_airline="IB",
-            booking_url="https://www.iberia.com/gb/",
+            booking_url=(
+                f"https://www.iberia.com/gb/flights/"
+                f"?market=gb&language=en"
+                f"&origin={req.origin}&destination={req.destination}"
+                f"&outbound={target_date}"
+                f"&adults={req.adults or 1}"
+            ),
             is_locked=False,
             source="iberia_direct",
             source_tier="free",
@@ -294,7 +300,7 @@ class IberiaConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"ib{req.origin}{req.destination}{req.date_from}".encode()
+            f"ib{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

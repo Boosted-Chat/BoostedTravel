@@ -94,7 +94,7 @@ class DespegarConnectorClient:
         elapsed = time.monotonic() - t0
         logger.info("Despegar %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
-        sh = hashlib.md5(f"despegar{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        sh = hashlib.md5(f"despegar{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{sh}", origin=req.origin, destination=req.destination,
             currency=offers[0].currency if offers else "USD",

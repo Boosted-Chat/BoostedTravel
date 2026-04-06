@@ -399,7 +399,7 @@ class AirAsiaConnectorClient:
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
         logger.info("AirAsia %s->%s returned %d offers in %.1fs (Playwright)", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"airasia{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"airasia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
@@ -437,14 +437,14 @@ class AirAsiaConnectorClient:
         return (
             f"https://www.airasia.com/flights/search/"
             f"?origin={req.origin}&destination={req.destination}"
-            f"&departDate={dep}&tripType=O"
+            f"&departDate={dep}&tripType={'R' if req.return_from else 'O'}"
             f"&adult={req.adults}&child=0&infant=0"
             f"&locale=en-gb&currency={req.currency}"
             f"&airlineProfile=k,d,g&type=paired&cabinClass=economy&uce=true"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"airasia{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"airasia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,

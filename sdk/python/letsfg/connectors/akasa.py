@@ -176,7 +176,7 @@ class AkasaConnectorClient:
         )
 
         search_hash = hashlib.md5(
-            f"akasa{req.origin}{req.destination}{req.date_from}".encode()
+            f"akasa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         return FlightSearchResponse(
@@ -376,12 +376,12 @@ class AkasaConnectorClient:
         return (
             f"https://www.akasaair.com/booking?origin={req.origin}"
             f"&destination={req.destination}&date={dep}"
-            f"&adults={req.adults}&tripType=O"
+            f"&adults={req.adults}&tripType={'R' if req.return_from else 'O'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"akasa{req.origin}{req.destination}{req.date_from}".encode()
+            f"akasa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

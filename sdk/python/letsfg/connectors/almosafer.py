@@ -92,7 +92,7 @@ class AlmosaferConnectorClient:
                         req.origin, req.destination, len(offers), elapsed,
                     )
                     h = hashlib.md5(
-                        f"alm{req.origin}{req.destination}{req.date_from}".encode()
+                        f"alm{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                     ).hexdigest()[:12]
                     return FlightSearchResponse(
                         search_id=f"fs_alm_{h}",

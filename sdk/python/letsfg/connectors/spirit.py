@@ -311,6 +311,19 @@ class SpiritConnectorClient:
                 "birthDates": [],
             }
 
+            # Add return leg criteria for round-trip searches
+            if req.return_from:
+                ret_dt = _to_datetime(req.return_from)
+                ret_str = ret_dt.strftime("%Y-%m-%d")
+                search_payload["criteria"].append({
+                    "stations": {
+                        "originStationCodes": [req.destination],
+                        "destinationStationCodes": [req.origin],
+                    },
+                    "dates": {"beginDate": ret_str, "endDate": ret_str},
+                    "filters": {"filter": "Default"},
+                })
+
             api_result = await page.evaluate(
                 """async (args) => {
                     try {
@@ -403,7 +416,7 @@ class SpiritConnectorClient:
         if not isinstance(trips, list):
             trips = []
 
-        for trip in trips:
+        for trip_idx, trip in enumerate(trips):
             if not isinstance(trip, dict):
                 continue
             journeys = trip.get("journeysAvailable", [])
@@ -414,7 +427,41 @@ class SpiritConnectorClient:
                     continue
                 offer = self._parse_journey(journey, req, booking_url)
                 if offer:
-                    offers.append(offer)
+                    if trip_idx == 0:
+                        offers.append(offer)
+                    elif trip_idx >= 1:
+                        # Mark as inbound leg — will be combined below
+                        offer._is_inbound = True  # type: ignore[attr-defined]
+                        offers.append(offer)
+
+        # Build RT combos from trips[0] outbound + trips[1] inbound
+        if len(trips) > 1:
+            outbound_offers = [o for o in offers if not getattr(o, "_is_inbound", False)]
+            inbound_offers = [o for o in offers if getattr(o, "_is_inbound", False)]
+            if outbound_offers and inbound_offers:
+                rt_offers: list[FlightOffer] = []
+                outbound_offers.sort(key=lambda o: o.price)
+                inbound_offers.sort(key=lambda o: o.price)
+                for ob in outbound_offers[:15]:
+                    for ib in inbound_offers[:10]:
+                        rt_price = round(ob.price + ib.price, 2)
+                        rt_key = f"{ob.id}_{ib.id}"
+                        rt_offers.append(FlightOffer(
+                            id=f"nk_{hashlib.md5(rt_key.encode()).hexdigest()[:12]}",
+                            price=rt_price,
+                            currency="USD",
+                            price_formatted=f"${rt_price:.2f}",
+                            outbound=ob.outbound,
+                            inbound=ib.outbound,
+                            airlines=["Spirit"],
+                            owner_airline="NK",
+                            booking_url=booking_url,
+                            is_locked=False,
+                            source="spirit_direct",
+                            source_tier="free",
+                        ))
+                return rt_offers
+
         return offers
 
     def _parse_journey(self, journey: dict, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
@@ -496,10 +543,16 @@ class SpiritConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = _to_datetime(req.date_from).strftime("%Y-%m-%d")
-        return (
+        is_rt = bool(req.return_from)
+        base = (
             f"https://www.spirit.com/book/flights?from={req.origin}"
-            f"&to={req.destination}&date={dep}&pax={req.adults or 1}&tripType=OW"
+            f"&to={req.destination}&date={dep}&pax={req.adults or 1}"
+            f"&tripType={'RT' if is_rt else 'OW'}"
         )
+        if is_rt:
+            ret = _to_datetime(req.return_from).strftime("%Y-%m-%d")
+            base += f"&returnDate={ret}"
+        return base
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"spirit{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]

@@ -309,7 +309,7 @@ class LatamConnectorClient:
             )
 
             search_hash = hashlib.md5(
-                f"la{req.origin}{req.destination}{req.date_from}".encode()
+                f"la{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             currency = self._get_currency(avail_data, req)
@@ -627,7 +627,7 @@ class LatamConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"la{req.origin}{req.destination}{req.date_from}".encode()
+            f"la{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

@@ -109,7 +109,7 @@ class RexConnectorClient:
         )
 
         h = hashlib.md5(
-            f"rex{req.origin}{req.destination}{req.date_from}".encode()
+            f"rex{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -258,10 +258,11 @@ class RexConnectorClient:
             airlines=["Rex Airlines"],
             owner_airline="ZL",
             booking_url=(
-                f"https://ibe.rex.com.au/"
-                f"?origin={req.origin}&destination={req.destination}"
-                f"&departureDate={dep_date_str}"
-                f"&adults={req.adults or 1}"
+                f"https://www.rex.com.au/Book/FlightSearch"
+                f"?from={req.origin}&to={req.destination}"
+                f"&outboundDate={dep_date_str}"
+                f"&adultCount={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
+                + (f"&inboundDate={req.return_from.strftime('%Y-%m-%d')}" if req.return_from else "")
             ),
             is_locked=False,
             source="rex_direct",
@@ -271,7 +272,7 @@ class RexConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"rex{req.origin}{req.destination}{req.date_from}".encode()
+            f"rex{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

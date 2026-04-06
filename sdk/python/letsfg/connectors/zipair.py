@@ -150,7 +150,74 @@ class ZipairConnectorClient:
         except Exception:
             return None
 
-        return self._parse_flights(data, req, currency)
+        outbound_offers = self._parse_flights(data, req, currency)
+        if outbound_offers is None:
+            return None
+
+        # ── Round-trip: second OW search for return direction ──
+        if req.return_from and outbound_offers:
+            return self._build_rt_combos(outbound_offers, req, currency, sess)
+
+        return outbound_offers
+
+    def _build_rt_combos(
+        self,
+        outbound_offers: list[FlightOffer],
+        req: FlightSearchRequest,
+        currency: str,
+        sess: creq.Session,
+    ) -> list[FlightOffer]:
+        ret_str = req.return_from.strftime("%Y-%m-%d")
+        ret_params = {
+            "routes": f"{req.destination},{req.origin}",
+            "departureDateFrom": ret_str,
+            "adult": str(req.adults),
+            "childA": "0", "childB": "0", "childC": "0", "infant": "0",
+            "currency": currency,
+            "language": "en",
+        }
+        try:
+            r2 = sess.get(_BFF_URL, params=ret_params, headers={
+                "Accept": "application/json",
+            }, timeout=15)
+        except Exception as e:
+            logger.warning("Zipair: return API request failed: %s", e)
+            return outbound_offers
+
+        if r2.status_code != 200:
+            return outbound_offers
+
+        try:
+            ret_data = r2.json()
+        except Exception:
+            return outbound_offers
+
+        inbound_offers = self._parse_flights(ret_data, req, currency, is_return=True)
+        if not inbound_offers:
+            return outbound_offers
+
+        booking_url = self._build_booking_url(req)
+        combos: list[FlightOffer] = []
+        for ob in outbound_offers[:15]:
+            for ib in inbound_offers[:10]:
+                combo_price = round(ob.price + ib.price, 2)
+                combo_id = f"zg_{hashlib.md5(f'{ob.id}{ib.id}'.encode()).hexdigest()[:12]}"
+                combos.append(FlightOffer(
+                    id=combo_id,
+                    price=combo_price,
+                    currency=currency,
+                    price_formatted=f"{combo_price:.2f} {currency}",
+                    outbound=ob.outbound,
+                    inbound=ib.outbound,
+                    airlines=["ZIPAIR"],
+                    owner_airline="ZG",
+                    booking_url=booking_url,
+                    is_locked=False,
+                    source="zipair_direct",
+                    source_tier="free",
+                ))
+        combos.sort(key=lambda o: o.price)
+        return combos[:50]
 
     # ── Playwright fallback ────────────────────────────────────
 
@@ -235,12 +302,12 @@ class ZipairConnectorClient:
         finally:
             await context.close()
 
-    def _parse_flights(self, data: dict, req: FlightSearchRequest, currency: str) -> list[FlightOffer]:
+    def _parse_flights(self, data: dict, req: FlightSearchRequest, currency: str, *, is_return: bool = False) -> list[FlightOffer]:
         raw_flights = data.get("flights", [])
         if not isinstance(raw_flights, list):
             return []
 
-        target_date = req.date_from.strftime("%Y-%m-%d")
+        target_date = (req.return_from if is_return and req.return_from else req.date_from).strftime("%Y-%m-%d")
         booking_url = self._build_booking_url(req)
         offers: list[FlightOffer] = []
 
@@ -354,7 +421,7 @@ class ZipairConnectorClient:
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
         logger.info("Zipair %s→%s returned %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"zipair{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"zipair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
@@ -379,14 +446,21 @@ class ZipairConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
+        if req.return_from:
+            ret = req.return_from.strftime("%Y-%m-%d")
+            return (
+                f"https://www.zipair.net/en/booking/flight?"
+                f"origin={req.origin}&destination={req.destination}"
+                f"&departureDate={dep}&returnDate={ret}&adult={req.adults}&tripType=RT"
+            )
         return (
             f"https://www.zipair.net/en/booking/flight?"
             f"origin={req.origin}&destination={req.destination}"
-            f"&departureDate={dep}&adult={req.adults}&tripType=OW"
+            f"&departureDate={dep}&adult={req.adults}&tripType={'RT' if req.return_from else 'OW'}"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"zipair{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"zipair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,

@@ -364,16 +364,18 @@ class SouthwestConnectorClient:
             sess.cookies.set(c["name"], c["value"], domain=domain)
 
         dep = req.date_from.strftime("%Y-%m-%d")
+        is_rt = bool(req.return_from)
+        ret = req.return_from.strftime("%Y-%m-%d") if is_rt else ""
         body = {
             "originationAirportCode": req.origin,
             "destinationAirportCode": req.destination,
             "departureDate": dep,
             "departureTimeOfDay": "ALL_DAY",
-            "returnDate": "",
+            "returnDate": ret,
             "returnTimeOfDay": "ALL_DAY",
             "adultPassengersCount": str(req.adults),
             "seniorPassengersCount": "0",
-            "tripType": "oneway",
+            "tripType": "roundtrip" if is_rt else "oneway",
             "fareType": "USD",
             "passengerType": "ADULT",
             "promoCode": "",
@@ -816,13 +818,64 @@ class SouthwestConnectorClient:
         if not isinstance(air_products, list):
             air_products = []
 
+        # Parse inbound flights for round-trip searches
+        inbound_products = (
+            shopping.get("inboundPage", {}).get("cards")
+            or shopping.get("inboundFlights")
+            or data.get("inbound")
+            or []
+        )
+        if not isinstance(inbound_products, list):
+            inbound_products = []
+
+        # Parse outbound flights
+        outbound_offers: list[FlightOffer] = []
         # Southwest nests flights under airProducts[].details[]
         for product in air_products:
             details = product.get("details") or []
             for detail in details:
                 offer = self._parse_single_flight(detail, currency, req, booking_url)
                 if offer:
-                    offers.append(offer)
+                    outbound_offers.append(offer)
+
+        # Parse inbound flights and build RT combos
+        if inbound_products:
+            inbound_parsed: list[FlightOffer] = []
+            for product in inbound_products:
+                details = product.get("details") or []
+                for detail in details:
+                    offer = self._parse_single_flight(detail, currency, req, booking_url)
+                    if offer:
+                        inbound_parsed.append(offer)
+
+            if inbound_parsed and outbound_offers:
+                # Build RT combos: pair cheapest outbound with each inbound and vice versa
+                outbound_offers.sort(key=lambda o: o.price)
+                inbound_parsed.sort(key=lambda o: o.price)
+                for ob in outbound_offers[:15]:
+                    for ib in inbound_parsed[:10]:
+                        rt_price = round(ob.price + ib.price, 2)
+                        rt_key = f"{ob.id}_{ib.id}"
+                        offers.append(FlightOffer(
+                            id=f"wn_{hashlib.md5(rt_key.encode()).hexdigest()[:12]}",
+                            price=rt_price,
+                            currency=currency,
+                            price_formatted=f"${rt_price:.2f}",
+                            outbound=ob.outbound,
+                            inbound=ib.outbound,  # inbound's "outbound" is the return leg
+                            airlines=["Southwest"],
+                            owner_airline="WN",
+                            booking_url=booking_url,
+                            is_locked=False,
+                            source="southwest_direct",
+                            source_tier="free",
+                        ))
+            else:
+                # No inbound results — return outbound as one-way
+                offers.extend(outbound_offers)
+        else:
+            offers.extend(outbound_offers)
+
         return offers
 
     def _parse_single_flight(self, detail: dict, currency: str, req: FlightSearchRequest, booking_url: str) -> Optional[FlightOffer]:
@@ -961,12 +1014,19 @@ class SouthwestConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
-        return (
+        is_rt = bool(req.return_from)
+        ret = req.return_from.strftime("%Y-%m-%d") if is_rt else ""
+        base = (
             f"https://www.southwest.com/air/booking/select.html"
             f"?originationAirportCode={req.origin}"
             f"&destinationAirportCode={req.destination}"
-            f"&departureDate={dep}&tripType=oneway&adultPassengersCount={req.adults}"
+            f"&departureDate={dep}"
+            f"&tripType={'roundtrip' if is_rt else 'oneway'}"
+            f"&adultPassengersCount={req.adults}"
         )
+        if is_rt:
+            base += f"&returnDate={ret}"
+        return base
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"southwest{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]

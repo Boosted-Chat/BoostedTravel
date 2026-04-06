@@ -110,7 +110,7 @@ class RwandAirConnectorClient:
         )
 
         h = hashlib.md5(
-            f"rwandair{req.origin}{req.destination}{req.date_from}".encode()
+            f"rwandair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -245,7 +245,12 @@ class RwandAirConnectorClient:
             inbound=None,
             airlines=["RwandAir"],
             owner_airline="WB",
-            booking_url="https://www.rwandair.com/",
+            booking_url=(
+                f"https://www.rwandair.com/booking/"
+                f"?from={req.origin}&to={req.destination}"
+                f"&outboundDate={dep_date_str}"
+                f"&adultCount={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
+            ),
             is_locked=False,
             source="rwandair_direct",
             source_tier="free",
@@ -254,7 +259,7 @@ class RwandAirConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"rwandair{req.origin}{req.destination}{req.date_from}".encode()
+            f"rwandair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

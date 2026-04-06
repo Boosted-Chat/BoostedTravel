@@ -160,7 +160,7 @@ class TraveltrolleyConnectorClient:
                 f"?dcity={req.origin}&acity={req.destination}"
                 f"&ddate={date_str}"
                 f"&dairport={req.origin}&aairport={req.destination}"
-                f"&triptype=ow&class=y&aqty={req.adults}&nonstop=false"
+                f"&triptype={'rt' if req.return_from else 'ow'}&class=y&aqty={req.adults}&nonstop=false"
             )
             await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
 
@@ -200,7 +200,7 @@ class TraveltrolleyConnectorClient:
             elapsed = time.monotonic() - t0
             logger.info("TravelTrolley %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
-            sh = hashlib.md5(f"tt{req.origin}{req.destination}{date_str}".encode()).hexdigest()[:12]
+            sh = hashlib.md5(f"tt{req.origin}{req.destination}{date_str}{req.return_from or ''}".encode()).hexdigest()[:12]
             return FlightSearchResponse(
                 search_id=f"fs_tt_{sh}", origin=req.origin, destination=req.destination,
                 currency=offers[0].currency if offers else "GBP",
@@ -291,7 +291,7 @@ class TraveltrolleyConnectorClient:
         return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"tt{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"tt{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency="GBP", offers=[], total_results=0,

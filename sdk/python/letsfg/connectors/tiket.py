@@ -210,7 +210,7 @@ class TiketConnectorClient:
                         req.origin, req.destination, len(offers), elapsed,
                     )
                     h = hashlib.md5(
-                        f"tikt{req.origin}{req.destination}{req.date_from}".encode()
+                        f"tikt{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                     ).hexdigest()[:12]
                     return FlightSearchResponse(
                         search_id=f"fs_{h}",
@@ -516,7 +516,7 @@ class TiketConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"tikt{req.origin}{req.destination}{req.date_from}".encode()
+            f"tikt{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

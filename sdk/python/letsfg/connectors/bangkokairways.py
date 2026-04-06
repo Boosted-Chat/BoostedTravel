@@ -447,7 +447,7 @@ class BangkokAirwaysConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         sh = hashlib.md5(
-            f"pg{req.origin}{req.destination}{req.date_from}".encode()
+            f"pg{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{sh}",

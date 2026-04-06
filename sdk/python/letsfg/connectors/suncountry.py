@@ -109,7 +109,7 @@ class SunCountryConnectorClient:
                 currency="USD",
                 offers=offers,
                 total_results=len(offers),
-                search_id=f"suncountry_{req.origin}_{req.destination}_{req.date_from}",
+                search_id=f"suncountry_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
             )
         except Exception as e:
             logger.error("SunCountry search error: %s", e)
@@ -226,12 +226,7 @@ class SunCountryConnectorClient:
     ) -> list[FlightOffer]:
         fares = data.get("lowfares") or []
         target = req.date_from.strftime("%Y-%m-%d")
-        booking_url = (
-            f"https://www.suncountry.com/booking/flights"
-            f"?depart={req.origin}&arrive={req.destination}"
-            f"&departDate={req.date_from.strftime('%Y-%m-%d')}"
-            f"&adt={req.adults or 1}&chd={req.children or 0}"
-        )
+        booking_url = "https://www.suncountry.com/booking/select"
         offers: list[FlightOffer] = []
 
         for fare in fares:
@@ -289,5 +284,5 @@ class SunCountryConnectorClient:
             currency="USD",
             offers=[],
             total_results=0,
-            search_id=f"suncountry_{req.origin}_{req.destination}_{req.date_from}",
+            search_id=f"suncountry_{req.origin}_{req.destination}_{req.date_from}_{req.return_from or ''}",
         )

@@ -290,7 +290,7 @@ class TransNusaConnectorClient:
                 )
 
                 h = hashlib.md5(
-                    f"transnusa{req.origin}{req.destination}{req.date_from}".encode()
+                    f"transnusa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
                 ).hexdigest()[:12]
                 return FlightSearchResponse(
                     search_id=f"fs_{h}",
@@ -756,7 +756,7 @@ class TransNusaConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"transnusa{req.origin}{req.destination}{req.date_from}".encode()
+            f"transnusa{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",

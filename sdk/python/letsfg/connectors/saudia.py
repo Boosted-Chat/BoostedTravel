@@ -418,7 +418,7 @@ class SaudiaConnectorClient:
             logger.info("Saudia %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
 
             search_hash = hashlib.md5(
-                f"saudia{req.origin}{req.destination}{req.date_from}".encode()
+                f"saudia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
 
             currency = offers[0].currency if offers else "SAR"
@@ -1015,12 +1015,12 @@ class SaudiaConnectorClient:
             f"origin={req.origin}&destination={req.destination}"
             f"&departureDate={date_str}"
             f"&adults={adults}&children={children}&infants={infants}"
-            f"&tripType=OneWay&lang=en-SA"
+            f"&tripType={'RoundTrip' if req.return_from else 'OneWay'}&lang=en-SA"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"saudia{req.origin}{req.destination}{req.date_from}".encode()
+            f"saudia{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",

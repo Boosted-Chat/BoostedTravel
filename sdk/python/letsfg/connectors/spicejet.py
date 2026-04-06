@@ -374,7 +374,7 @@ class SpiceJetConnectorClient:
         self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float
     ) -> FlightSearchResponse:
         offers.sort(key=lambda o: o.price)
-        h = hashlib.md5(f"spicejet{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"spicejet{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,
@@ -410,7 +410,7 @@ class SpiceJetConnectorClient:
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"spicejet{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"spicejet{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
             origin=req.origin,

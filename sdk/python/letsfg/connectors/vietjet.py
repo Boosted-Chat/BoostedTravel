@@ -144,10 +144,13 @@ class VietJetConnectorClient:
                 await auto_block_if_proxied(page)
 
             route_key = f"{req.origin}-{req.destination}"
+            return_route_key = f"{req.destination}-{req.origin}"
             target_date = req.date_from.strftime("%Y-%m-%d")
+            is_rt = req.return_from is not None
             currency = req.currency if req.currency != "EUR" else "USD"
 
             all_travel_options: list[dict] = []
+            all_return_options: list[dict] = []
             lowest_fares_captured: dict = {}
             api_event = asyncio.Event()
 
@@ -166,7 +169,7 @@ class VietJetConnectorClient:
                         if not isinstance(data, dict) or not data.get("status"):
                             return
                         travel = data.get("travelOption", {})
-                        # Try exact route key first, then any key containing our airports
+                        # Outbound direction
                         options = travel.get(route_key, [])
                         if not options:
                             for key in travel:
@@ -178,9 +181,23 @@ class VietJetConnectorClient:
                                 all_travel_options.extend(options)
                             else:
                                 all_travel_options.append(options)
-                            lf = data.get("lowestFares")
-                            if lf:
-                                lowest_fares_captured.update(lf if isinstance(lf, dict) else {})
+                        # Return direction (for RT)
+                        if is_rt:
+                            ret_options = travel.get(return_route_key, [])
+                            if not ret_options:
+                                for key in travel:
+                                    if req.destination in key and req.origin in key and key != route_key:
+                                        ret_options = travel[key]
+                                        break
+                            if ret_options:
+                                if isinstance(ret_options, list):
+                                    all_return_options.extend(ret_options)
+                                else:
+                                    all_return_options.append(ret_options)
+                        lf = data.get("lowestFares")
+                        if lf:
+                            lowest_fares_captured.update(lf if isinstance(lf, dict) else {})
+                        if all_travel_options or all_return_options:
                             api_event.set()
                 except Exception:
                     pass
@@ -193,13 +210,17 @@ class VietJetConnectorClient:
             else:
                 # Deep-link URL approach
                 dep_str = req.date_from.strftime("%Y-%m-%d")
+                trip = "roundtrip" if is_rt else "oneway"
                 deep_url = (
                     f"https://www.vietjetair.com/en?"
                     f"departAirport={req.origin}&arrivalAirport={req.destination}"
-                    f"&departDate={dep_str}&tripType=oneway"
+                    f"&departDate={dep_str}&tripType={trip}"
                     f"&currency={currency}&languageCode=en"
                 )
-                logger.info("VietJet: deep-link search %s->%s on %s", req.origin, req.destination, dep_str)
+                if is_rt:
+                    ret_str = req.return_from.strftime("%Y-%m-%d")
+                    deep_url += f"&returnDate={ret_str}"
+                logger.info("VietJet: deep-link search %s->%s on %s (%s)", req.origin, req.destination, dep_str, trip)
                 await page.goto(deep_url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
                 await self._nuke_overlays(page)
 
@@ -216,8 +237,44 @@ class VietJetConnectorClient:
                 return self._empty(req)
 
             elapsed = time.monotonic() - t0
-            offers = self._parse_travel_options(all_travel_options, req, currency, lowest_fares_captured)
-            return self._build_response(offers, req, elapsed)
+            outbound_offers = self._parse_travel_options(all_travel_options, req, currency, lowest_fares_captured)
+
+            # Build RT combos from outbound + return options
+            if is_rt and all_return_options:
+                from copy import copy
+                ret_req = copy(req)
+                ret_req.origin = req.destination
+                ret_req.destination = req.origin
+                ret_req.date_from = req.return_from
+                inbound_offers = self._parse_travel_options(all_return_options, ret_req, currency, {})
+
+                if inbound_offers:
+                    booking_url = self._build_booking_url(req)
+                    rt_offers: list[FlightOffer] = []
+                    for ob in outbound_offers[:15]:
+                        for ib in inbound_offers[:10]:
+                            combined = round(ob.price + ib.price, 2)
+                            rt_id = hashlib.md5(
+                                f"vj_rt_{ob.id}_{ib.id}".encode()
+                            ).hexdigest()[:12]
+                            rt_offers.append(FlightOffer(
+                                id=f"vj_{rt_id}",
+                                price=combined,
+                                currency=ob.currency,
+                                price_formatted=f"{combined:,.0f} {ob.currency}",
+                                outbound=ob.outbound,
+                                inbound=ib.outbound,
+                                airlines=["VietJet"],
+                                owner_airline="VJ",
+                                booking_url=booking_url,
+                                is_locked=False,
+                                source="vietjet_direct",
+                                source_tier="free",
+                            ))
+                    rt_offers.sort(key=lambda o: o.price)
+                    outbound_offers = rt_offers[:50] if rt_offers else outbound_offers
+
+            return self._build_response(outbound_offers, req, elapsed)
 
         except Exception as e:
             logger.error("VietJet Playwright error: %s", e)
@@ -241,8 +298,11 @@ class VietJetConnectorClient:
         await self._nuke_overlays(page)
         await asyncio.sleep(0.5)
 
-        # Set one-way
-        await self._set_one_way(page)
+        # Set trip type
+        if req.return_from:
+            await self._set_round_trip(page)
+        else:
+            await self._set_one_way(page)
         await asyncio.sleep(0.5)
 
         # Fill origin
@@ -297,8 +357,29 @@ class VietJetConnectorClient:
             pass
 
     # ------------------------------------------------------------------
-    # One-way toggle
+    # One-way / Round-trip toggle
     # ------------------------------------------------------------------
+
+    async def _set_round_trip(self, page) -> None:
+        for sel in [
+            "input#roundtrip", "input[value='roundtrip']", "input[value='RT']",
+            "label[for='roundtrip']", "label[for='round-trip']",
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0:
+                    await el.click(timeout=2000)
+                    return
+            except Exception:
+                continue
+        for label in ["Round-trip", "Round Trip", "Round trip", "Roundtrip"]:
+            try:
+                el = page.get_by_text(label, exact=False).first
+                if el and await el.count() > 0:
+                    await el.click(timeout=2000)
+                    return
+            except Exception:
+                continue
 
     async def _set_one_way(self, page) -> None:
         for sel in [
@@ -817,7 +898,7 @@ class VietJetConnectorClient:
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
         offers.sort(key=lambda o: (o.price if o.price > 0 else float("inf")))
         logger.info("VietJet %s->%s returned %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
-        h = hashlib.md5(f"vietjet{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"vietjet{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=offers, total_results=len(offers),
@@ -842,13 +923,18 @@ class VietJetConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%d/%m/%Y")
-        return (
+        trip = "RT" if req.return_from else "OW"
+        url = (
             f"https://www.vietjetair.com/en/booking?origin={req.origin}"
-            f"&destination={req.destination}&departDate={dep}&adults={req.adults}&type=OW"
+            f"&destination={req.destination}&departDate={dep}&adults={req.adults}&type={trip}"
         )
+        if req.return_from:
+            ret = req.return_from.strftime("%d/%m/%Y")
+            url += f"&returnDate={ret}"
+        return url
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        h = hashlib.md5(f"vietjet{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        h = hashlib.md5(f"vietjet{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}", origin=req.origin, destination=req.destination,
             currency=req.currency, offers=[], total_results=0,

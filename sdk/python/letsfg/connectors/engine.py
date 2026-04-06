@@ -837,21 +837,32 @@ class MultiProvider:
                     combo_tasks.append(search_fn(client_ret, return_req))
                     combo_labels.append(f"{label}_ret")
 
-            # ── Round-trip return leg search (API-only connectors) ──
+            # ── Round-trip return leg search (ALL connectors) ──
             # Most airline connectors ignore return_date and only return outbound.
             # Fire a reverse one-way search so the combo engine can build proper
-            # round-trip offers (e.g. VS outbound + AI return).
-            # IMPORTANT: Only fire API-only connectors for the return direction.
-            # Browser connectors already ran for outbound; running them again
-            # doubles Chrome usage (80+ tasks on 4 slots).  Kiwi + backend +
-            # API connectors provide sufficient return-leg coverage.
+            # round-trip offers (e.g. EasyJet outbound + Norwegian return, or
+            # same-airline combos like Spirit out + Spirit back).
+            # All connectors — including browser-based — are fired for the
+            # return direction.  The browser semaphore limits Chrome concurrency;
+            # extra tasks simply queue until a slot is free.
             return_filtered = get_relevant_connectors(
                 req.destination, req.origin, _DIRECT_AIRLINE_connectorS
             )
-            return_filtered = [
-                (s, c, t) for s, c, t in return_filtered
-                if s not in _BROWSER_SOURCES
-            ]
+            # Skip browser connectors when Chrome is not available (same as outbound)
+            if not _BROWSERS_AVAILABLE:
+                return_filtered = [
+                    (s, c, t) for s, c, t in return_filtered
+                    if s not in _BROWSER_SOURCES
+                ]
+            # Smart ordering: API connectors first (instant), then browser
+            # connectors sorted by timeout ascending (fast scrapers get
+            # semaphore slots before slow ones).
+            api_ret = [(s, c, t) for s, c, t in return_filtered if s not in _BROWSER_SOURCES]
+            browser_ret = sorted(
+                ((s, c, t) for s, c, t in return_filtered if s in _BROWSER_SOURCES),
+                key=lambda x: x[2],
+            )
+            return_filtered = api_ret + browser_ret
             for source, connector_cls, timeout in return_filtered:
                 connector = connector_cls(timeout=timeout)
                 # Resolve city codes for non-city-code-aware connectors

@@ -97,7 +97,7 @@ class SolomonAirlinesConnectorClient:
         )
 
         h = hashlib.md5(
-            f"solomonairlines{req.origin}{req.destination}{req.date_from}".encode()
+            f"solomonairlines{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
@@ -249,7 +249,7 @@ class SolomonAirlinesConnectorClient:
                 f"https://www.flysolomons.com/book/"
                 f"?from={req.origin}&to={req.destination}"
                 f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType=ONE_WAY"
+                f"&adultCount={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
             ),
             is_locked=False,
             source="solomonairlines_direct",
@@ -259,7 +259,7 @@ class SolomonAirlinesConnectorClient:
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(
-            f"solomonairlines{req.origin}{req.destination}{req.date_from}".encode()
+            f"solomonairlines{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{h}",
