@@ -114,7 +114,18 @@ class WingoConnectorClient:
             logger.info("Wingo: no fares on page %s", url)
             return self._empty(req)
 
-        offers = self._build_offers(fares, req)
+        # For RT, fetch reverse route page for inbound fares
+        ib_fares: list[dict] = []
+        if req.return_from:
+            rev_url = f"{_BASE}/en/flights-from-{dest_slug}-to-{origin_slug}"
+            try:
+                rev_resp = await client.get(rev_url)
+                if rev_resp.status_code == 200:
+                    ib_fares = self._extract_fares(rev_resp.text)
+            except Exception:
+                pass
+
+        offers = self._build_offers(fares, req, ib_fares=ib_fares)
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
 
         elapsed = time.monotonic() - t0
@@ -166,11 +177,69 @@ class WingoConnectorClient:
                     all_fares.append(f)
         return all_fares
 
-    def _build_offers(self, fares: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
+    def _build_offers(self, fares: list[dict], req: FlightSearchRequest,
+                      ib_fares: list[dict] | None = None) -> list[FlightOffer]:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
         valid_origins = city_match_set(req.origin)
         valid_dests = city_match_set(req.destination)
+        is_rt = bool(req.return_from)
+
+        # Build cheapest inbound route for RT
+        ib_route: FlightRoute | None = None
+        ib_price = 0.0
+        if is_rt and ib_fares:
+            ret_date = req.return_from.strftime("%Y-%m-%d") if hasattr(req.return_from, 'strftime') else str(req.return_from)[:10]
+            valid_ib_origins = city_match_set(req.destination)
+            valid_ib_dests = city_match_set(req.origin)
+            best_ib_price = float("inf")
+            for fare in ib_fares:
+                orig = fare.get("originAirportCode", "")
+                dest = fare.get("destinationAirportCode", "")
+                if orig not in valid_ib_origins or dest not in valid_ib_dests:
+                    continue
+                p = fare.get("totalPrice")
+                if not p or float(p) <= 0:
+                    continue
+                dep_date = fare.get("departureDate", "")[:10]
+                if dep_date != ret_date:
+                    continue
+                pf = float(p)
+                if pf < best_ib_price:
+                    best_ib_price = pf
+                    ib_price = pf
+                    ib_dep_dt = datetime(2000, 1, 1)
+                    if dep_date:
+                        try:
+                            ib_dep_dt = datetime.strptime(dep_date, "%Y-%m-%d")
+                        except ValueError:
+                            pass
+                    ib_seg = FlightSegment(
+                        airline="P5", airline_name="Wingo", flight_no="",
+                        origin=req.destination, destination=req.origin,
+                        departure=ib_dep_dt, arrival=ib_dep_dt, duration_seconds=0,
+                        cabin_class=(fare.get("formattedTravelClass") or "Economy").lower(),
+                    )
+                    ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+            # If no exact-date IB fare, try any IB fare as estimate
+            if not ib_route and ib_fares:
+                for fare in sorted(ib_fares, key=lambda f: float(f.get("totalPrice") or 999999)):
+                    orig = fare.get("originAirportCode", "")
+                    dest = fare.get("destinationAirportCode", "")
+                    if orig not in valid_ib_origins or dest not in valid_ib_dests:
+                        continue
+                    p = fare.get("totalPrice")
+                    if not p or float(p) <= 0:
+                        continue
+                    ib_price = float(p)
+                    ib_seg = FlightSegment(
+                        airline="P5", airline_name="Wingo", flight_no="",
+                        origin=req.destination, destination=req.origin,
+                        departure=datetime(2000, 1, 1), arrival=datetime(2000, 1, 1),
+                        duration_seconds=0,
+                    )
+                    ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
+                    break
 
         # Separate exact-date and nearby fares (airTRFX shows cached snapshots)
         exact_fares: list[dict] = []
@@ -229,13 +298,16 @@ class WingoConnectorClient:
                 f"p5_{orig}{dest}{dep_date}{price_f}{cabin}".encode()
             ).hexdigest()[:12]
 
+            total_price = round(price_f + ib_price, 2) if is_rt and ib_route else price_f
+            prefix = "p5_rt_" if is_rt and ib_route else "p5_"
+
             offers.append(FlightOffer(
-                id=f"p5_{fid}",
-                price=price_f,
+                id=f"{prefix}{fid}",
+                price=total_price,
                 currency=currency,
-                price_formatted=fare.get("formattedTotalPrice") or f"{price_f:.2f} {currency}",
+                price_formatted=fare.get("formattedTotalPrice") or f"{total_price:.2f} {currency}",
                 outbound=route,
-                inbound=None,
+                inbound=ib_route,
                 airlines=["Wingo"],
                 owner_airline="P5",
                 booking_url=(

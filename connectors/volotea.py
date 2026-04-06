@@ -33,14 +33,14 @@ from typing import Any, Optional
 
 from curl_cffi import requests as cffi_requests
 
-from models.flights import (
+from ..models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
     FlightSearchResponse,
     FlightSegment,
 )
-from connectors.browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, get_curl_cffi_proxies, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,7 @@ async def _get_browser():
             f"--remote-debugging-port={_DEBUG_PORT}",
             f"--user-data-dir={_USER_DATA_DIR}",
             "--no-first-run",
+            *proxy_chrome_args(),
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
             "--disable-http2",
@@ -163,7 +164,7 @@ class VoloteaConnectorClient:
                 req.origin, req.destination, len(offers), elapsed,
             )
             search_hash = hashlib.md5(
-                f"volotea{req.origin}{req.destination}{req.date_from}".encode()
+                f"volotea{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
             return FlightSearchResponse(
                 search_id=f"fs_{search_hash}",
@@ -194,9 +195,11 @@ class VoloteaConnectorClient:
         route_key = f"{req.origin}-{req.destination}"
         reverse_key = f"{req.destination}-{req.origin}"
 
-        sess = cffi_requests.Session(impersonate=_IMPERSONATE)
+        sess = cffi_requests.Session(impersonate=_IMPERSONATE, proxies=get_curl_cffi_proxies())
         target_date = req.date_from.strftime("%Y%m%d")
         booking_url = self._build_booking_url(req)
+        is_rt = bool(req.return_from)
+        return_date = req.return_from.strftime("%Y%m%d") if is_rt and hasattr(req.return_from, 'strftime') else (str(req.return_from).replace('-', '') if is_rt else None)
 
         # Try both file directions — the "reverse" file often has fresher data
         # containing both route directions, while the primary may be stale.
@@ -207,6 +210,7 @@ class VoloteaConnectorClient:
 
             # The JSON is a dict like {"ATH-BCN": [...], "BCN-ATH": [...]}
             flights = None
+            ib_flights = None
             if isinstance(data, dict):
                 flights = data.get(route_key)
                 if not flights:
@@ -214,11 +218,50 @@ class VoloteaConnectorClient:
                         if key.upper() == route_key.upper():
                             flights = data[key]
                             break
+                # Get reverse direction for inbound
+                if is_rt:
+                    ib_flights = data.get(reverse_key)
+                    if not ib_flights:
+                        for key in data:
+                            if key.upper() == reverse_key.upper():
+                                ib_flights = data[key]
+                                break
             elif isinstance(data, list):
                 flights = data
 
             if not flights or not isinstance(flights, list):
                 continue
+
+            # Build cheapest inbound route for RT
+            ib_route: Optional[FlightRoute] = None
+            ib_price = 0.0
+            if is_rt and ib_flights and isinstance(ib_flights, list) and return_date:
+                best_ib_price = float("inf")
+                for ib_flight in ib_flights:
+                    if not isinstance(ib_flight, dict):
+                        continue
+                    ib_dep_str = ib_flight.get("Departure", "")
+                    if not ib_dep_str.startswith(return_date):
+                        continue
+                    ib_prices = ib_flight.get("Prices", [])
+                    for pe in ib_prices:
+                        if not isinstance(pe, dict):
+                            continue
+                        p = pe.get("PriceWithFee") or pe.get("Price")
+                        if p and 0 < float(p) < best_ib_price:
+                            best_ib_price = float(p)
+                            carrier = ib_flight.get("CarrierCode") or "V7"
+                            fno = f"{carrier}{ib_flight.get('FlightNumber') or ''}"
+                            dep_dt = self._parse_schedule_dt(ib_dep_str)
+                            arr_dt = self._parse_schedule_dt(ib_flight.get("Arrival", ""))
+                            dur = int((arr_dt - dep_dt).total_seconds()) if arr_dt > dep_dt else 0
+                            ib_seg = FlightSegment(
+                                airline=carrier, airline_name="Volotea", flight_no=fno,
+                                origin=req.destination, destination=req.origin,
+                                departure=dep_dt, arrival=arr_dt, cabin_class="M",
+                            )
+                            ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=max(dur, 0), stopovers=0)
+                            ib_price = float(p)
 
             offers: list[FlightOffer] = []
             for flight in flights:
@@ -227,12 +270,31 @@ class VoloteaConnectorClient:
                 dep_str = flight.get("Departure", "")
                 if not dep_str.startswith(target_date):
                     continue
-                parsed = self._parse_schedule_flight(flight, req, booking_url)
+                parsed = self._parse_schedule_flight(flight, req, booking_url, ib_route=ib_route, ib_price=ib_price)
                 if parsed:
                     offers.extend(parsed)
 
             if offers:
                 return offers
+
+        # If RT but no IB flights found in same file, try fetching reverse route file
+        if is_rt and return_date:
+            for try_key in (reverse_key, route_key):
+                data = self._fetch_schedule(sess, try_key)
+                if data is None:
+                    continue
+                ib_flights_list = None
+                if isinstance(data, dict):
+                    ib_flights_list = data.get(reverse_key)
+                    if not ib_flights_list:
+                        for key in data:
+                            if key.upper() == reverse_key.upper():
+                                ib_flights_list = data[key]
+                                break
+                if not ib_flights_list:
+                    continue
+                # Already tried above, skip duplicate attempts
+                break
 
         return []
 
@@ -261,6 +323,7 @@ class VoloteaConnectorClient:
 
     def _parse_schedule_flight(
         self, flight: dict, req: FlightSearchRequest, booking_url: str,
+        ib_route: Optional[FlightRoute] = None, ib_price: float = 0.0,
     ) -> list[FlightOffer]:
         """Parse a single flight from the schedule JSON.
 
@@ -336,13 +399,16 @@ class VoloteaConnectorClient:
             fare_basis = price_entry.get("FareBasis") or ""
 
             offer_key = f"{flight_no}_{fare_type}_{fare_basis}_{price}"
+            is_rt = bool(req.return_from) and ib_route is not None
+            total_price = round(float(price) + ib_price, 2) if is_rt else round(float(price), 2)
+            prefix = "v7_rt_" if is_rt else "v7_"
             offers.append(FlightOffer(
-                id=f"v7_{hashlib.md5(offer_key.encode()).hexdigest()[:12]}",
-                price=round(float(price), 2),
+                id=f"{prefix}{hashlib.md5(offer_key.encode()).hexdigest()[:12]}",
+                price=total_price,
                 currency=currency,
-                price_formatted=f"{price:.2f} {currency}",
+                price_formatted=f"{total_price:.2f} {currency}",
                 outbound=route,
-                inbound=None,
+                inbound=ib_route,
                 airlines=["Volotea"],
                 owner_airline=carrier,
                 booking_url=booking_url,
@@ -387,6 +453,7 @@ class VoloteaConnectorClient:
 
         try:
             page = await context.new_page()
+            await auto_block_if_proxied(page)
 
             # API response interception
             captured: dict[str, Any] = {}
@@ -999,12 +1066,16 @@ class VoloteaConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
-        return (
+        url = (
             f"https://book.volotea.com/booking/flights"
             f"?culture=en-GB&from={req.origin}&to={req.destination}"
-            f"&departuredate={dep}&triptype=OneWay"
+            f"&departuredate={dep}&triptype={'RoundTrip' if req.return_from else 'OneWay'}"
             f"&adults={req.adults}&children={req.children}&infants={req.infants}"
         )
+        if req.return_from:
+            ret = req.return_from.strftime("%Y-%m-%d") if hasattr(req.return_from, 'strftime') else str(req.return_from)
+            url += f"&returndate={ret}"
+        return url
 
     def _build_response(
         self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float,
@@ -1014,7 +1085,7 @@ class VoloteaConnectorClient:
             "Volotea %s→%s returned %d offers in %.1fs",
             req.origin, req.destination, len(offers), elapsed,
         )
-        search_hash = hashlib.md5(f"volotea{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
+        search_hash = hashlib.md5(f"volotea{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=offers[0].currency if offers else req.currency,
@@ -1023,7 +1094,7 @@ class VoloteaConnectorClient:
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(
-            f"volotea{req.origin}{req.destination}{req.date_from}".encode()
+            f"volotea{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
         ).hexdigest()[:12]
         return FlightSearchResponse(
             search_id=f"fs_{search_hash}",
