@@ -308,7 +308,7 @@ class AerLingusConnectorClient:
                     inbound=inbound,
                     airlines=["Aer Lingus"],
                     owner_airline="EI",
-                    booking_url=f"{_BASE}/booking/select-flights",
+                    booking_url=f"{_BASE}/booking/select-flights?origin={orig}&destination={dest}&date={dep_str}&adults={req.adults or 1}",
                     is_locked=False,
                     source="aerlingus_direct",
                     source_tier="free",

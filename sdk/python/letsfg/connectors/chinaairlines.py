@@ -239,7 +239,7 @@ class ChinaAirlinesConnectorClient:
                     inbound=inbound,
                     airlines=["China Airlines"],
                     owner_airline="CI",
-                    booking_url=_HOME_URL,
+                    booking_url=f"{_HOME_URL}/booking/book-flights/flight-search?origin={req.origin}&destination={req.destination}&date={card['departure_date'].isoformat()}&adults={req.adults or 1}",
                     is_locked=False,
                     source="chinaairlines_direct",
                     source_tier="free",

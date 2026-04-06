@@ -353,8 +353,9 @@ def _parse(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
             oid = hashlib.md5(key.encode()).hexdigest()[:12]
 
             booking_url = (
-                f"https://www.bangkokair.com/flight/booking"
-                f"?origin={req.origin}&destination={req.destination}"
+                f"https://digital.bangkokair.com/booking"
+                f"?lang=en-GB&origin={req.origin}&destination={req.destination}"
+                f"&departureDate={req.date_from.isoformat()}"
             )
 
             offers.append(FlightOffer(

@@ -207,7 +207,7 @@ class ElAlConnectorClient:
                 inbound=inbound,
                 airlines=["El Al"],
                 owner_airline="LY",
-                booking_url=_HOME_URL,
+                booking_url=f"{_HOME_URL}/flights/booking?origin={req.origin}&destination={req.destination}&date={card['departure_date'].isoformat()}&adults={req.adults or 1}",
                 is_locked=False,
                 source="elal_direct",
                 source_tier="free",

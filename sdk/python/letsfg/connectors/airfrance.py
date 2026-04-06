@@ -221,7 +221,7 @@ class AirfranceConnectorClient:
                 inbound=inbound,
                 airlines=["Air France"],
                 owner_airline="AF",
-                booking_url=_HOME_URL,
+                booking_url=f"{_HOME_URL}/search/offers?origin={actual_origin}&destination={req.destination}&outboundDate={card['departure_date'].isoformat()}&adults={req.adults or 1}",
                 is_locked=False,
                 source="airfrance_direct",
                 source_tier="free",

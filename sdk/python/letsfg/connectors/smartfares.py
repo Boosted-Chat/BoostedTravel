@@ -125,7 +125,7 @@ def _parse_segment(seg: dict, idx: int) -> FlightSegment | None:
     )
 
 
-def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+def _extract_offers(data: dict, req: FlightSearchRequest, results_url: str = "") -> list[FlightOffer]:
     """Parse flight offers from SmartFares response JSON."""
     offers: list[FlightOffer] = []
     currency = req.currency or "USD"
@@ -250,8 +250,8 @@ def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 owner_airline=airlines[0],
                 outbound=outbound,
                 inbound=inbound,
-                deep_link=f"https://www.smartfares.com/flights",
-                booking_url=f"https://www.smartfares.com/flights",
+                deep_link=results_url or f"https://www.smartfares.com/flights",
+                booking_url=results_url or f"https://www.smartfares.com/flights",
             ))
         except Exception as e:
             logger.debug("SmartFares parse offer %d: %s", i, e)
@@ -380,6 +380,7 @@ class SmartfaresConnectorClient:
                     await page.wait_for_timeout(4000)
                     break
 
+            results_url = page.url
             await page.close()
             await ctx.close()
             await browser.close()
@@ -398,7 +399,7 @@ class SmartfaresConnectorClient:
 
         all_offers: list[FlightOffer] = []
         for resp_data in api_responses:
-            all_offers.extend(_extract_offers(resp_data, req))
+            all_offers.extend(_extract_offers(resp_data, req, results_url))
 
         # Deduplicate by price+route
         seen: set[str] = set()

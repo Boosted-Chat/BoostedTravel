@@ -277,10 +277,11 @@ class WebjetConnectorClient:
                 logger.warning("WBJT: no API responses intercepted, trying DOM")
                 return await self._extract_from_dom(page, req, dt)
 
+            results_url = page.url
             offers: list[FlightOffer] = []
             seen: set[str] = set()
             for data in captured_data:
-                parsed = self._parse_response(data, req, dt, seen)
+                parsed = self._parse_response(data, req, dt, seen, results_url)
                 offers.extend(parsed)
 
             return offers
@@ -297,6 +298,7 @@ class WebjetConnectorClient:
 
     def _parse_response(
         self, data: dict, req: FlightSearchRequest, dt: datetime, seen: set,
+        results_url: str = "",
     ) -> list[FlightOffer]:
         offers: list[FlightOffer] = []
 
@@ -307,7 +309,7 @@ class WebjetConnectorClient:
 
         for fg in flight_groups:
             try:
-                offer = self._parse_flight_group(fg, airlines_map, req, dt, seen)
+                offer = self._parse_flight_group(fg, airlines_map, req, dt, seen, results_url)
                 if offer:
                     offers.append(offer)
             except Exception as e:
@@ -318,6 +320,7 @@ class WebjetConnectorClient:
     def _parse_flight_group(
         self, fg: dict, airlines_map: dict,
         req: FlightSearchRequest, dt: datetime, seen: set,
+        results_url: str = "",
     ) -> FlightOffer | None:
         seg_data = fg.get("flights") or []
         if not seg_data:
@@ -407,7 +410,7 @@ class WebjetConnectorClient:
             airlines=names_set or airlines_set,
             owner_airline=airlines_set[0] if airlines_set else "",
             booking_url=(
-                f"https://www.webjet.com.au/flights/"
+                results_url or f"https://www.webjet.com.au/flights/"
             ),
             is_locked=False,
             source="webjet_ota",
@@ -422,6 +425,7 @@ class WebjetConnectorClient:
         self, page, req: FlightSearchRequest, dt: datetime,
     ) -> list[FlightOffer]:
         """Fallback: scrape flight cards from Webjet search results DOM."""
+        results_url = page.url
         try:
             data = await page.evaluate("""() => {
                 const cards = document.querySelectorAll(
@@ -485,7 +489,7 @@ class WebjetConnectorClient:
                     airlines=[airline],
                     owner_airline="",
                     booking_url=(
-                        f"https://www.webjet.com.au/flights/"
+                        results_url or f"https://www.webjet.com.au/flights/"
                     ),
                     is_locked=False,
                     source="webjet_ota",

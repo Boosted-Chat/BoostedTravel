@@ -253,7 +253,7 @@ class AzerbaijanairlinesConnectorClient:
                     inbound=inbound,
                     airlines=["Azerbaijan Airlines"],
                     owner_airline="J2",
-                    booking_url=_HOME_URL,
+                    booking_url=f"{_HOME_URL}booking?origin={req.origin}&destination={req.destination}&date={card['departure_date'].isoformat()}&adults={req.adults or 1}",
                     is_locked=False,
                     source="azerbaijanairlines_direct",
                     source_tier="free",
