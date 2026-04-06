@@ -377,7 +377,7 @@ class TravelgenioConnectorClient:
                         outbound=route, inbound=None,
                         airlines=[str(airline)],
                         owner_airline=str(airline),
-                        booking_url=f"{_BASE}/Air/Get/en-GB/201",
+                        booking_url=f"{_BASE}/Air/Get/en-GB/201/{req.origin}/{req.destination}/{date_str}",
                         is_locked=False, source="travelgenio_ota", source_tier="free",
                     ))
                 except Exception as e:
@@ -448,7 +448,7 @@ class TravelgenioConnectorClient:
                         price_formatted=f"{price:.2f} {currency}",
                         outbound=route, inbound=None,
                         airlines=[airline], owner_airline=airline,
-                        booking_url=f"{_BASE}/Air/Get/en-GB/201",
+                        booking_url=f"{_BASE}/Air/Get/en-GB/201/{req.origin}/{req.destination}/{date_str}",
                         is_locked=False, source="travelgenio_ota", source_tier="free",
                     ))
                 except Exception:

@@ -187,6 +187,8 @@ def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 f"asap{req.origin}{req.destination}{i}{price}".encode()
             ).hexdigest()[:10]
 
+            _dep = req.date_from.strftime("%Y-%m-%d")
+            _asap_url = f"https://www.asaptickets.com/flights?from={req.origin}&to={req.destination}&depart={_dep}&adults={req.adults or 1}"
             offers.append(FlightOffer(
                 id=f"off_asap_{h}",
                 source="asaptickets_ota",
@@ -196,8 +198,8 @@ def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 owner_airline=airlines[0],
                 outbound=outbound,
                 inbound=inbound,
-                deep_link="https://www.asaptickets.com",
-                booking_url="https://www.asaptickets.com",
+                deep_link=_asap_url,
+                booking_url=_asap_url,
             ))
         except Exception as e:
             logger.debug("ASAP parse offer %d: %s", i, e)

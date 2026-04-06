@@ -401,7 +401,7 @@ class PNGAirConnectorClient:
             owner_airline="CG",
             booking_url=(
                 f"https://booking.pngair.com.pg/vars/public/CustomerPanels/"
-                f"requirementsBS.aspx"
+                f"requirementsBS.aspx?from={req.origin}&to={req.destination}&date={req.date_from}"
             ),
             is_locked=False,
             source="pngair_direct",

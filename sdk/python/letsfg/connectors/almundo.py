@@ -348,6 +348,7 @@ def _parse_almundo(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 f"alm{req.origin}{req.destination}{price}{airlines}".encode()
             ).hexdigest()[:12]
 
+            _dep = req.date_from.strftime("%Y-%m-%d")
             offers.append(FlightOffer(
                 id=f"off_alm_{h}",
                 price=price,
@@ -358,7 +359,7 @@ def _parse_almundo(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 owner_airline=airlines[0] if airlines else "Almundo",
                 source="almundo",
                 source_tier="ota",
-                booking_url="https://www.almundo.com.ar/",
+                booking_url=f"https://www.almundo.com.ar/flights/results/{req.origin}/{req.destination}/{_dep}/{req.adults or 1}/0/0",
             ))
         except Exception as e:
             logger.debug("ALMUNDO: skipped item: %s", e)

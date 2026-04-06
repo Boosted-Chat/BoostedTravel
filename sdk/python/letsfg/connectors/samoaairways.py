@@ -305,7 +305,7 @@ class SamoaAirwaysConnectorClient:
                 price_formatted=f"{currency} {price:,.2f}",
                 outbound=route, inbound=None,
                 airlines=["Samoa Airways"], owner_airline="PH",
-                booking_url=_SEARCH_URL, is_locked=False,
+                booking_url=f"{_SEARCH_URL}?from={req.origin}&to={req.destination}&dd={req.date_from}&ADT={req.adults or 1}", is_locked=False,
                 source="samoaairways_direct", source_tier="free",
             ))
 
@@ -374,7 +374,7 @@ class SamoaAirwaysConnectorClient:
                 price_formatted=f"{currency} {price:,.2f}",
                 outbound=route, inbound=None,
                 airlines=["Samoa Airways"], owner_airline="PH",
-                booking_url=_SEARCH_URL, is_locked=False,
+                booking_url=f"{_SEARCH_URL}?from={req.origin}&to={req.destination}&dd={req.date_from}&ADT={req.adults or 1}", is_locked=False,
                 source="samoaairways_direct", source_tier="free",
             ))
 

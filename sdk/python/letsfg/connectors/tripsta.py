@@ -172,6 +172,8 @@ def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 f"trp{req.origin}{req.destination}{i}{price}".encode()
             ).hexdigest()[:10]
 
+            _dep = req.date_from.strftime("%Y-%m-%d")
+            _trp_url = f"https://www.tripsta.co.uk/flights/{req.origin}-{req.destination}/{_dep}/{req.adults or 1}/economy"
             offers.append(FlightOffer(
                 id=f"off_trp_{h}",
                 source="tripsta_ota",
@@ -181,8 +183,8 @@ def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 owner_airline=airlines[0],
                 outbound=outbound,
                 inbound=inbound,
-                deep_link="https://www.tripsta.co.uk",
-                booking_url="https://www.tripsta.co.uk",
+                deep_link=_trp_url,
+                booking_url=_trp_url,
             ))
         except Exception as e:
             logger.debug("Tripsta parse offer %d: %s", i, e)

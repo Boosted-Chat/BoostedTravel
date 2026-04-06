@@ -811,7 +811,7 @@ class BatikAirConnectorClient:
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
         dep = req.date_from.strftime("%Y-%m-%d")
-        return f"https://www.batikair.com.my/book/flight-search"
+        return f"https://www.batikair.com.my/book/flight-search?origin={req.origin}&destination={req.destination}&departDate={dep}&adults={req.adults or 1}"
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"batikair{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]

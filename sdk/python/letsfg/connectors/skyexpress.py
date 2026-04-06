@@ -146,7 +146,7 @@ class SkyExpressConnectorClient:
             inbound = self._build_route(req.destination, req.origin, req.return_from, routes_payload)
             total_price += inbound_fare
 
-        booking_url = f"{_BASE}/en#sky-search-widget"
+        booking_url = f"{_BASE}/en?origin={req.origin}&destination={req.destination}&depart={req.date_from.strftime('%Y-%m-%d')}#sky-search-widget"
         cabin = (req.cabin_class or "economy").lower()
         offer_hash = hashlib.md5(
             f"gq_{req.origin}{req.destination}{req.date_from}{req.return_from}{total_price}".encode()

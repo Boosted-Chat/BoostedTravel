@@ -253,6 +253,8 @@ def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 f"exp{req.origin}{req.destination}{i}{price}".encode()
             ).hexdigest()[:10]
 
+            _dep = req.date_from.strftime("%m/%d/%Y")
+            _exp_url = f"https://www.expedia.com/Flights?trip=oneway&leg1=from:{req.origin},to:{req.destination},departure:{_dep}TANYT&passengers=adults:{req.adults or 1}"
             offers.append(FlightOffer(
                 id=f"off_exp_{h}",
                 source="expedia_meta",
@@ -262,8 +264,8 @@ def _extract_offers(data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
                 owner_airline=airlines[0],
                 outbound=outbound,
                 inbound=inbound,
-                deep_link="https://www.expedia.com/Flights",
-                booking_url="https://www.expedia.com/Flights",
+                deep_link=_exp_url,
+                booking_url=_exp_url,
             ))
         except Exception as e:
             logger.debug("Expedia parse offer %d: %s", i, e)

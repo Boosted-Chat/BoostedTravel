@@ -368,7 +368,7 @@ class FlightcatchersConnectorClient:
                         price_formatted=f"{price:.2f} {currency}",
                         outbound=route, inbound=None,
                         airlines=[str(airline)], owner_airline=str(airline),
-                        booking_url=f"{_BASE}/search.php",
+                        booking_url=f"{_BASE}/search.php?from={req.origin}&to={req.destination}&depart={req.date_from.strftime('%Y-%m-%d')}",
                         is_locked=False, source="flightcatchers_ota", source_tier="free",
                     ))
                 except Exception:
