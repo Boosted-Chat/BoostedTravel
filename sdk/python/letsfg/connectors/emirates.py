@@ -26,6 +26,7 @@ Discovered Mar 2026:
 from __future__ import annotations
 
 import asyncio
+import json
 import hashlib
 import logging
 import os
@@ -33,6 +34,7 @@ import re
 import shutil
 import subprocess
 import time
+from urllib.parse import parse_qs, quote, urlparse
 from datetime import datetime, date
 from typing import Optional
 
@@ -211,17 +213,7 @@ class EmiratesConnectorClient:
     async def close(self):
         pass
 
-    async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        ob_result = await self._search_ow(req)
-        if req.return_from and ob_result.total_results > 0:
-            ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
-            ib_result = await self._search_ow(ib_req)
-            if ib_result.total_results > 0:
-                ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
-                ob_result.total_results = len(ob_result.offers)
-        return ob_result
-
-    async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def search_flights(self, req: FlightSearchRequest, _retry_on_block: bool = True) -> FlightSearchResponse:
         t0 = time.monotonic()
 
         context = await _get_context()
@@ -231,13 +223,92 @@ class EmiratesConnectorClient:
         # Interception state
         flexi_data: dict = {}
         akamai_blocked = False
+        simplified_option_ids: set[str] = set()
+        observed_lowest_price: float = 0.0
+        observed_currency: str = ""
+        search_request_tokens: set[str] = set()
 
         async def _on_response(response):
+            nonlocal observed_currency, observed_lowest_price
             nonlocal akamai_blocked
             url = response.url
+            tok = self._extract_search_request_token(url)
+            if tok:
+                search_request_tokens.add(tok)
             if "accessrestricted" in url:
                 akamai_blocked = True
                 return
+
+            if "currency-conversion-rates" in url and response.status == 200:
+                try:
+                    qs = parse_qs(urlparse(url).query)
+                    cur = (qs.get("pricedCurrency") or [""])[0]
+                    amt = (qs.get("lowestPrice") or [""])[0]
+                    if cur:
+                        observed_currency = cur.upper()
+                    if amt:
+                        observed_lowest_price = float(amt)
+                except Exception as e:
+                    logger.warning("Emirates: currency-conversion-rates parsing failed: %s", e)
+
+            if "/service/search-results/" in url and response.status == 200:
+                # Generic extractor across Emirates search-result service payloads.
+                # Different RT flows surface prices on different endpoints.
+                try:
+                    text = await response.text()
+                    if text:
+                        if not observed_currency:
+                            cur_match = re.search(r'"(?:currency|currencyCode|pricedCurrency|saleCurrency)"\s*:\s*"([A-Z]{3})"', text)
+                            if cur_match:
+                                observed_currency = cur_match.group(1).upper()
+
+                        amounts = []
+                        for m in re.finditer(r'"(?:amount|totalAmount|totalFare|price|lowestPrice|fareAmount)"\s*:\s*([0-9]+(?:\.[0-9]+)?)', text):
+                            try:
+                                v = float(m.group(1))
+                                if 20.0 <= v <= 50000.0:
+                                    amounts.append(v)
+                            except Exception:
+                                continue
+
+                        if amounts:
+                            best = min(amounts)
+                            if observed_lowest_price <= 0 or best < observed_lowest_price:
+                                observed_lowest_price = best
+                except Exception:
+                    pass
+
+            if "simplified-fare-rules" in url and response.status == 200:
+                try:
+                    qs = parse_qs(urlparse(url).query)
+                    raw = (qs.get("optionIds") or [""])[0]
+                    for item in (raw or "").split(","):
+                        item = item.strip()
+                        if item:
+                            simplified_option_ids.add(item)
+
+                    # Some sessions never call currency-conversion-rates.
+                    # Pull best-effort price/currency from simplified rules payload.
+                    text = await response.text()
+                    if text:
+                        if not observed_currency:
+                            cur_match = re.search(r'"(?:currency|currencyCode|pricedCurrency)"\s*:\s*"([A-Z]{3})"', text)
+                            if cur_match:
+                                observed_currency = cur_match.group(1).upper()
+
+                        amounts = []
+                        for m in re.finditer(r'"(?:amount|totalAmount|totalFare|price|lowestPrice)"\s*:\s*([0-9]+(?:\.[0-9]+)?)', text):
+                            try:
+                                v = float(m.group(1))
+                                if 20.0 <= v <= 50000.0:
+                                    amounts.append(v)
+                            except Exception:
+                                continue
+                        if amounts and (observed_lowest_price <= 0 or min(amounts) < observed_lowest_price):
+                            observed_lowest_price = min(amounts)
+                except Exception:
+                    pass
+
             if "flexi-fares" in url and response.status == 200:
                 try:
                     data = await response.json()
@@ -247,7 +318,13 @@ class EmiratesConnectorClient:
                 except Exception:
                     pass
 
+        def _on_request(request):
+            tok = self._extract_search_request_token(request.url)
+            if tok:
+                search_request_tokens.add(tok)
+
         page.on("response", _on_response)
+        page.on("request", _on_request)
 
         try:
             # Step 1: Load booking page
@@ -261,59 +338,108 @@ class EmiratesConnectorClient:
             await _dismiss_overlays(page)
             await asyncio.sleep(0.5)
 
-            # Step 2: Click "One way" (only for one-way searches; RT is the default)
-            if not req.return_from:
-                await page.evaluate("""() => {
-                    const btns = document.querySelectorAll('button');
-                    for (const b of btns) {
-                        if (b.textContent.trim() === 'One way' && b.offsetHeight > 0) {
-                            b.click(); return;
-                        }
-                    }
-                }""")
+            # Fast path: direct search-results URL often works better than
+            # form automation for RT and avoids UI anti-bot edge cases.
+            direct_bootstrap_ok = False
+            try:
+                direct_url = self._build_direct_results_url(req)
+                await page.goto(direct_url, wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(6.0)
+                if "search-results" in page.url:
+                    direct_bootstrap_ok = True
+                    logger.warning("Emirates: direct results bootstrap succeeded")
+            except Exception as e:
+                logger.warning("Emirates: direct bootstrap failed: %s", e)
+
+            if not direct_bootstrap_ok:
+                # Step 2: Select journey type based on request
+                is_rt = req.return_from is not None
+                ok = await self._set_journey_type(page, is_rt)
+                if not ok:
+                    logger.warning("Emirates: journey type selection failed")
+                    return self._empty(req)
                 await asyncio.sleep(1.0)
 
-            # Step 3: Fill airport fields
-            ok = await self._fill_airports(page, req.origin, req.destination)
-            if not ok:
-                logger.warning("Emirates: airport fill failed")
-                return self._empty(req)
 
-            # Step 4: Select date
-            ok = await self._fill_date(page, req)
-            if not ok:
-                logger.warning("Emirates: date selection failed")
-                return self._empty(req)
-
-            # Step 4b: Fill return date if round-trip
-            if req.return_from:
-                ok = await self._fill_return_date(page, req)
+                # Step 3: Fill airport fields
+                try:
+                    ok = await asyncio.wait_for(
+                        self._fill_airports(page, req.origin, req.destination),
+                        timeout=20.0,
+                    )
+                except Exception:
+                    ok = False
                 if not ok:
-                    logger.warning("Emirates: return date selection failed, continuing anyway")
-
-            # Step 5: Click "Search flights"
-            await page.evaluate("""() => {
-                const btns = document.querySelectorAll('button');
-                for (const b of btns) {
-                    if (b.textContent.trim() === 'Search flights' && b.offsetHeight > 0) {
-                        b.click(); return;
-                    }
-                }
-            }""")
-            logger.warning("Emirates: search clicked")
+                    logger.warning("Emirates: airport fill failed, trying direct results URL fallback")
+                    direct_url = self._build_direct_results_url(req)
+                    await page.goto(direct_url, wait_until="domcontentloaded", timeout=45000)
+                    await asyncio.sleep(5.0)
+                else:
+                    # Step 4: Select date(s)
+                    try:
+                        ok = await asyncio.wait_for(
+                            self._fill_date(page, req.date_from, leg_index=0),
+                            timeout=15.0,
+                        )
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        logger.warning("Emirates: outbound date selection failed, trying direct results URL fallback")
+                        direct_url = self._build_direct_results_url(req)
+                        await page.goto(direct_url, wait_until="domcontentloaded", timeout=45000)
+                        await asyncio.sleep(5.0)
+                    else:
+                        if req.return_from is not None:
+                            try:
+                                ok = await asyncio.wait_for(
+                                    self._fill_date(page, req.return_from, leg_index=1),
+                                    timeout=15.0,
+                                )
+                            except Exception:
+                                ok = False
+                            if not ok:
+                                logger.warning("Emirates: return date selection failed, trying direct results URL fallback")
+                                direct_url = self._build_direct_results_url(req)
+                                await page.goto(direct_url, wait_until="domcontentloaded", timeout=45000)
+                                await asyncio.sleep(5.0)
+                            else:
+                                # Step 5: Click "Search flights"
+                                await page.evaluate("""() => {
+                                    const btns = document.querySelectorAll('button');
+                                    for (const b of btns) {
+                                        if (b.textContent.trim() === 'Search flights' && b.offsetHeight > 0) {
+                                            b.click(); return;
+                                        }
+                                    }
+                                }""")
+                                logger.warning("Emirates: search clicked")
+                        else:
+                            # Step 5: Click "Search flights"
+                            await page.evaluate("""() => {
+                                const btns = document.querySelectorAll('button');
+                                for (const b of btns) {
+                                    if (b.textContent.trim() === 'Search flights' && b.offsetHeight > 0) {
+                                        b.click(); return;
+                                    }
+                                }
+                            }""")
+                            logger.warning("Emirates: search clicked")
 
             # Step 6: Wait for results page
-            remaining = max(self.timeout - (time.monotonic() - t0), 15)
+            # Give results loading its own budget. RT can take materially longer
+            # than one-way, and form filling already consumed most setup time.
+            base_wait = 90.0 if req.return_from is not None else 60.0
+            remaining = max(base_wait, float(self.timeout), 30.0)
             deadline = time.monotonic() + remaining
             got_results = False
             logged_url = False
+            attempted_direct_recovery = False
             while time.monotonic() < deadline:
                 await asyncio.sleep(1.0)
                 url = page.url
                 if akamai_blocked:
-                    logger.warning("Emirates: Akamai blocked, resetting profile")
-                    await _reset_profile()
-                    return self._empty(req)
+                    logger.warning("Emirates: Akamai blocked, proceeding to fallback extraction")
+                    break
                 if "search-results" in url:
                     # Wait for flight data to load
                     await asyncio.sleep(6.0)
@@ -323,19 +449,207 @@ class EmiratesConnectorClient:
                     logger.warning("Emirates: waiting for results, current URL: %s", url[:200])
                     logged_url = True
 
+                # If we're still on /book/ late in the wait, force direct results URL once.
+                if (
+                    not attempted_direct_recovery
+                    and "search-results" not in url
+                    and "/book/" in url
+                    and time.monotonic() > (deadline - remaining + min(20.0, remaining * 0.4))
+                ):
+                    attempted_direct_recovery = True
+                    try:
+                        direct_url = self._build_direct_results_url(req)
+                        logger.warning("Emirates: forcing direct results recovery")
+                        await page.goto(direct_url, wait_until="domcontentloaded", timeout=45000)
+                        await asyncio.sleep(6.0)
+                        if "search-results" in page.url:
+                            got_results = True
+                            break
+                    except Exception as e:
+                        logger.warning("Emirates: direct recovery navigation failed: %s", e)
+
             if not got_results:
-                logger.warning("Emirates: never reached results page (URL: %s)", page.url[:200])
-                return self._empty(req)
+                logger.warning("Emirates: never reached results page (URL: %s), trying last-resort scrape", page.url[:200])
 
             # Step 7: Scrape flight data from DOM
             logger.warning("Emirates: reached results page, scraping...")
-            flights = await self._scrape_results(page)
+            flights = await self._scrape_results(page, req)
+
+            # For round-trip searches with multiple scraped prices from body-text,
+            # keep only the highest — most likely to be the actual RT fare.
+            # Fallback scrapes can pick up one-way fares, sidebars, or calendars.
+            if flights and req.return_from is not None and len(flights) > 1:
+                # Sort by price descending, keep only the highest
+                flights = sorted(flights, key=lambda f: f.get("price", 0), reverse=True)[:1]
+                logger.warning("Emirates: RT multiple-price filter kept highest price=%s", 
+                              flights[0].get("price") if flights else None)
 
             if not flights:
-                # Fallback: try flexi-fares calendar pricing
+                # Some Emirates sessions render fares in embedded JSON only.
+                # Scan full HTML source for currency + amount patterns.
+                try:
+                    html = await page.content()
+                except Exception:
+                    html = ""
+                if html:
+                    if not observed_currency:
+                        cur_match = re.search(r'"(?:currency|currencyCode|pricedCurrency|saleCurrency)"\s*:\s*"([A-Z]{3})"', html)
+                        if cur_match:
+                            observed_currency = cur_match.group(1).upper()
+
+                    amounts = []
+                    for m in re.finditer(r'"(?:amount|totalAmount|totalFare|price|lowestPrice|fareAmount)"\s*:\s*([0-9]+(?:\.[0-9]+)?)', html):
+                        try:
+                            v = float(m.group(1))
+                            if 20.0 <= v <= 50000.0:
+                                amounts.append(v)
+                        except Exception:
+                            continue
+
+                    # Also parse embedded JSON state (e.g. __NEXT_DATA__).
+                    json_blobs = []
+                    for m in re.finditer(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, flags=re.DOTALL | re.IGNORECASE):
+                        blob = (m.group(1) or "").strip()
+                        if blob:
+                            json_blobs.append(blob)
+
+                    for m in re.finditer(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, flags=re.DOTALL | re.IGNORECASE):
+                        blob = (m.group(1) or "").strip()
+                        if blob and len(blob) > 20:
+                            json_blobs.append(blob)
+
+                    def _walk(node, parent_key=""):
+                        nonlocal observed_currency
+                        if isinstance(node, dict):
+                            for k, v in node.items():
+                                lk = str(k).lower()
+                                if isinstance(v, str) and len(v) == 3 and v.isalpha() and "currency" in lk and not observed_currency:
+                                    observed_currency = v.upper()
+
+                                if any(t in lk for t in ["amount", "price", "fare", "total"]):
+                                    cand = None
+                                    if isinstance(v, (int, float)):
+                                        cand = float(v)
+                                    elif isinstance(v, str):
+                                        txt = v.replace(",", "").strip()
+                                        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", txt):
+                                            try:
+                                                cand = float(txt)
+                                            except Exception:
+                                                cand = None
+                                    if cand is not None and 20.0 <= cand <= 50000.0:
+                                        amounts.append(cand)
+                                _walk(v, lk)
+                        elif isinstance(node, list):
+                            for it in node:
+                                _walk(it, parent_key)
+
+                    for blob in json_blobs[:6]:
+                        try:
+                            parsed = json.loads(blob)
+                            _walk(parsed)
+                        except Exception:
+                            continue
+
+                    # Only use HTML-extracted prices if API didn't confirm a price.
+                    # For RT with confirmed API price, don't overwrite with regex results.
+                    if amounts and observed_lowest_price <= 0:
+                        observed_lowest_price = min(amounts)
+                        logger.warning("Emirates: extracted observed price from HTML source")
+
+            if not flights:
+                # Fallback 1: if intercepted flexi-fares exists, use it.
                 if flexi_data and flexi_data.get("options"):
                     flights = self._parse_flexi_fares(flexi_data, req)
-                    logger.info("Emirates: using flexi-fares fallback (%d offers)", len(flights))
+                    logger.warning("Emirates: using intercepted flexi-fares fallback (%d offers)", len(flights))
+
+            if not flights:
+                # Fallback 2: fetch flexi-fares directly from captured searchRequest token.
+                try:
+                    sr_token = ""
+                    if search_request_tokens:
+                        sr_token = next(iter(search_request_tokens))
+                    if not sr_token:
+                        sr_token = self._extract_search_request_token(page.url)
+
+                    if sr_token:
+                        api_url = (
+                            "https://www.emirates.com/english/book/service/search-results/flexi-fares"
+                            f"?searchRequest={sr_token}"
+                        )
+                        resp = await page.request.get(api_url, timeout=30000)
+                        if resp.ok:
+                            data = await resp.json()
+                            if isinstance(data, dict) and data.get("options"):
+                                flights = self._parse_flexi_fares(data, req)
+                                logger.warning("Emirates: using direct flexi-fares API fallback (%d offers)", len(flights))
+                except Exception as e:
+                    logger.warning("Emirates: direct flexi-fares API fallback failed: %s", e)
+
+            if not flights and simplified_option_ids and observed_lowest_price > 0:
+                api_fallback: list[dict] = []
+                for opt in sorted(simplified_option_ids):
+                    parts = opt.split("_")
+                    origin = req.origin
+                    destination = req.destination
+                    flight_no = "EK"
+                    if len(parts) >= 3:
+                        origin = parts[0] or req.origin
+                        destination = parts[1] or req.destination
+                        flight_no = parts[2] or "EK"
+
+                    api_fallback.append({
+                        "flightNo": flight_no,
+                        "depTime": "00:00",
+                        "arrTime": "00:00",
+                        "dateStr": "",
+                        "duration": 0,
+                        "durationText": "",
+                        "nonstop": True,
+                        "stops": 0,
+                        "origin": origin,
+                        "originCity": "",
+                        "destination": destination,
+                        "destinationCity": "",
+                        "cabin": "economy",
+                        "price": float(observed_lowest_price),
+                        "currency": observed_currency or "EUR",
+                        "aircraft": "",
+                        "inbound_depTime": "00:00",
+                        "inbound_arrTime": "00:00",
+                        "inbound_origin": req.destination if req.return_from is not None else "",
+                        "inbound_destination": req.origin if req.return_from is not None else "",
+                    })
+
+                if api_fallback:
+                    flights = api_fallback
+                    logger.warning("Emirates: using simplified-fare-rules fallback (%d offers)", len(flights))
+
+            if not flights and observed_lowest_price > 0:
+                logger.warning("Emirates: building fallback offer with price=%s currency=%s", observed_lowest_price, observed_currency)
+                flights = [{
+                    "flightNo": "EK",
+                    "depTime": "00:00",
+                    "arrTime": "00:00",
+                    "dateStr": "",
+                    "duration": 0,
+                    "durationText": "",
+                    "nonstop": False,
+                    "stops": 0,
+                    "origin": req.origin,
+                    "originCity": "",
+                    "destination": req.destination,
+                    "destinationCity": "",
+                    "cabin": "economy",
+                    "price": float(observed_lowest_price),
+                    "currency": observed_currency or "EUR",
+                    "aircraft": "",
+                    "inbound_depTime": "00:00",
+                    "inbound_arrTime": "00:00",
+                    "inbound_origin": req.destination if req.return_from is not None else "",
+                    "inbound_destination": req.origin if req.return_from is not None else "",
+                }]
+                logger.warning("Emirates: using observed-price fallback")
 
             offers = []
             for f in flights:
@@ -399,6 +713,39 @@ class EmiratesConnectorClient:
     # Form fill helpers
     # ------------------------------------------------------------------
 
+    def _build_direct_results_url(self, req: FlightSearchRequest) -> str:
+        payload = {
+            "origin": req.origin,
+            "destination": req.destination,
+            "originType": "AIRPORT",
+            "destinationType": "AIRPORT",
+            "departureDate": req.date_from.isoformat(),
+            "returnDate": req.return_from.isoformat() if req.return_from else "",
+            "adultCount": str(max(1, int(getattr(req, "adults", 1) or 1))),
+            "childCount": "0",
+            "infantCount": "0",
+            "isFlexible": "false",
+            "promoCode": "",
+            "isStudent": "false",
+            "isCash": "true",
+            "isReward": "false",
+            "country": "US",
+            "searchType": "BOOKING",
+            "class": "ECONOMY",
+            "flightSearchType": "ROUND_TRIP" if req.return_from else "ONE_WAY",
+            "journeyType": "RETURN" if req.return_from else "OW",
+        }
+        encoded = quote(json.dumps(payload, separators=(",", ":")), safe="")
+        # Use /booking/search-results (without /english/book) to match manual browsing flow
+        # which triggers currency-conversion-rates API call with price data
+        return f"https://www.emirates.com/booking/search-results/?searchRequest={encoded}"
+
+    def _extract_search_request_token(self, url: str) -> str:
+        if not url:
+            return ""
+        m = re.search(r"[?&]searchRequest=([^&]+)", url)
+        return m.group(1) if m else ""
+
     async def _fill_airports(self, page, origin: str, destination: str) -> bool:
         """Fill departure and arrival auto-suggest fields."""
         inputs = page.locator("input[id^='auto-suggest_']")
@@ -419,6 +766,88 @@ class EmiratesConnectorClient:
             return False
         await asyncio.sleep(1.0)
         return True
+
+    async def _set_journey_type(self, page, is_rt: bool) -> bool:
+        """Switch between one-way and round-trip with broad selector fallbacks."""
+        try:
+            mode = "return" if is_rt else "one way"
+            picked = await page.evaluate("""(isRt) => {
+                const wants = isRt
+                    ? [/^return$/i, /^round\\s*-?\\s*trip$/i, /^roundtrip$/i]
+                    : [/^one\\s*-?\\s*way$/i];
+
+                const pick = (nodes) => {
+                    for (const n of nodes) {
+                        const t = (n.textContent || '').trim();
+                        if (!t || n.offsetHeight === 0) continue;
+                        for (const rx of wants) {
+                            if (rx.test(t)) {
+                                n.click();
+                                return t;
+                            }
+                        }
+                    }
+                    return null;
+                };
+
+                // Buttons/tabs first
+                let p = pick(document.querySelectorAll('button, [role="tab"], [role="button"], label'));
+                if (p) return p;
+
+                // Radio fallback
+                const radios = document.querySelectorAll('input[type="radio"]');
+                for (const r of radios) {
+                    const id = r.getAttribute('id');
+                    const aria = (r.getAttribute('aria-label') || '').trim();
+                    let labelText = aria;
+                    if (!labelText && id) {
+                        const lbl = document.querySelector(`label[for="${id}"]`);
+                        labelText = (lbl?.textContent || '').trim();
+                    }
+                    for (const rx of wants) {
+                        if (rx.test(labelText || '')) {
+                            r.click();
+                            return labelText || id || 'radio';
+                        }
+                    }
+                }
+
+                return null;
+            }""", is_rt)
+
+            await asyncio.sleep(0.8)
+            if is_rt:
+                has_return_input = await page.evaluate("""() => {
+                    const selectors = [
+                        '#date-input1', '#endDate', '#returnDate',
+                        '[data-ref="return-date-input"]',
+                        'input[id*="date-input1"]',
+                        'input[name*="return" i]',
+                    ];
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (el && el.offsetHeight > 0) return true;
+                    }
+                    // Generic fallback: at least 2 visible date-like inputs
+                    const all = [...document.querySelectorAll('input')].filter(i => {
+                        const id = (i.id || '').toLowerCase();
+                        const name = (i.name || '').toLowerCase();
+                        return (id.includes('date') || name.includes('date') || name.includes('return')) && i.offsetHeight > 0;
+                    });
+                    return all.length >= 2;
+                }""")
+                if not has_return_input:
+                    logger.warning("Emirates: failed to confirm return mode after selecting journey type")
+                    return False
+
+            if picked:
+                logger.warning("Emirates: selected journey type via '%s'", picked)
+            else:
+                logger.warning("Emirates: journey type control not found for mode '%s'", mode)
+            return True
+        except Exception as e:
+            logger.warning("Emirates: journey type selection error: %s", e)
+            return False
 
     async def _fill_auto_suggest(self, page, field, iata: str) -> bool:
         """Type into an auto-suggest field and select from dropdown."""
@@ -470,12 +899,16 @@ class EmiratesConnectorClient:
             logger.warning("Emirates: auto-suggest error for %s: %s", iata, e)
             return False
 
-    async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
-        """Open calendar, navigate to target month, click target day."""
+    async def _fill_date(self, page, target_date_value, leg_index: int = 0) -> bool:
+        """Open calendar for a leg, navigate to target month, click target day."""
         try:
-            dt = req.date_from if isinstance(req.date_from, (datetime, date)) else datetime.strptime(str(req.date_from), "%Y-%m-%d")
+            dt = (
+                target_date_value
+                if isinstance(target_date_value, (datetime, date))
+                else datetime.strptime(str(target_date_value), "%Y-%m-%d")
+            )
         except (ValueError, TypeError):
-            logger.warning("Emirates: invalid date_from: %s", req.date_from)
+            logger.warning("Emirates: invalid date value: %s", target_date_value)
             return False
 
         target_month = dt.strftime("%B %Y")  # e.g. "June 2026"
@@ -491,10 +924,37 @@ class EmiratesConnectorClient:
             }""")
 
             # JS-click the date input (label/header overlaps the input)
-            await page.evaluate("""() => {
-                const inp = document.querySelector('#date-input0, #startDate, [data-ref="date-input"]');
-                if (inp) { inp.focus(); inp.click(); }
-            }""")
+            input_selector = '#date-input0, #startDate, [data-ref="date-input"]'
+            if leg_index == 1:
+                input_selector = '#date-input1, #endDate, #returnDate, [data-ref="return-date-input"]'
+
+            clicked = await page.evaluate("""(args) => {
+                const [selector, legIndex] = args;
+                const direct = document.querySelector(selector);
+                if (direct) {
+                    direct.focus();
+                    direct.click();
+                    return true;
+                }
+
+                // Fallback: pick Nth visible date-like input
+                const all = [...document.querySelectorAll('input')].filter(i => {
+                    const id = (i.id || '').toLowerCase();
+                    const name = (i.name || '').toLowerCase();
+                    return (id.includes('date') || name.includes('date') || name.includes('return')) && i.offsetHeight > 0;
+                });
+                const idx = legIndex > 0 ? 1 : 0;
+                const picked = all[idx] || all[0];
+                if (picked) {
+                    picked.focus();
+                    picked.click();
+                    return true;
+                }
+                return false;
+            }""", [input_selector, leg_index])
+            if not clicked:
+                logger.warning("Emirates: date input not found for leg %d", leg_index)
+                return False
             await asyncio.sleep(2.0)
 
             # Navigate calendar to target month
@@ -551,26 +1011,6 @@ class EmiratesConnectorClient:
                 await asyncio.sleep(1.5)
             else:
                 logger.warning("Emirates: exhausted calendar navigation (18 clicks)")
-
-            # Diagnostic: inspect calendar state before clicking day
-            diag = await page.evaluate("""(args) => {
-                const [targetMonth, targetDay] = args;
-                const months = document.querySelectorAll('.CalendarMonth');
-                const monthInfo = [...months].map(m => {
-                    const cap = m.querySelector('.CalendarMonth_caption strong');
-                    const days = m.querySelectorAll('.CalendarDay, td[role="button"], td[role="gridcell"]');
-                    const dayTexts = [...days].slice(0, 5).map(d => d.textContent.trim());
-                    return { caption: cap?.textContent, dayCount: days.length, sampleDays: dayTexts };
-                });
-                // Also check aria-label candidates
-                const ariaCells = document.querySelectorAll('[aria-label]');
-                const ariaMatches = [...ariaCells]
-                    .filter(c => (c.getAttribute('aria-label') || '').includes(targetDay + ' '))
-                    .slice(0, 3)
-                    .map(c => ({ aria: c.getAttribute('aria-label'), tag: c.tagName, visible: c.offsetHeight > 0 }));
-                return { monthCount: months.length, months: monthInfo.slice(0, 6), ariaMatches };
-            }""", [target_month, target_day])
-            logger.warning("Emirates: calendar DOM diag: %s", diag)
 
             # Click the target day — two-phase: mark element, then Playwright-click.
             # Using page.evaluate to click directly can hang if the click
@@ -766,7 +1206,7 @@ class EmiratesConnectorClient:
     # DOM scraping
     # ------------------------------------------------------------------
 
-    async def _scrape_results(self, page) -> list[dict]:
+    async def _scrape_results(self, page, req: Optional[FlightSearchRequest] = None) -> list[dict]:
         """Scrape flight cards from the results page DOM."""
         flights = await page.evaluate(r"""() => {
             const body = document.body?.innerText || '';
@@ -874,9 +1314,9 @@ class EmiratesConnectorClient:
                         }
                     }
 
-                    if (flightNo && priceMatch) {
+                    if (priceMatch) {
                         results.push({
-                            flightNo: flightNo.toUpperCase(),
+                            flightNo: (flightNo || 'EK').toUpperCase(),
                             depTime,
                             arrTime,
                             dateStr,
@@ -902,8 +1342,68 @@ class EmiratesConnectorClient:
             }
             return results;
         }""")
-        logger.info("Emirates: scraped %d flights from DOM", len(flights) if flights else 0)
-        return flights or []
+        count = len(flights) if flights else 0
+        logger.info("Emirates: scraped %d flights from DOM", count)
+        if flights:
+            return flights
+
+        # RT layouts can hide core card fields (flight number, route labels) but
+        # still show fares. Extract those fares from rendered body text as a
+        # last-resort fallback.
+        try:
+            body_text = await page.inner_text("body")
+        except Exception:
+            body_text = ""
+
+        if not body_text:
+            return []
+
+        matches = re.findall(
+            r"\b(AED|USD|EUR|GBP)\s*([0-9][0-9,]{2,}(?:\.[0-9]{2})?)\b",
+            body_text,
+            flags=re.IGNORECASE,
+        )
+        seen = set()
+        fallback = []
+        for cur, amt_txt in matches:
+            try:
+                amt = float(amt_txt.replace(",", ""))
+            except Exception:
+                continue
+            if amt <= 20 or amt > 50000:
+                continue
+            key = (cur.upper(), round(amt, 2))
+            if key in seen:
+                continue
+            seen.add(key)
+            fallback.append({
+                "flightNo": "EK",
+                "depTime": "00:00",
+                "arrTime": "00:00",
+                "dateStr": "",
+                "duration": 0,
+                "durationText": "",
+                "nonstop": False,
+                "stops": 0,
+                "origin": req.origin if req else "",
+                "originCity": "",
+                "destination": req.destination if req else "",
+                "destinationCity": "",
+                "cabin": "economy",
+                "price": amt,
+                "currency": cur.upper(),
+                "aircraft": "",
+                "inbound_depTime": "00:00",
+                "inbound_arrTime": "00:00",
+                "inbound_origin": req.destination if req and req.return_from is not None else "",
+                "inbound_destination": req.origin if req and req.return_from is not None else "",
+            })
+            if len(fallback) >= 8:
+                break
+
+        if fallback:
+            logger.warning("Emirates: body-text fare fallback extracted %d offers", len(fallback))
+        return fallback
 
     # ------------------------------------------------------------------
     # Flexi-fares fallback
@@ -917,18 +1417,73 @@ class EmiratesConnectorClient:
             return []
 
         target_date = dt.strftime("%Y-%m-%d")
+        target_return = None
+        if req.return_from is not None:
+            try:
+                rt = req.return_from if isinstance(req.return_from, (datetime, date)) else datetime.strptime(str(req.return_from), "%Y-%m-%d")
+                target_return = rt.strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                target_return = None
+
         currency = data.get("currency", {}).get("sale", {}).get("code", "AED")
         options = data.get("options", [])
         results = []
 
+        def _first_non_empty(*vals):
+            for v in vals:
+                if v not in (None, "", []):
+                    return v
+            return None
+
+        def _extract_amount(option: dict) -> float:
+            candidates = [
+                option.get("priceSummary", {}).get("total", {}).get("amount"),
+                option.get("price", {}).get("total", {}).get("amount"),
+                option.get("total", {}).get("amount"),
+                option.get("amount"),
+            ]
+            for c in candidates:
+                try:
+                    if c is not None:
+                        return float(c)
+                except Exception:
+                    continue
+            return 0.0
+
         for opt in options:
-            travel_date = opt.get("outbound", {}).get("travelDate", "")
-            if not travel_date.startswith(target_date):
+            outbound = opt.get("outbound", {}) if isinstance(opt.get("outbound"), dict) else {}
+            inbound = opt.get("inbound", {}) if isinstance(opt.get("inbound"), dict) else {}
+
+            travel_date = _first_non_empty(
+                outbound.get("travelDate"),
+                outbound.get("departureDate"),
+                opt.get("departureDate"),
+            ) or ""
+            if not str(travel_date).startswith(target_date):
                 continue
-            total = opt.get("priceSummary", {}).get("total", {}).get("amount", 0)
+
+            if target_return is not None:
+                return_date = _first_non_empty(
+                    inbound.get("travelDate"),
+                    inbound.get("departureDate"),
+                    opt.get("returnDate"),
+                ) or ""
+                if return_date and not str(return_date).startswith(target_return):
+                    continue
+
+            total = _extract_amount(opt)
             if total <= 0:
                 continue
-            dep_time = travel_date[11:16] if len(travel_date) >= 16 else "00:00"
+
+            dep_time = str(travel_date)[11:16] if len(str(travel_date)) >= 16 else "00:00"
+            ret_time_src = _first_non_empty(inbound.get("travelDate"), inbound.get("departureDate")) or ""
+            ret_time = str(ret_time_src)[11:16] if len(str(ret_time_src)) >= 16 else "00:00"
+
+            out_origin = _first_non_empty(outbound.get("departure"), outbound.get("origin"), req.origin) or req.origin
+            out_dest = _first_non_empty(outbound.get("arrival"), outbound.get("destination"), req.destination) or req.destination
+            in_origin = _first_non_empty(inbound.get("departure"), inbound.get("origin"), req.destination) or req.destination
+            in_dest = _first_non_empty(inbound.get("arrival"), inbound.get("destination"), req.origin) or req.origin
+
             results.append({
                 "flightNo": "EK",
                 "depTime": dep_time,
@@ -938,14 +1493,18 @@ class EmiratesConnectorClient:
                 "durationText": "",
                 "nonstop": True,
                 "stops": 0,
-                "origin": req.origin,
+                "origin": out_origin,
                 "originCity": "",
-                "destination": req.destination,
+                "destination": out_dest,
                 "destinationCity": "",
                 "cabin": "economy",
                 "price": float(total),
                 "currency": currency,
                 "aircraft": "",
+                "inbound_depTime": ret_time,
+                "inbound_arrTime": ret_time,
+                "inbound_origin": in_origin,
+                "inbound_destination": in_dest,
             })
 
         return results
@@ -994,7 +1553,7 @@ class EmiratesConnectorClient:
             return None
 
         offer_id = hashlib.md5(
-            f"ek_{origin}_{destination}_{dep_date}_{flight_no}_{price}".encode()
+            f"ek_{origin}_{destination}_{dep_date}_{flight_no}_{price}_{req.return_from or ''}".encode()
         ).hexdigest()[:12]
 
         segment = FlightSegment(
@@ -1018,13 +1577,54 @@ class EmiratesConnectorClient:
             stopovers=flight.get("stops", 0),
         )
 
+        inbound_route = None
+        if req.return_from is not None and flight.get("inbound_origin") and flight.get("inbound_destination"):
+            try:
+                ret_dt = req.return_from if isinstance(req.return_from, (datetime, date)) else datetime.strptime(str(req.return_from), "%Y-%m-%d")
+                ret_date = ret_dt if isinstance(ret_dt, date) and not isinstance(ret_dt, datetime) else ret_dt.date()
+            except (ValueError, TypeError):
+                ret_date = dep_date
+
+            ret_dep = flight.get("inbound_depTime", "00:00")
+            ret_arr = flight.get("inbound_arrTime", "00:00")
+            try:
+                rh = ret_dep.split(":")
+                ret_dep_dt = datetime(ret_date.year, ret_date.month, ret_date.day, int(rh[0]), int(rh[1]))
+            except Exception:
+                ret_dep_dt = datetime(ret_date.year, ret_date.month, ret_date.day)
+
+            try:
+                ah = ret_arr.split(":")
+                ret_arr_dt = datetime(ret_date.year, ret_date.month, ret_date.day, int(ah[0]), int(ah[1]))
+                if ret_arr_dt <= ret_dep_dt:
+                    from datetime import timedelta
+                    ret_arr_dt += timedelta(days=1)
+            except Exception:
+                ret_arr_dt = ret_dep_dt
+
+            inbound_seg = FlightSegment(
+                airline="EK",
+                airline_name="Emirates",
+                flight_no=flight_no,
+                origin=flight.get("inbound_origin", destination),
+                destination=flight.get("inbound_destination", origin),
+                origin_city="",
+                destination_city="",
+                departure=ret_dep_dt,
+                arrival=ret_arr_dt,
+                duration_seconds=0,
+                cabin_class=flight.get("cabin", "economy"),
+                aircraft="",
+            )
+            inbound_route = FlightRoute(segments=[inbound_seg], total_duration_seconds=0, stopovers=0)
+
         return FlightOffer(
             id=f"ek_{offer_id}",
             price=price,
             currency=currency,
             price_formatted=f"{currency} {price:,.0f}",
             outbound=route,
-            inbound=None,
+            inbound=inbound_route,
             airlines=["Emirates"],
             owner_airline="EK",
             booking_url=self._booking_url(req),
@@ -1079,24 +1679,3 @@ class EmiratesConnectorClient:
             offers=[],
             total_results=0,
         )
-
-
-    @staticmethod
-    def _combine_rt(
-        ob: list[FlightOffer], ib: list[FlightOffer], req,
-    ) -> list[FlightOffer]:
-        combos: list[FlightOffer] = []
-        for o in ob[:15]:
-            for i in ib[:10]:
-                price = round(o.price + i.price, 2)
-                cid = hashlib.md5(f"{o.id}_{i.id}".encode()).hexdigest()[:12]
-                combos.append(FlightOffer(
-                    id=f"rt_emir_{cid}", price=price, currency=o.currency,
-                    outbound=o.outbound, inbound=i.outbound,
-                    airlines=list(dict.fromkeys(o.airlines + i.airlines)),
-                    owner_airline=o.owner_airline,
-                    booking_url=o.booking_url, is_locked=False,
-                    source=o.source, source_tier=o.source_tier,
-                ))
-        combos.sort(key=lambda c: c.price)
-        return combos[:20]
