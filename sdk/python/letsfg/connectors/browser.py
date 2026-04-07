@@ -1087,26 +1087,39 @@ async def cleanup_all_browsers():
     """
     closed = 0
 
+    # Work on snapshots so other cleanup paths can safely mutate the globals
+    browsers = list(_launched_browsers)
+    pws = list(_launched_pw_instances)
+    procs = list(_launched_procs)
+    _launched_browsers.clear()
+    _launched_pw_instances.clear()
+    _launched_procs.clear()
+
     # Close browsers first so Playwright deletes their scoped_dir* temp profiles.
     # pw.stop() alone does not reliably clean up the temp dirs.
-    for browser in _launched_browsers:
+    for browser in browsers:
         try:
             await browser.close()
             closed += 1
         except Exception:
             pass
-    _launched_browsers.clear()
+
+    # Give asyncio subprocess transports a chance to flush connection_lost
+    # callbacks before we stop Playwright and the outer event loop shuts down
+    await asyncio.sleep(0)
 
     # Stop Playwright instances launched by launch_headed_browser / connect_cdp
-    for pw in _launched_pw_instances:
+    for pw in pws:
         try:
             await pw.stop()
         except Exception:
             pass
-    _launched_pw_instances.clear()
+
+    # Yield once more so Playwright child-process cleanup runs before loop exit
+    await asyncio.sleep(0)
 
     # Terminate Chrome subprocesses launched by launch_cdp_chrome
-    for proc in _launched_procs:
+    for proc in procs:
         try:
             if proc.poll() is None:
                 proc.terminate()
@@ -1118,7 +1131,6 @@ async def cleanup_all_browsers():
                 closed += 1
             except Exception:
                 pass
-    _launched_procs.clear()
 
     # Reset the semaphore so it's fresh for next search (picks up any config changes)
     global _browser_semaphore
