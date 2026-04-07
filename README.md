@@ -55,7 +55,7 @@ LetsFG gives your AI agent flight search and booking superpowers — 200+ connec
 
 <br>
 
-### Sponsored by
+### Supporters
 
 <a href="https://evomi.com/?utm_source=letsfg&utm_medium=banner">
   <img src="assets/sponsor-evomi.png" alt="Evomi - Residential Proxies $0.49/GB" width="220">
