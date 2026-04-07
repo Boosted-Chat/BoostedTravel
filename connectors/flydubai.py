@@ -792,9 +792,10 @@ class FlydubaiConnectorClient:
             is_rt = _ib_route is not None
             total_price = round(price + _ib_price, 2) if is_rt else round(price, 2)
             prefix = "fz_rt_" if is_rt else "fz_"
+            hash_input = f"{seg.get('route', '')}_{dep_date}"
 
             offer = FlightOffer(
-                id=f"{prefix}{hashlib.md5(f'{seg.get('route', '')}_{dep_date}'.encode()).hexdigest()[:12]}",
+                id=f"{prefix}{hashlib.md5(hash_input.encode()).hexdigest()[:12]}",
                 price=total_price,
                 currency=currency,
                 price_formatted=f"{total_price:.2f} {currency}",
