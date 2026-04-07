@@ -53,6 +53,14 @@ LetsFG gives your AI agent flight search and booking superpowers — 200+ connec
 [![smithery badge](https://smithery.ai/badge/letsfg)](https://smithery.ai/servers/letsfg)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+<br>
+
+### Sponsored by
+
+<a href="https://evomi.com/?utm_source=letsfg&utm_medium=banner">
+  <img src="assets/sponsor-evomi.png" alt="Evomi - Residential Proxies $0.49/GB" width="300">
+</a>
+
 </div>
 
 ---
