@@ -99,7 +99,7 @@ class IxigoConnectorClient:
     async def _do_search(
         self, req: FlightSearchRequest
     ) -> list[FlightOffer] | None:
-        from .browser import get_proxy, launch_headed_browser, inject_stealth_js, block_heavy_resources
+        from .browser import get_proxy, launch_headed_browser, inject_stealth_js, auto_block_if_proxied
 
         stream_data: list[dict] = []
 
@@ -147,7 +147,7 @@ class IxigoConnectorClient:
             page = await ctx.new_page()
             await inject_stealth_js(page)
             if proxy:
-                await block_heavy_resources(page)
+                await auto_block_if_proxied(page)
             page.on("response", on_response)
 
             # iXigo URL format: /search/result/flight

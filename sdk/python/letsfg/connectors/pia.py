@@ -194,7 +194,7 @@ class PiaConnectorClient:
         """Parse one availability-flight-table section into offers."""
         offers: list[FlightOffer] = []
 
-        parts = re.split(r'<div[^>]*class="js-journey"', html)
+        parts = re.split(r'<div[^>]*class="js-journey"', section_html)
 
         for part in parts[1:]:
             dur_attr = re.search(r'data-journey-duration="(\d+)"', part)

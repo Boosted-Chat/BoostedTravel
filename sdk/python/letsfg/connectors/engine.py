@@ -236,6 +236,47 @@ from ..models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, F
 
 logger = logging.getLogger(__name__)
 
+
+# ── Telemetry data structure for per-connector metrics ──────────────────────
+from dataclasses import dataclass, field
+from typing import Any
+import time
+import platform
+import uuid
+
+
+@dataclass
+class ConnectorTelemetry:
+    """Rich telemetry data captured per connector execution."""
+    connector: str
+    ok: bool = False
+    offers: int = 0
+    latency_ms: int = 0
+    error_type: str | None = None      # e.g. "TimeoutError", "HTTPError"
+    error_message: str | None = None   # truncated error message
+    error_category: str | None = None  # "slot_timeout", "search_timeout", "crash", "http_error"
+    http_status: int | None = None     # HTTP status code if applicable
+
+
+def _get_client_fingerprint() -> str:
+    """Generate a stable anonymous fingerprint for this machine.
+    
+    Used to track connector health per-client without requiring API keys.
+    Fingerprint is deterministic (same machine = same fingerprint).
+    """
+    try:
+        # Combine machine-specific info that's stable across sessions
+        components = [
+            platform.node(),           # hostname
+            platform.machine(),        # e.g. "AMD64"
+            platform.processor(),      # CPU info
+            str(uuid.getnode()),       # MAC address as int
+        ]
+        raw = "|".join(components)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    except Exception:
+        return "unknown"
+
 # Connectors that launch Chrome/Playwright browsers.
 # These are throttled by a semaphore to prevent 20+ Chrome processes at once.
 # In cloud/headless environments without Chrome, these are skipped entirely.
@@ -654,6 +695,11 @@ class MultiProvider:
     _BACKEND_KEY = os.environ.get("LETSFG_API_KEY") or os.environ.get("BOOSTEDTRAVEL_API_KEY", "")
     _BACKEND_TIMEOUT = 30.0  # Backend queries paid APIs in parallel; 30s covers slowest GDS
 
+    def __init__(self):
+        # Per-connector telemetry for the current search
+        # Populated during search, sent to backend after completion
+        self._connector_telemetry: dict[str, ConnectorTelemetry] = {}
+
     # ── Backend availability ─────────────────────────────────────────────
 
     @property
@@ -702,6 +748,9 @@ class MultiProvider:
             await self._cleanup_connectors()
 
     async def _search_flights_inner(self, req: FlightSearchRequest) -> FlightSearchResponse:
+        # Clear telemetry from previous searches
+        self._connector_telemetry.clear()
+        
         tasks = []
         providers_used = []
 
@@ -1081,26 +1130,57 @@ class MultiProvider:
         Runs in a background task so it never blocks the search response.
         Only reports local connector results (skips 'backend').
         Silently swallows all errors — telemetry must never break search.
+        
+        ALWAYS sends telemetry, even without API key (anonymous tracking via fingerprint).
+        Captures rich error details: latency, error type, message, HTTP status.
         """
-        # Collect per-connector outcomes
+        # Build connector results from rich telemetry dict (preferred)
+        # or fall back to basic success/fail from results list
         connector_results = []
+        
         for i, result in enumerate(results):
             provider = providers_used[i]
             if provider == "backend":
                 continue  # backend tracks its own connectors server-side
-            if isinstance(result, Exception):
+            
+            # Check if we have rich telemetry captured by _search_connector_generic
+            if provider in self._connector_telemetry:
+                tel = self._connector_telemetry[provider]
                 connector_results.append({
-                    "connector": provider, "ok": False, "offers": 0, "latency_ms": 0,
+                    "connector": tel.connector,
+                    "ok": tel.ok,
+                    "offers": tel.offers,
+                    "latency_ms": tel.latency_ms,
+                    "error_type": tel.error_type,
+                    "error_message": tel.error_message,
+                    "error_category": tel.error_category,
+                    "http_status": tel.http_status,
                 })
-            elif isinstance(result, FlightSearchResponse):
-                # ok=True if connector ran successfully (even with 0 offers)
-                # 0 offers is valid when route doesn't exist on that airline
-                connector_results.append({
-                    "connector": provider,
-                    "ok": True,
-                    "offers": result.total_results,
-                    "latency_ms": 0,
-                })
+            else:
+                # Fallback for connectors that don't go through _search_connector_generic
+                # (e.g., ryanair_direct, wizzair_direct, kiwi_connector)
+                if isinstance(result, Exception):
+                    connector_results.append({
+                        "connector": provider,
+                        "ok": False,
+                        "offers": 0,
+                        "latency_ms": 0,
+                        "error_type": type(result).__name__,
+                        "error_message": str(result)[:200],
+                        "error_category": "crash",
+                        "http_status": None,
+                    })
+                elif isinstance(result, FlightSearchResponse):
+                    connector_results.append({
+                        "connector": provider,
+                        "ok": True,
+                        "offers": result.total_results,
+                        "latency_ms": 0,  # not captured for special connectors
+                        "error_type": None,
+                        "error_message": None,
+                        "error_category": None,
+                        "http_status": None,
+                    })
 
         if not connector_results:
             return
@@ -1111,7 +1191,11 @@ class MultiProvider:
     async def _post_telemetry(
         self, connector_results: list[dict], route: str,
     ) -> None:
-        """Background POST of connector telemetry to backend API."""
+        """Background POST of connector telemetry to backend API.
+        
+        ALWAYS sends telemetry — no API key required for anonymous tracking.
+        Client fingerprint enables per-machine health tracking without auth.
+        """
         try:
             from letsfg import __version__
         except Exception:
@@ -1121,11 +1205,14 @@ class MultiProvider:
             "route": route,
             "sdk_version": __version__,
             "client_type": "local-engine",
+            "client_fingerprint": _get_client_fingerprint(),
             "results": connector_results,
         }
 
         url = f"{self._BACKEND_URL}/api/v1/analytics/telemetry/connector-results"
         headers = {"Content-Type": "application/json"}
+        # Include API key if available (for authenticated tracking)
+        # but telemetry ALWAYS sends even without key
         if self._BACKEND_KEY:
             headers["X-API-Key"] = self._BACKEND_KEY
 
@@ -1307,6 +1394,8 @@ class MultiProvider:
 
         Catches ALL exceptions (including CancelledError) so no single
         connector can crash the entire search.
+        
+        Captures rich telemetry (latency, errors) for health tracking.
         """
         uses_browser = source in _BROWSER_SOURCES
         _empty = FlightSearchResponse(
@@ -1316,6 +1405,11 @@ class MultiProvider:
         _search_timeout = 90 if uses_browser else 45
         _slot_timeout = 300  # 5 min max to wait for a browser slot
         slot_acquired = False
+        
+        # Initialize telemetry for this connector
+        telemetry = ConnectorTelemetry(connector=source)
+        start_time = time.monotonic()
+        
         try:
             # Phase 1: acquire browser slot (generous timeout, separate from search)
             if uses_browser:
@@ -1325,6 +1419,13 @@ class MultiProvider:
                     await asyncio.wait_for(acquire_browser_slot(), timeout=_slot_timeout)
                 except asyncio.TimeoutError:
                     logger.warning("%s gave up waiting for browser slot after %ds", source, _slot_timeout)
+                    # Record slot timeout
+                    telemetry.ok = False
+                    telemetry.error_type = "TimeoutError"
+                    telemetry.error_message = f"Browser slot timeout after {_slot_timeout}s"
+                    telemetry.error_category = "slot_timeout"
+                    telemetry.latency_ms = int((time.monotonic() - start_time) * 1000)
+                    self._connector_telemetry[source] = telemetry
                     return _empty
                 slot_acquired = True
                 logger.warning("%s got browser slot, starting search", source)
@@ -1336,14 +1437,43 @@ class MultiProvider:
             for offer in result.offers:
                 offer.source = source
                 offer.source_tier = "free"
+            
+            # Record success
+            telemetry.ok = True
+            telemetry.offers = result.total_results
+            telemetry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            self._connector_telemetry[source] = telemetry
             return result
+            
         except asyncio.TimeoutError:
             logger.warning("%s timed out after %ds", source, _search_timeout)
+            # Record search timeout
+            telemetry.ok = False
+            telemetry.error_type = "TimeoutError"
+            telemetry.error_message = f"Search timeout after {_search_timeout}s"
+            telemetry.error_category = "search_timeout"
+            telemetry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            self._connector_telemetry[source] = telemetry
             return _empty
+            
         except BaseException as exc:
             # Catch CancelledError / KeyboardInterrupt / any crash —
             # never let one connector take down the whole search.
             logger.warning("%s crashed: %s", source, type(exc).__name__)
+            # Record crash with error details
+            telemetry.ok = False
+            telemetry.error_type = type(exc).__name__
+            telemetry.error_message = str(exc)[:200]  # truncate long messages
+            telemetry.error_category = "crash"
+            # Try to extract HTTP status if it's an HTTP error
+            if hasattr(exc, 'response') and hasattr(exc.response, 'status_code'):
+                telemetry.http_status = exc.response.status_code
+                telemetry.error_category = "http_error"
+            elif hasattr(exc, 'status_code'):
+                telemetry.http_status = exc.status_code
+                telemetry.error_category = "http_error"
+            telemetry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            self._connector_telemetry[source] = telemetry
             return FlightSearchResponse(
                 search_id="", origin=req.origin, destination=req.destination,
                 currency=req.currency, offers=[], total_results=0,

@@ -1,6 +1,8 @@
 # LetsFG Connector Worker — Cloud Run dependencies
 # The worker imports from the letsfg SDK (connectors, models, browser).
-# Pin to latest release — v1.3.9: proxy support + resource blocking for OTA connectors
-letsfg==1.5.31
+# Pin to latest release — 2026.4.11
+letsfg==2026.4.30
 flask>=3.0
 gunicorn>=22.0
+nodriver>=0.39
+patchright>=1.0

@@ -160,12 +160,20 @@ _BROWSER_CDP_PORTS: dict[str, int] = {
     "jetsmart_direct": 9461, "volotea_direct": 9461,
     "singapore_direct": 9462, "spirit_direct": 9463,
     "finnair_direct": 9465, "vietjet_direct": 9465,
-    "peach_direct": 9468, "american_direct": 9471,
+    "peach_direct": 9468, "itaairways_direct": 9470,
+    "american_direct": 9471,
     "delta_direct": 9472, "indigo_direct": 9473,
     "korean_direct": 9478, "traveloka_ota": 9480,
-    "webjet_ota": 9482, "tiket_ota": 9483,
-    "airserbia_direct": 9497,
+    "saudia_direct": 9481, "webjet_ota": 9482, "tiket_ota": 9483,
+    "airchina_direct": 9491, "chinaeastern_direct": 9492,
+    "chinasouthern_direct": 9493, "asiana_direct": 9495,
+    "airtransat_direct": 9496, "airserbia_direct": 9497,
+    "aireuropa_direct": 9498, "mea_direct": 9499, "hainan_direct": 9500,
+    "level_direct": 9503,
+    "transnusa_direct": 9329, "superairjet_direct": 9331,
+    "citilink_direct": 9335,
     "twayair_direct": 9451,
+    "virginatlantic_direct": 9451,
 }
 
 # ── Proxy auth extension for CDP Chrome ──────────────────────────────────
@@ -449,6 +457,66 @@ _PROXY_RECOMMENDED: set[str] = {
     "flynas_direct",
     "airasia_direct",
     "united_direct",
+    # httpx connectors — Crane IBE returns truncated HTML (no prices) to GCP IPs
+    "pia_direct",
+    # curl_cffi / httpx connectors — GCP IPs blocked or rate-limited
+    "iwantthatflight_direct",
+    "skiplagged_meta",
+    "klm_direct",
+    "mea_direct",
+    "olympicair_direct",
+    "zipair_direct",
+    # Direct API connectors — work locally, blocked from GCP IPs
+    "spicejet_direct",
+    "chinaairlines_direct",
+    "kenyaairways_direct",
+    # curl_cffi connectors patched via Dockerfile sed to use proxy
+    "flydubai_direct",
+    "flybondi_direct",
+    # httpx connectors needing proxy for GCP IPs
+    "arajet_direct",
+    "despegar_ota",
+    "saa_direct",
+    "airarabia_direct",
+    "flyarystan_direct",
+    # CDP browser connectors — WAF blocks GCP IPs
+    "cheapflights_meta",
+    # US connectors — anti-bot blocks from GCP IPs
+    "avelo_direct",
+    "hawaiian_direct",
+    "alaska_direct",
+    "allegiant_direct",
+    "southwest_direct",
+    "suncountry_direct",
+    # curl_cffi connectors patched via Dockerfile sed for proxy
+    "aircalin_direct",
+    # CDP browser connectors — missing from pre-warm, WAF blocks GCP
+    "aireuropa_direct",
+    "airtransat_direct",
+    "asiana_direct",
+    "chinaeastern_direct",
+    "chinasouthern_direct",
+    "citilink_direct",
+    "hainan_direct",
+    "level_direct",
+    "saudia_direct",
+    "superairjet_direct",
+    "transnusa_direct",
+    "airchina_direct",
+    # PW browser connectors — proxy-aware, blocked from GCP
+    "luckyair_direct",
+    "usbangla_direct",
+    "azul_direct",
+    "breeze_direct",
+    "volaris_direct",
+    "airasiax_direct",
+    # HYBRID connectors — curl_cffi fast path needs proxy
+    "eurowings_direct",
+    "twayair_direct",
+    "volotea_direct",
+    # nodriver connectors
+    "batikair_direct",
+    "nh_direct",
 }
 
 
@@ -499,6 +567,21 @@ def _inject_proxy_for_connector(connector_id: str) -> str | None:
         proxy_url = _get_residential_proxy_url()
         if proxy_url:
             os.environ["LETSFG_PROXY"] = proxy_url
+            # Some connectors read their own env vars instead of LETSFG_PROXY
+            _CONNECTOR_ENV_VARS = {
+                "breeze_direct": "BREEZE_PROXY",
+                "allegiant_direct": "ALLEGIANT_PROXY",
+                "avelo_direct": "AVELO_PROXY",
+                "southwest_direct": "SOUTHWEST_PROXY",
+                "american_direct": "AMERICAN_PROXY",
+                "delta_direct": "DELTA_PROXY",
+                "itaairways_direct": "ITA_PROXY",
+                "jetblue_direct": "JETBLUE_PROXY",
+            }
+            extra_var = _CONNECTOR_ENV_VARS.get(connector_id)
+            if extra_var:
+                os.environ[extra_var] = proxy_url
+                logger.info("Also set %s for %s", extra_var, connector_id)
             logger.info("Injected residential proxy → LETSFG_PROXY for %s", connector_id)
             return old_val
 
@@ -514,6 +597,11 @@ def _restore_proxy(old_val: str | None) -> None:
         os.environ.pop("LETSFG_PROXY", None)
     else:
         os.environ["LETSFG_PROXY"] = old_val
+    # Clean up connector-specific env vars
+    for var in ("BREEZE_PROXY", "ALLEGIANT_PROXY", "AVELO_PROXY",
+                "SOUTHWEST_PROXY", "AMERICAN_PROXY", "DELTA_PROXY",
+                "ITA_PROXY", "JETBLUE_PROXY"):
+        os.environ.pop(var, None)
 
 
 async def _execute(params: dict) -> dict:
@@ -563,6 +651,19 @@ async def _execute(params: dict) -> dict:
         "easyjet_direct", "norwegian_direct",
         "kayak_meta", "momondo_meta", "cheapflights_meta",
         "skyscanner_meta", "edreams_ota", "opodo_ota", "tripcom_ota",
+        "turkish_direct", "yatra_ota",
+        # CDP connectors through proxy — need extra time
+        "aireuropa_direct", "airtransat_direct", "asiana_direct",
+        "chinaeastern_direct", "chinasouthern_direct", "hainan_direct",
+        "level_direct", "saudia_direct", "airchina_direct",
+        "itaairways_direct", "citilink_direct", "superairjet_direct",
+        "transnusa_direct", "mea_direct",
+        # PW connectors through proxy
+        "airasia_direct", "airasiax_direct", "united_direct",
+        "gol_direct", "sunexpress_direct", "wego_meta",
+        "luckyair_direct", "usbangla_direct",
+        # Connectors with per-connector proxy env vars
+        "american_direct", "delta_direct", "southwest_direct",
     }
     if connector_id in _PROXY_CONNECTORS:
         COLD_START_BUFFER = 40.0

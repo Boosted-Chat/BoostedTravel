@@ -1,21 +1,11 @@
 """
 Sun Country Airlines direct connector — Playwright lowfare API.
 
-Sun Country Airlines (IATA: SY) is a US low-cost carrier based in Minneapolis/
-St. Paul (MSP). Operates 90+ routes across the US, Mexico, Caribbean, and
-Central America.
-
-Strategy:
-  1. Launch Playwright browser → load suncountry.com (gets Incapsula WAF cookies
-     and Navitaire JWT from sessionStorage).
-  2. Use in-browser fetch() to call the lowfare/outbound API, which returns
-     the cheapest fare per day with availability counts.
-  3. Build one FlightOffer per requested date.
-
-Note: The Navitaire availability/search endpoint (ext/v1/availability/search)
-is unreachable — it times out from both browser and direct httpx, confirmed
-2026-03 testing. The lowfare endpoint is the only working pricing source.
-Direct httpx calls to the API are blocked by Incapsula WAF (403).
+PATCH: Auto-capture Ocp-Apim-Subscription-Key from the browser's own API
+requests instead of relying on SUNCOUNTRY_SUB_KEY env var.  The SPA fires
+requests to syprod-api.suncountry.com that already contain the key in headers.
+We intercept those outgoing requests, grab the key, then use it for our
+in-browser fetch() calls.
 """
 
 from __future__ import annotations
@@ -147,6 +137,8 @@ class SunCountryConnectorClient:
 
             token_holder: dict = {}
             token_event = asyncio.Event()
+            # PATCH: Also capture the subscription key from outgoing requests
+            sub_key_holder: dict = {}
 
             async def on_response(response):
                 try:
@@ -161,7 +153,20 @@ class SunCountryConnectorClient:
                 except Exception:
                     pass
 
+            # PATCH: Intercept outgoing requests to capture Ocp-Apim-Subscription-Key
+            def on_request(request):
+                try:
+                    if "syprod-api.suncountry.com" in request.url and not sub_key_holder.get("key"):
+                        headers = request.headers
+                        sk = headers.get("ocp-apim-subscription-key") or headers.get("Ocp-Apim-Subscription-Key")
+                        if sk:
+                            sub_key_holder["key"] = sk
+                            logger.info("SunCountry: captured subscription key from browser request")
+                except Exception:
+                    pass
+
             page.on("response", on_response)
+            page.on("request", on_request)
 
             # Step 1: Load homepage to get WAF cookies and Navitaire token
             logger.info("SunCountry: loading homepage for WAF cookies")
@@ -179,6 +184,52 @@ class SunCountryConnectorClient:
             token = token_holder.get("token")
             if not token:
                 logger.warning("SunCountry: no Navitaire token found")
+                return []
+
+            # PATCH: Wait a bit more for the SPA to fire API requests that carry the sub key
+            if not sub_key_holder.get("key"):
+                await page.wait_for_timeout(3000)
+
+            # PATCH: Also try extracting key from JS context
+            if not sub_key_holder.get("key"):
+                try:
+                    js_key = await page.evaluate(r"""() => {
+                        // Check common config patterns
+                        try {
+                            if (window.__NEXT_DATA__) {
+                                const props = window.__NEXT_DATA__.props || {};
+                                const pageProps = props.pageProps || {};
+                                if (pageProps.subscriptionKey) return pageProps.subscriptionKey;
+                                if (pageProps.apiKey) return pageProps.apiKey;
+                            }
+                        } catch(e) {}
+                        // Check meta tags
+                        try {
+                            const meta = document.querySelector('meta[name*="subscription"], meta[name*="api-key"]');
+                            if (meta) return meta.getAttribute('content');
+                        } catch(e) {}
+                        // Check inline scripts for the key pattern
+                        try {
+                            const scripts = document.querySelectorAll('script:not([src])');
+                            for (const s of scripts) {
+                                const m = s.textContent.match(/['\"]Ocp-Apim-Subscription-Key['\"]\s*:\s*['\"]([a-f0-9]{20,})['\"]/) ||
+                                          s.textContent.match(/subscriptionKey\s*[=:]\s*['\"]([a-f0-9]{20,})['\"/]/) ||
+                                          s.textContent.match(/apiSubscriptionKey\s*[=:]\s*['\"]([a-f0-9]{20,})['\"/]/);
+                                if (m) return m[1];
+                            }
+                        } catch(e) {}
+                        return null;
+                    }""")
+                    if js_key:
+                        sub_key_holder["key"] = js_key
+                        logger.info("SunCountry: captured subscription key from JS context")
+                except Exception:
+                    pass
+
+            # PATCH: Use captured key, fall back to env var
+            effective_sub_key = sub_key_holder.get("key") or _SUB_KEY
+            if not effective_sub_key:
+                logger.warning("SunCountry: no subscription key found (env or browser)")
                 return []
 
             # Step 2: Call lowfare/outbound via in-browser fetch
@@ -220,7 +271,7 @@ class SunCountryConnectorClient:
                         return { error: e.message };
                     }
                 }""",
-                [token, _SUB_KEY, body],
+                [token, effective_sub_key, body],
             )
 
             if not result or result.get("error"):
@@ -266,13 +317,12 @@ class SunCountryConnectorClient:
                             return { error: e.message };
                         }
                     }""",
-                    [token, _SUB_KEY, ib_body],
+                    [token, effective_sub_key, ib_body],
                 )
 
                 if ib_result and not ib_result.get("error"):
                     ib_offers = self._parse_lowfare_inbound(ib_result, req)
                     if ib_offers:
-                        # Build RT offers: outbound × cheapest inbound
                         ib_offers.sort(key=lambda x: x[1])
                         cheapest_ib_route, cheapest_ib_price = ib_offers[0]
                         rt_offers: list[FlightOffer] = []
@@ -293,7 +343,6 @@ class SunCountryConnectorClient:
                                 source="suncountry_direct",
                                 source_tier="free",
                             ))
-                        # RT offers first, then OW for combo engine
                         return rt_offers + ob_offers
 
             return ob_offers
@@ -313,7 +362,7 @@ class SunCountryConnectorClient:
         offers: list[FlightOffer] = []
 
         for fare in fares:
-            fare_date = (fare.get("date") or "")[:10]  # "2026-04-13T00:00:00" → "2026-04-13"
+            fare_date = (fare.get("date") or "")[:10]
             if fare_date != target:
                 continue
             if fare.get("noFlights") or fare.get("soldOut"):
@@ -393,7 +442,6 @@ class SunCountryConnectorClient:
             results.append((route, round(price, 2)))
 
         return results
-
 
     @staticmethod
     def _combine_rt(

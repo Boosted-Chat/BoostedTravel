@@ -167,8 +167,8 @@ class AlmosaferConnectorClient:
             )
             page = await ctx.new_page()
             if proxy:
-                from .browser import block_heavy_resources
-                await block_heavy_resources(page)
+                from .browser import auto_block_if_proxied
+                await auto_block_if_proxied(page)
             page.on("response", on_response)
 
             # Direct URL navigation — bypasses form fill + MUI modal issues

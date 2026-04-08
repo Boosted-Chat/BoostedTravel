@@ -140,9 +140,8 @@ class OpodoConnectorClient:
                 ),
             )
             page = await ctx.new_page()
-            if proxy:
-                from .browser import auto_block_if_proxied
-                await auto_block_if_proxied(page)
+            from .browser import auto_block_if_proxied
+            await auto_block_if_proxied(page)
             page.on("response", on_response)
 
             dep_date = req.date_from.isoformat()
