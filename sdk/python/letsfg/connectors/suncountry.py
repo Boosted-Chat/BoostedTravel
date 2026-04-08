@@ -36,7 +36,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import auto_block_if_proxied
+from .browser import auto_block_if_proxied, get_default_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,9 @@ async def _get_browser():
                 "--window-size=1366,768",
             ],
         }
+        _proxy = get_default_proxy()
+        if _proxy:
+            launch_kw["proxy"] = _proxy
         try:
             _browser = await pw.chromium.launch(**launch_kw)
         except Exception:

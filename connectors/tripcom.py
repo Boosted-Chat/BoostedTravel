@@ -117,6 +117,10 @@ class TripcomConnectorClient:
         self, req: FlightSearchRequest
     ) -> list[FlightOffer] | None:
         from playwright.async_api import async_playwright
+        from .browser import (
+            get_proxy, auto_block_if_proxied, inject_stealth_js,
+            stealth_args, stealth_position_arg,
+        )
 
         batch_data: list[dict] = []
         pull_data: list[dict] = []
@@ -140,12 +144,11 @@ class TripcomConnectorClient:
 
         pw = await async_playwright().start()
         try:
-            from .browser import get_proxy
             proxy = get_proxy("TRIPCOM_PROXY")
             launch_kw: dict = {
-                "headless": False,
+                "headless": True,
                 "args": [
-                    "--window-position=-2400,-2400",
+                    *stealth_position_arg(),
                     "--window-size=1366,768",
                     "--disable-blink-features=AutomationControlled",
                 ],
@@ -158,13 +161,13 @@ class TripcomConnectorClient:
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
+                    "Chrome/135.0.0.0 Safari/537.36"
                 ),
             )
             page = await ctx.new_page()
+            await inject_stealth_js(page)
             if proxy:
-                from .browser import block_heavy_resources
-                await block_heavy_resources(page)
+                await auto_block_if_proxied(page)
             page.on("response", on_response)
 
             dep_date = req.date_from.isoformat()
@@ -181,15 +184,24 @@ class TripcomConnectorClient:
             if req.return_from:
                 url += f"&rdate={req.return_from.isoformat()}"
 
-            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             # Wait for batchSearch + optional pull responses
-            for _ in range(8):
-                await page.wait_for_timeout(4000)
+            # Trip.com sometimes delays the API call — be patient
+            for _ in range(12):
+                await page.wait_for_timeout(3000)
                 if batch_data:
                     # Give pull a chance to arrive
-                    await page.wait_for_timeout(6000)
+                    await page.wait_for_timeout(5000)
                     break
+            
+            # If still no data, try scrolling to trigger lazy-loaded results
+            if not batch_data:
+                try:
+                    await page.evaluate("window.scrollBy(0, 600)")
+                    await page.wait_for_timeout(5000)
+                except Exception:
+                    pass
 
             await page.close()
             await ctx.close()

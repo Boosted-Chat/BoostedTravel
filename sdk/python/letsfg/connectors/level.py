@@ -21,8 +21,6 @@ import json
 import logging
 import os
 import re
-import shutil
-import subprocess
 import time
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -34,7 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
+from .browser import get_or_launch_cdp, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +43,6 @@ _USER_DATA_DIR = os.path.join(
 
 _browser = None
 _context = None
-_pw_instance = None
-_chrome_proc = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -58,7 +54,7 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_context():
-    global _browser, _context, _pw_instance, _chrome_proc
+    global _browser, _context
     lock = _get_lock()
     async with lock:
         if _browser:
@@ -77,74 +73,17 @@ async def _get_context():
             except Exception:
                 pass
 
-        from playwright.async_api import async_playwright
-
-        pw = None
-        try:
-            pw = await async_playwright().start()
-            _browser = await pw.chromium.connect_over_cdp(
-                f"http://127.0.0.1:{_DEBUG_PORT}"
-            )
-            _pw_instance = pw
-            logger.info("Level: connected to existing Chrome on port %d", _DEBUG_PORT)
-        except Exception:
-            if pw:
-                try:
-                    await pw.stop()
-                except Exception:
-                    pass
-            chrome = find_chrome()
-            os.makedirs(_USER_DATA_DIR, exist_ok=True)
-            args = [
-                chrome,
-                f"--remote-debugging-port={_DEBUG_PORT}",
-                f"--user-data-dir={_USER_DATA_DIR}",
-                "--no-first-run",
-                *proxy_chrome_args(),
-                "--no-default-browser-check",
-                "--disable-blink-features=AutomationControlled",
-                "--window-position=-2400,-2400",
-                "--window-size=1400,900",
-                "about:blank",
-            ]
-            _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
-            _launched_procs.append(_chrome_proc)
-            await asyncio.sleep(2.0)
-            pw = await async_playwright().start()
-            _pw_instance = pw
-            _browser = await pw.chromium.connect_over_cdp(
-                f"http://127.0.0.1:{_DEBUG_PORT}"
-            )
-            logger.info("Level: Chrome launched on CDP port %d", _DEBUG_PORT)
+        # Use shared CDP launch utility (handles Chrome discovery, retries, Cloud Run)
+        _browser, _ = await get_or_launch_cdp(
+            port=_DEBUG_PORT,
+            user_data_dir=_USER_DATA_DIR,
+            startup_wait=3.5,  # Longer wait for Cloud Run reliability
+        )
+        logger.info("Level: CDP Chrome ready on port %d", _DEBUG_PORT)
 
         contexts = _browser.contexts
         _context = contexts[0] if contexts else await _browser.new_context()
         return _context
-
-
-async def _reset_profile():
-    global _browser, _context, _pw_instance, _chrome_proc
-    try:
-        if _browser:
-            await _browser.close()
-    except Exception:
-        pass
-    try:
-        if _pw_instance:
-            await _pw_instance.stop()
-    except Exception:
-        pass
-    if _chrome_proc:
-        try:
-            _chrome_proc.terminate()
-        except Exception:
-            pass
-    _browser = _context = _pw_instance = _chrome_proc = None
-    if os.path.isdir(_USER_DATA_DIR):
-        try:
-            shutil.rmtree(_USER_DATA_DIR)
-        except Exception:
-            pass
 
 
 async def _dismiss_overlays(page) -> None:

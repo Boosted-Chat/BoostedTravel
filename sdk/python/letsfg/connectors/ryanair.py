@@ -5,18 +5,18 @@ Ryanair exposes a rich internal REST API used by their SPA frontend.
 These endpoints are publicly accessible without authentication.
 This is the DEFINITIVE source for Ryanair pricing — no middleman markup.
 
+Uses curl_cffi to bypass Cloudflare TLS fingerprint detection.
 Implements the Ryanair AIP (api/protocols/ryanair.json).
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
 from datetime import datetime
 from typing import Any, Optional
-
-import httpx
 
 from ..models.flights import (
     FlightOffer,
@@ -26,7 +26,7 @@ from ..models.flights import (
     FlightSegment,
 )
 from .airline_routes import get_city_airports
-from .browser import auto_block_if_proxied, get_httpx_proxy_url
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -45,21 +45,9 @@ class RyanairConnectorClient:
 
     def __init__(self, timeout: float = 20.0):
         self.timeout = timeout
-        self._http: Optional[httpx.AsyncClient] = None
-
-    async def _client(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                timeout=self.timeout,
-                headers=_HEADERS,
-                follow_redirects=True,
-                proxy=get_httpx_proxy_url(),
-            )
-        return self._http
 
     async def close(self):
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
+        pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         ob_result = await self._search_ow(req)
@@ -128,7 +116,7 @@ class RyanairConnectorClient:
 
     async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """Search a single origin→destination pair (airport-level codes)."""
-        client = await self._client()
+        from curl_cffi.requests import AsyncSession
 
         params: dict[str, Any] = {
             "ADT": req.adults,
@@ -155,11 +143,18 @@ class RyanairConnectorClient:
         t0 = time.monotonic()
 
         try:
-            resp = await client.get(
-                f"{RYANAIR_API}/booking/v4/en-gb/availability",
-                params=params,
-            )
-        except httpx.TimeoutException:
+            # Use curl_cffi with Chrome impersonation to bypass Cloudflare
+            async with AsyncSession(
+                impersonate="chrome131",
+                timeout=self.timeout,
+                proxies=get_curl_cffi_proxies(),
+            ) as sess:
+                resp = await sess.get(
+                    f"{RYANAIR_API}/booking/v4/en-gb/availability",
+                    params=params,
+                    headers=_HEADERS,
+                )
+        except asyncio.TimeoutError:
             logger.warning("Ryanair API timed out (%s→%s)", req.origin, req.destination)
             return self._empty(req)
         except Exception as e:
@@ -180,7 +175,7 @@ class RyanairConnectorClient:
         try:
             data = resp.json()
         except Exception:
-            logger.warning("Ryanair returned non-JSON response")
+            logger.warning("Ryanair returned non-JSON response: %s", resp.text[:200])
             return self._empty(req)
 
         currency = data.get("currency", req.currency)

@@ -183,8 +183,8 @@ class AirPeaceConnectorClient:
             origin=req.origin,
             destination=req.destination,
             currency="USD",
-            offers=offers,
-            total_results=len(offers),
+            offers=outbound_offers,
+            total_results=len(outbound_offers),
         )
 
     def _parse_html(self, html: str, req: FlightSearchRequest) -> list[FlightOffer]:
