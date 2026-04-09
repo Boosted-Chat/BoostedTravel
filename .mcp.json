@@ -1,0 +1,12 @@
+{
+  "letsfg": {
+    "command": "npx",
+    "args": ["-y", "letsfg-mcp"],
+    "env": {
+      "LETSFG_API_KEY": "${LETSFG_API_KEY}"
+    },
+    "description": "Flight search & booking for AI agents. 200+ airline connectors running locally + enterprise GDS/NDC APIs. Zero price bias, raw airline prices.",
+    "homepage": "https://letsfg.co",
+    "repository": "https://github.com/LetsFG/LetsFG"
+  }
+}
