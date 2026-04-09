@@ -31,8 +31,6 @@ The more we cover, the better it gets — for all of us.
 <a href="https://t.me/share/url?url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG&text=LetsFG%20-%20200%2B%20airline%20connectors%20for%20AI%20agents.%20Real%20prices%2C%20zero%20markup."><img src="https://img.shields.io/badge/Share_on_Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Share on Telegram"></a>
 &nbsp;
 <a href="mailto:?subject=Check%20out%20LetsFG&body=Found%20this.%20200%2B%20airline%20connectors%2C%20real%20prices%2C%20zero%20markup.%20Your%20AI%20agent%20can%20search%20%26%20book%20flights%20now.%0A%0Ahttps%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Send_via_Email-EA4335?style=flat-square&logo=gmail&logoColor=white" alt="Send via Email"></a>
-&nbsp;
-<a href="https://github.com/LetsFG/LetsFG"><img src="https://img.shields.io/badge/Copy_Link_%F0%9F%94%97-555555?style=flat-square" alt="Copy Link"></a>
 
 </td>
 </tr>
