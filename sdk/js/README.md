@@ -58,6 +58,9 @@ console.log(`PNR: ${booking.booking_reference}`);
 export LETSFG_API_KEY=trav_...
 
 letsfg search GDN BER 2026-03-03 --sort price
+
+# Fast mode — OTAs + key airlines only (~25 connectors, 20-40s)
+letsfg search GDN BER 2026-03-03 --mode fast
 letsfg search LON BCN 2026-04-01 --json  # Machine-readable
 letsfg unlock off_xxx
 letsfg book off_xxx -p '{"id":"pas_xxx","given_name":"John",...}' -e john@example.com

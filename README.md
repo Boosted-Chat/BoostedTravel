@@ -166,6 +166,12 @@ letsfg search LHR BCN 2026-06-15
 
 That single command fires 200+ connectors on your machine and returns real-time prices from 400+ airlines. **Free. Unlimited. Zero setup.**
 
+**Short on time?** Use `--mode fast` to search only OTAs + key airlines (~25 connectors, 20-40s instead of 6+ min):
+
+```bash
+letsfg search LHR BCN 2026-06-15 --mode fast
+```
+
 Want to unlock and book? Star the repo for free access:
 
 ```bash
@@ -263,6 +269,10 @@ console.log(`${flights.totalResults} offers`);
 from letsfg.local import search_local
 
 result = await search_local("GDN", "BCN", "2026-06-15")
+
+# Fast mode — OTAs + key airlines only, 20-40s
+result = await search_local("GDN", "BCN", "2026-06-15", mode="fast")
+
 for offer in result.offers[:5]:
     print(f"{offer.airlines[0]}: {offer.currency} {offer.price}")
 ```

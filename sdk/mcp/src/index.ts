@@ -107,8 +107,7 @@ const TOOLS = [
         currency: { type: 'string', description: 'Currency code (EUR, USD, GBP)', default: 'EUR' },
         max_results: { type: 'integer', description: 'Max offers to return', default: 10 },
         max_browsers: { type: 'integer', description: 'Max concurrent browser processes (1-32). Lower = less RAM, higher = faster. Default: auto-detect from system RAM. Use system_info tool to check.' },
-        departure_time_from: { type: 'string', description: "Earliest departure time HH:MM (e.g. '06:00' for morning flights, '08:00' for after 8am). Filters outbound first segment." },
-        departure_time_to: { type: 'string', description: "Latest departure time HH:MM (e.g. '14:00' for before 2pm, '12:00' for morning only). Filters outbound first segment." },
+        mode: { type: 'string', description: "Search mode. Omit for full search (all 200+ connectors). 'fast' = OTAs/aggregators + key direct airlines only (~25 connectors, 20-40s instead of 3-6 min).", enum: ['fast'] },
       },
     },
   },
@@ -313,8 +312,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       if (args.return_from) params.return_from = args.return_from;
       if (args.cabin_class) params.cabin_class = args.cabin_class;
       if (args.max_browsers) params.max_browsers = args.max_browsers;
-      if (args.departure_time_from) params.departure_time_from = args.departure_time_from;
-      if (args.departure_time_to) params.departure_time_to = args.departure_time_to;
+      if (args.mode) params.mode = args.mode;
 
       // Always local — runs 200 connectors on user's machine, zero backend cost
       const result = await searchLocal(params) as Record<string, unknown>;

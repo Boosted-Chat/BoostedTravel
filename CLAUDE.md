@@ -82,6 +82,9 @@ All search runs locally on the user's machine via 180+ airline connectors (Playw
 - Unlock (confirms live price with airline)
 - Book (creates airline reservation)
 
+### Fast Mode
+The `--mode fast` flag (or `mode="fast"` in SDK) fires only ~25 high-coverage OTAs and key direct airlines instead of all 200+ connectors. Reduces search time from 6+ minutes to 20-40 seconds. The `_FAST_MODE_SOURCES` set is defined in `engine.py` and includes global OTAs (Kiwi, Skyscanner, Kayak, Momondo, etc.), regional OTAs for every continent, and key direct airlines (Ryanair, Wizz Air, Southwest, Allegiant). This only affects local search — the backend API is unchanged.
+
 ### 180+ local airline connectors
 The `connectors/` directory contains scrapers for 180+ airlines. Three connector patterns:
 - **Direct API** — Reverse-engineered REST/GraphQL endpoints (fastest, ~0.3-2s)

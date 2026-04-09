@@ -352,6 +352,48 @@ _BROWSER_SOURCES: set[str] = {
 }
 
 
+# ── Fast mode: OTA/aggregator + key direct airline sources ──────────────────
+# When mode="fast", ONLY these connectors fire. They cover 90-95% of routes
+# globally via multi-airline OTAs, plus direct airlines that are cheaper or
+# missing from OTAs entirely.
+#
+# This reduces a 3-6+ minute full search to 20-40 seconds.
+# Default (mode=None) fires ALL connectors as before.
+_FAST_MODE_SOURCES: set[str] = {
+    # ── Global OTA/aggregators (each covers 100s of airlines) ──
+    "kiwi_connector",        # 800+ airlines, global
+    "skyscanner_meta",       # 1000+ airlines, global
+    "kayak_meta",            # global meta-search
+    "cheapflights_meta",     # global meta (Kayak backend)
+    "momondo_meta",          # strong Europe/Asia
+    "edreams_ota",           # strong Europe/LATAM
+    "aviasales_meta",        # strong CIS/Asia/global
+    "bookingcom_ota",        # global, sometimes exclusive fares
+    "tripcom_ota",           # strong Asia/China — all Chinese carriers
+    "agoda_meta",            # strong Asia-Pacific
+    "hopper_direct",         # global, API-only (instant)
+    # ── Regional OTAs (route-filtered — fire only when relevant) ──
+    "traveloka_ota",         # SE Asia: AirAsia, Lion, Cebu Pacific, VietJet, Garuda
+    "tiket_ota",             # Indonesia domestic + regional
+    "ixigo_meta",            # India: IndiGo, SpiceJet, Air India, Akasa
+    "cleartrip_ota",         # India/Middle East
+    "yatra_ota",             # India
+    "wego_meta",             # Middle East/Asia: Emirates, Etihad, flydubai
+    "rehlat_ota",            # Middle East: Gulf carriers
+    "almosafer_ota",         # Middle East/Saudi Arabia
+    "travelstart_ota",       # Africa: Kenya Airways, Ethiopian, FlySafair
+    "despegar_ota",          # Latin America: LATAM, Avianca, GOL, Azul, JetSmart
+    "webjet_ota",            # Australia/NZ: Qantas, Virgin AU, Jetstar, Rex
+    "iwantthatflight_direct",# Australia fare aggregator, API-only (instant)
+    "skiplagged_meta",       # USA: hidden-city fares
+    # ── Direct airlines (cheaper direct or missing from OTAs entirely) ──
+    "ryanair_direct",        # direct API, instant; OTAs markup Ryanair fares
+    "wizzair_direct",        # consistently cheaper direct than any OTA
+    "southwest_direct",      # NOT on any OTA — only way to find SW fares
+    "allegiant_direct",      # very limited OTA presence
+}
+
+
 def _should_use_browsers() -> bool:
     """Decide whether browser-based connectors should run.
 
@@ -728,7 +770,7 @@ class MultiProvider:
     def _get_kiwi_connector(self) -> Optional[KiwiConnectorClient]:
         return KiwiConnectorClient(timeout=25.0)
 
-    async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def search_flights(self, req: FlightSearchRequest, *, mode: str | None = None) -> FlightSearchResponse:
         """
         Search flights across ALL sources in parallel:
         - 1 async HTTP call to Cloud Run backend (paid APIs: Duffel, Amadeus, Sabre, etc.)
@@ -741,15 +783,23 @@ class MultiProvider:
 
         All browser instances launched by connectors are automatically
         closed after results are collected.
+
+        Args:
+            mode: Search mode. None = full (all 200+ connectors, default).
+                  "fast" = OTAs/aggregators + key direct airlines (~25 connectors, 20-40s).
         """
+        if mode and mode not in ("fast",):
+            raise ValueError(f"Unknown search mode: {mode!r}. Supported: 'fast' or None (full)")
         try:
-            return await self._search_flights_inner(req)
+            return await self._search_flights_inner(req, mode=mode)
         finally:
             await self._cleanup_connectors()
 
-    async def _search_flights_inner(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def _search_flights_inner(self, req: FlightSearchRequest, *, mode: str | None = None) -> FlightSearchResponse:
         # Clear telemetry from previous searches
         self._connector_telemetry.clear()
+        
+        is_fast = mode == "fast"
         
         tasks = []
         providers_used = []
@@ -767,6 +817,7 @@ class MultiProvider:
             logger.debug("No LETSFG_PROXY set — connectors using direct connections")
 
         # ── Cloud Run backend (paid API providers: Duffel, Amadeus, Sabre, etc.) ──
+        # Backend always fires (even in fast mode) — it's a single HTTP call to our API
         if self.backend_available:
             tasks.append(self._search_backend(req))
             providers_used.append("backend")
@@ -802,6 +853,18 @@ class MultiProvider:
 
         # ── Direct airline website connectors (46 LCCs) — route-filtered ──
         filtered_connectors = get_relevant_connectors(req.origin, req.destination, _DIRECT_AIRLINE_connectorS)
+
+        # Fast mode: only keep connectors in the _FAST_MODE_SOURCES set
+        if is_fast:
+            before_fast = len(filtered_connectors)
+            filtered_connectors = [
+                (src, cls, t) for src, cls, t in filtered_connectors
+                if src in _FAST_MODE_SOURCES
+            ]
+            fast_skipped = before_fast - len(filtered_connectors)
+            if fast_skipped:
+                logger.info("Fast mode: skipped %d/%d connectors (keeping %d OTA/key sources)",
+                            fast_skipped, before_fast, len(filtered_connectors))
 
         # Skip browser-based connectors when Chrome is not available
         # (cloud/agent environments). API-only connectors still run.
@@ -897,6 +960,12 @@ class MultiProvider:
             return_filtered = get_relevant_connectors(
                 req.destination, req.origin, _DIRECT_AIRLINE_connectorS
             )
+            # Fast mode: only keep connectors in the _FAST_MODE_SOURCES set (same as outbound)
+            if is_fast:
+                return_filtered = [
+                    (s, c, t) for s, c, t in return_filtered
+                    if s in _FAST_MODE_SOURCES
+                ]
             # Skip browser connectors when Chrome is not available (same as outbound)
             if not _BROWSERS_AVAILABLE:
                 return_filtered = [

@@ -4,14 +4,17 @@ Guidelines for building autonomous AI agents that search, evaluate, and book fli
 
 > 🎬 **[Watch the demo](https://github.com/LetsFG/LetsFG#demo-lfg-vs-default-agent-search)** — side-by-side comparison of default agent search vs LetsFG.
 
-## Two Search Modes
+## Search Modes
 
-Agents can use **local search** (free, no API key) for quick lookups, or **full search** (API key) for comprehensive results:
+Agents can use **local search** (free, no API key) for quick lookups, or **full search** (API key) for comprehensive results. Local search also supports a **fast mode** that fires only ~25 high-coverage OTAs and key airlines, reducing search time from 6+ minutes to 20-40 seconds:
 
 ```python
 # Local search — no API key, 200 airline connectors
 from letsfg.local import search_local
 result = await search_local("LHR", "JFK", "2026-06-01")
+
+# Fast mode — OTAs + key airlines only (~25 connectors, 20-40s)
+result = await search_local("LHR", "JFK", "2026-06-01", mode="fast")
 
 # With concurrency limit for constrained environments
 result = await search_local("LHR", "JFK", "2026-06-01", max_browsers=4)
@@ -22,9 +25,11 @@ bt = LetsFG(api_key="trav_...")
 result = bt.search("LHR", "JFK", "2026-06-01")
 ```
 
-**When to use local search:** Quick price checks, free-tier agents, routes served by the 200 local connectors, no-registration workflows.
+**When to use fast mode:** Quick price lookups, time-sensitive queries, constrained machines. Covers Kiwi, Skyscanner, Kayak, Momondo, eDreams, Trip.com, Booking.com + Ryanair, Wizz Air, Southwest, and regional OTAs for every continent.
 
-**When to use full search:** Comprehensive coverage across 400+ airlines, booking flow (unlock → book), GDS/NDC fares not available on airline websites.
+**When to use default (full) local search:** Maximum coverage across all 200+ connectors. Finds niche airlines and routes that OTAs may miss.
+
+**When to use full API search:** Comprehensive coverage across 400+ airlines, booking flow (unlock → book), GDS/NDC fares not available on airline websites.
 
 ## Architecture
 
