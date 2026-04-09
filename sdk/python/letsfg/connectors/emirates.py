@@ -474,14 +474,25 @@ class EmiratesConnectorClient:
             # Step 7: Scrape flight data from DOM
             logger.warning("Emirates: reached results page, scraping...")
             flights = await self._scrape_results(page, req)
+            
+            # Track if we got proper structured flights (with real times) vs body-text fallback
+            has_real_times = flights and any(
+                f.get("depTime") not in ("", "00:00") for f in flights
+            )
 
-            # For round-trip searches with multiple scraped prices from body-text,
-            # keep only the highest — most likely to be the actual RT fare.
-            # Fallback scrapes can pick up one-way fares, sidebars, or calendars.
-            if flights and req.return_from is not None and len(flights) > 1:
+            # For round-trip body-text fallback scrapes (no real times), multiple
+            # prices appear (one-way leg prices + RT total). Keep only the highest
+            # — most likely to be the actual RT fare.
+            # DO NOT filter proper DOM-scraped results that have real departure times.
+            if (
+                flights 
+                and req.return_from is not None 
+                and len(flights) > 1 
+                and not has_real_times
+            ):
                 # Sort by price descending, keep only the highest
                 flights = sorted(flights, key=lambda f: f.get("price", 0), reverse=True)[:1]
-                logger.warning("Emirates: RT multiple-price filter kept highest price=%s", 
+                logger.warning("Emirates: RT body-text fallback filter kept highest price=%s", 
                               flights[0].get("price") if flights else None)
 
             if not flights:
@@ -1191,7 +1202,7 @@ class EmiratesConnectorClient:
             const body = document.body?.innerText || '';
             if (body.includes('no flight options')) return [];
 
-            // Pre-process: join lines — merge "AED\n2,155" → "AED 2,155"
+            // Pre-process: join lines — merge "EUR\n332.37" → "EUR 332.37"
             const rawLines = body.split('\n').map(l => l.trim()).filter(Boolean);
             const lines = [];
             for (let k = 0; k < rawLines.length; k++) {
@@ -1199,8 +1210,9 @@ class EmiratesConnectorClient:
                     // Skip intermediate blank/whitespace-only (already filtered out)
                     let next = k + 1;
                     // Skip "Lowest price" etc between currency and amount
-                    while (next < rawLines.length && !/[\d,]+/.test(rawLines[next]) && next < k + 4) next++;
-                    if (next < rawLines.length && /^[\d,]+$/.test(rawLines[next])) {
+                    while (next < rawLines.length && !/[\d,.]+/.test(rawLines[next]) && next < k + 4) next++;
+                    // Match amounts with decimals like "332.37" or thousands like "2,155"
+                    if (next < rawLines.length && /^[\d,.]+$/.test(rawLines[next])) {
                         lines.push(rawLines[k] + ' ' + rawLines[next]);
                         k = next; // skip the number line
                         continue;
@@ -1220,16 +1232,17 @@ class EmiratesConnectorClient:
                     const flight = {};
                     const depTime = timeMatch[1];
 
-                    // Look backwards for date
+                    // Look backwards for date — format can be "Wed Apr 21" or "Mon 20 Apr"
                     let dateStr = '';
-                    if (i > 0 && /^\w{3}\s+\d{1,2}\s+\w{3}/.test(lines[i-1])) {
+                    if (i > 0 && /^\w{3}\s+\d{1,2}\s+\w{3}|^\w{3}\s+\w{3}\s+\d{1,2}/.test(lines[i-1])) {
                         dateStr = lines[i-1];
                     }
 
                     // Look forward for arrival time
                     let j = i + 1;
                     while (j < lines.length && j < i + 3) {
-                        if (/^\w{3}\s+\d{1,2}\s+\w{3}/.test(lines[j])) { j++; continue; }
+                        // Skip date lines in either format
+                        if (/^\w{3}\s+\d{1,2}\s+\w{3}|^\w{3}\s+\w{3}\s+\d{1,2}/.test(lines[j])) { j++; continue; }
                         if (/^\d{1,2}:\d{2}$/.test(lines[j])) break;
                         j++;
                     }
@@ -1266,7 +1279,7 @@ class EmiratesConnectorClient:
                     const cabinLine = lines[j] || '';
                     j++;
 
-                    // Price line: "from" or "AED X,XXX"
+                    // Price line: "from" or "EUR 332.37" or "AED 2,155"
                     let priceLine = '';
                     while (j < lines.length && j < i + 25) {
                         if (/AED|USD|EUR|GBP/i.test(lines[j])) {
@@ -1275,7 +1288,8 @@ class EmiratesConnectorClient:
                         }
                         j++;
                     }
-                    const priceMatch = priceLine.match(/(AED|USD|EUR|GBP)\s*([\d,]+)/i);
+                    // Match prices with decimals (EUR 332.37) or thousands (AED 2,155)
+                    const priceMatch = priceLine.match(/(AED|USD|EUR|GBP)\s*([\d,.]+)/i);
 
                     // Flight number — look for EK###
                     let flightNo = '';
