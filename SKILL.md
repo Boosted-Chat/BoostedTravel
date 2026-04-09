@@ -22,7 +22,7 @@ description: "LetsFG — Agent-native flight search, hotel search, and booking A
 ### search_flights
 Search 180+ airlines worldwide via local connectors. Returns real-time prices with zero markup or bias — $20–50 cheaper than OTAs.
 - **Cost:** FREE (unlimited)
-- **Input:** origin (IATA), destination (IATA), date_from, optional: date_to, return_from, return_to, adults, children, infants, cabin_class (M/W/C/F), max_stopovers, currency, sort, limit
+- **Input:** origin (IATA), destination (IATA), date_from, optional: date_to, return_from, return_to, adults, children, infants, cabin_class (M/W/C/F), max_stopovers, currency, sort, limit, mode ("fast" = OTAs + key airlines only, ~25 connectors, 20-40s)
 - **Output:** List of flight offers with price, airlines, times, segments, conditions, passenger_ids
 - **Note:** All offers are locked. Must unlock before booking.
 

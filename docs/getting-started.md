@@ -151,6 +151,7 @@ except AuthenticationError:
 | `--limit` | `-l` | `20` | Maximum number of results (1–100) |
 | `--sort` | | `price` | Sort by `price` or `duration` |
 | `--json` | `-j` | | Output raw JSON (for agents/scripts) |
+| `--mode` | `-m` | _(full)_ | `fast` = OTAs + key airlines only (~25 connectors, 20-40s) |
 | `--max-browsers` | `-b` | _(auto)_ | Max concurrent browsers for local search (1–32) |
 
 ## Multi-Passenger Examples
@@ -221,3 +222,18 @@ configure_max_browsers(4)
 ```
 
 Priority order: `LETSFG_MAX_BROWSERS` env var > explicit config > auto-detect from RAM.
+
+### Fast Mode
+
+If a full search takes too long (6+ minutes with all 200+ connectors), use `--mode fast` to search only ~25 high-coverage OTAs and key direct airlines. This typically completes in 20-40 seconds:
+
+```bash
+letsfg search LHR BCN 2026-06-15 --mode fast
+```
+
+```python
+from letsfg.local import search_local
+result = await search_local("LHR", "BCN", "2026-06-15", mode="fast")
+```
+
+Fast mode covers: Kiwi, Skyscanner, Kayak, Momondo, Cheapflights, eDreams, Trip.com, Booking.com, Traveloka, Cleartrip, Wego, Despegar, plus Ryanair, Wizz Air, Southwest, and Allegiant direct.

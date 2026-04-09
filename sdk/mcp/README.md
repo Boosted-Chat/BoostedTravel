@@ -46,6 +46,8 @@ pip install letsfg
 playwright install chromium
 ```
 
+**Tip:** For faster searches, use the `mode: "fast"` parameter in `search_flights` — fires only ~25 OTAs + key airlines (20-40s instead of 6+ min).
+
 ---
 
 ## Client Configuration
