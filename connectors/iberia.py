@@ -32,6 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ def _load_market_fares_sync(market: str) -> dict[str, tuple[float, str, str]]:
         return {}
 
     url = f"{_BASE}/{path}"
-    sess = creq.Session(impersonate="chrome131")
+    sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
     try:
         r = sess.get(url, headers=_HEADERS, timeout=20)
         if r.status_code != 200:

@@ -45,6 +45,7 @@ from ..models.flights import (
     FlightSegment,
 )
 from .browser import auto_block_if_proxied, launch_headed_browser
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ class ZipairConnectorClient:
         }
 
         logger.info("Zipair: API %s→%s on %s", req.origin, req.destination, dep_str)
-        sess = creq.Session(impersonate="chrome131")
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         try:
             r = sess.get(_BFF_URL, params=params, headers={
                 "Accept": "application/json",

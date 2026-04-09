@@ -25,6 +25,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ class OlympicAirConnectorClient:
             f"&SelectedReturnDate="
             f"&Type=Fares"
         )
-        session = creq.Session(impersonate="chrome131", headers=_HEADERS)
+        session = creq.Session(impersonate="chrome131", headers=_HEADERS, proxies=get_curl_cffi_proxies())
         response = session.get(url, timeout=self.timeout)
         if response.status_code != 200:
             raise RuntimeError(f"HTTP {response.status_code}")

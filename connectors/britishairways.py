@@ -34,6 +34,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ class BritishAirwaysConnectorClient:
         return offers
 
     def _fetch_solr_sync(self, url: str) -> dict | None:
-        sess = creq.Session(impersonate="chrome131")
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         try:
             r = sess.get(url, headers=_HEADERS, timeout=int(self.timeout))
             if r.status_code != 200:

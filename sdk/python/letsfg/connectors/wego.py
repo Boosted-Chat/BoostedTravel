@@ -466,7 +466,7 @@ class WegoConnectorClient:
 
             logger.info("WEGO: navigating to %s", search_url)
             try:
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=45000)
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
             except Exception as nav_err:
                 err_str = str(nav_err)
                 if "ERR_HTTP_RESPONSE_CODE_FAILURE" in err_str or "ERR_TUNNEL" in err_str:
@@ -484,7 +484,7 @@ class WegoConnectorClient:
                 pass
 
             cf_passed = False
-            for cf_wait in range(60):  # up to 60 s
+            for cf_wait in range(30):  # up to 30 s
                 # Check 1: title no longer shows challenge page
                 try:
                     title = (await page.title()).lower()
@@ -522,16 +522,16 @@ class WegoConnectorClient:
 
             if not cf_passed:
                 # Reload fallback — different proxy session on next attempt
-                logger.warning("WEGO: Cloudflare still blocking after 60s, reloading...")
+                logger.warning("WEGO: Cloudflare still blocking after 30s, reloading...")
                 try:
-                    await page.reload(wait_until="domcontentloaded", timeout=30000)
+                    await page.reload(wait_until="domcontentloaded", timeout=15000)
                 except Exception:
                     pass
                 try:
                     await page.bring_to_front()
                 except Exception:
                     pass
-                for cf_retry in range(25):
+                for cf_retry in range(12):
                     try:
                         title = (await page.title()).lower()
                     except Exception:
@@ -558,20 +558,20 @@ class WegoConnectorClient:
 
             # Wait for page to fully render and results to load
             logger.info("WEGO: waiting for flight results")
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             
             # Wait for network to settle
             try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass  # OK if times out - we'll work with what we have
             
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             
             # Scroll to trigger lazy loading
-            for _ in range(3):
+            for _ in range(2):
                 await page.evaluate("window.scrollBy(0, 400)")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.8)
 
             # Get page HTML and try multiple extraction methods
             html = await page.content()

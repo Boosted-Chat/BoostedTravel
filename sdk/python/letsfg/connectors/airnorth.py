@@ -29,6 +29,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ class AirnorthConnectorClient:
     # ------------------------------------------------------------------
 
     def _fetch_sync(self, req: FlightSearchRequest) -> str | None:
-        sess = creq.Session(impersonate="chrome131")
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         try:
             # Step 1: GET search page for CSRF token + cookies
             r1 = sess.get(_SEARCH_URL, headers=_HEADERS, timeout=int(self.timeout))

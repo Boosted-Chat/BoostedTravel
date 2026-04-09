@@ -33,6 +33,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ def _load_slug_cache_sync() -> None:
     if _slug_cache_loaded:
         return
     try:
-        sess = creq.Session(impersonate="chrome131")
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         r = sess.post(
             _AIRPORT_API,
             json={"language": "en", "siteEdition": _SITE_EDITION},
@@ -278,7 +279,7 @@ class KlmConnectorClient:
         )
 
     def _fetch_sync(self, url: str) -> str | None:
-        sess = creq.Session(impersonate="chrome131")
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         try:
             r = sess.get(url, headers=_HEADERS, timeout=int(self.timeout))
             if r.status_code != 200:

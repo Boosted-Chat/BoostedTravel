@@ -31,6 +31,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class PNGAirConnectorClient:
     # ── sync search flow ─────────────────────────────────────────
 
     def _search_sync(self, req: FlightSearchRequest) -> list[FlightOffer]:
-        sess = creq.Session(impersonate="chrome131")
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         try:
             return self._do_search(sess, req)
         finally:

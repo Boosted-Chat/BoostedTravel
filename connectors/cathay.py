@@ -40,6 +40,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
+from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ class CathayConnectorClient:
         logger.info("Cathay: API %s→%s on %s", req.origin, req.destination,
                      req.date_from.strftime("%Y-%m-%d"))
 
-        sess = creq.Session(impersonate="chrome131")
+        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         try:
             r = sess.get(
                 _API_URL,
