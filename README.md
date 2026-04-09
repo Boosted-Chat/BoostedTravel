@@ -1,22 +1,38 @@
 <div align="center">
 
-<!-- FOUNDING MEMBERS HERO BANNER -->
+<!-- COMMUNITY HERO BANNER -->
 <table>
 <tr>
 <td align="center">
 
-## ⭐ 1,000 Stargazers = Free Forever ⭐
+## ⭐ Join the Community ⭐
 
 <a href="https://github.com/LetsFG/LetsFG/stargazers">
   <img src="https://img.shields.io/github/stars/LetsFG/LetsFG?style=for-the-badge&logo=github&label=STARS&color=gold" alt="GitHub stars">
 </a>
 
-**First 1,000 stargazers get lifetime free access.**<br>
-Search 400+ airlines, book at raw prices, zero fees — forever.
+The bigger we get, the more airlines we cover.<br>
+The more we cover, the better it gets — for all of us.
 
-<a href="https://github.com/LetsFG/LetsFG"><img src="https://img.shields.io/badge/⭐_STAR_NOW-lock_in_free_access-FFD700?style=for-the-badge" alt="Star Now"></a>
+**Support us with a ⭐**
 
-<sub>After 1,000 stars: 1% unlock fee (min $1) • Founding members: always free</sub>
+<a href="https://github.com/LetsFG/LetsFG"><img src="https://img.shields.io/badge/⭐_Star_this_repo-FFD700?style=for-the-badge" alt="Star"></a>
+
+**Share with a friend ✈️**
+
+<a href="https://twitter.com/intent/tweet?text=Found%20this%20%E2%80%94%20180%2B%20airline%20connectors%2C%20real%20prices%2C%20zero%20markup.%20Your%20AI%20agent%20can%20search%20%26%20book%20flights%20now.&url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Share_on_𝕏-000000?style=flat-square&logo=x&logoColor=white" alt="Share on X"></a>
+&nbsp;
+<a href="https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Share_on_LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white" alt="Share on LinkedIn"></a>
+&nbsp;
+<a href="https://reddit.com/submit?url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG&title=LetsFG%20%E2%80%94%20180%2B%20airline%20connectors%20for%20AI%20agents.%20Real%20prices%2C%20zero%20markup."><img src="https://img.shields.io/badge/Share_on_Reddit-FF4500?style=flat-square&logo=reddit&logoColor=white" alt="Share on Reddit"></a>
+&nbsp;
+<a href="https://wa.me/?text=Check%20this%20out%20%E2%80%94%20LetsFG%20searches%20180%2B%20airlines%20and%20gives%20you%20the%20real%20price.%20No%20markup.%20https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Share_on_WhatsApp-25D366?style=flat-square&logo=whatsapp&logoColor=white" alt="Share on WhatsApp"></a>
+&nbsp;
+<a href="https://t.me/share/url?url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG&text=LetsFG%20%E2%80%94%20180%2B%20airline%20connectors%20for%20AI%20agents.%20Real%20prices%2C%20zero%20markup."><img src="https://img.shields.io/badge/Share_on_Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Share on Telegram"></a>
+&nbsp;
+<a href="mailto:?subject=Check%20out%20LetsFG&body=Found%20this%20%E2%80%94%20180%2B%20airline%20connectors%2C%20real%20prices%2C%20zero%20markup.%20Your%20AI%20agent%20can%20search%20%26%20book%20flights%20now.%0A%0Ahttps%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Send_via_Email-EA4335?style=flat-square&logo=gmail&logoColor=white" alt="Send via Email"></a>
+&nbsp;
+<a href="https://github.com/LetsFG/LetsFG"><img src="https://img.shields.io/badge/Copy_Link_%F0%9F%94%97-555555?style=flat-square" alt="Copy Link"></a>
 
 </td>
 </tr>
@@ -26,11 +42,19 @@ Search 400+ airlines, book at raw prices, zero fees — forever.
 
 <img src="assets/logo.png" alt="LetsFG" width="140">
 
+# We're LetsFG — a community of travelers.
+
+Finding a flight shouldn't mean checking 47 websites. Or 3 hours of searching.<br>
+Or having that feeling you could've got a better deal if you'd just waited a little longer.
+
+**So we built something about it.**<br>
+No markup. No tracking. No price that goes up because you looked twice.
+
 # Your AI agent just learned to book flights.
 
 **400+ airlines. Real prices. One function call.**
 
-LetsFG gives your AI agent flight search and booking superpowers — 200+ connectors fire in parallel on your machine, scanning the entire world for the cheapest price. Zero markup. Real airline tickets.
+LetsFG gives your AI agent flight search and booking superpowers. 200+ connectors fire in parallel on your machine, scanning the entire world for the cheapest price. Zero markup. Real airline tickets.
 
 **The same flight costs $20–$50 less** because you skip OTA inflation, cookie tracking, and surge pricing.
 
@@ -112,7 +136,7 @@ When you're ready to integrate it into your own agent, keep reading.
 
 **Messenger/Instagram = free search + small unlock fee.** When you chat with us on Messenger/Instagram, search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
 
-> ⭐ **First 1,000 stargazers get lifetime free access everywhere** — including server unlock. Star → verify → free forever.
+> 💡 **Know someone who travels?** The more people discover LetsFG, the more airlines we cover — and the better it gets for everyone. **[⭐ Star](https://github.com/LetsFG/LetsFG)** · **[Share with a friend](#-join-the-community-)**
 
 ---
 
@@ -171,7 +195,7 @@ letsfg book off_xxx \
 
 </details>
 
-> ⭐ **Star this repo → verify → get unlimited access forever.** No trial, no catch. First 1,000 stars only.
+> 💡 **Like what you see?** Support us — **[⭐ Star](https://github.com/LetsFG/LetsFG)** · **[Share with a friend](#-join-the-community-)**
 
 ---
 
@@ -351,7 +375,7 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 
 **[Documentation](https://api.letsfg.co/docs)** · **[Connector Health](https://api.letsfg.co/health/connectors)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)** · **[Instagram](https://ig.me/m/letsfg_)**
 
-MIT License · Made with ❤️ for AI agents
+*Open source · MIT License · Made with ❤️ by travelers, for travelers*
 
 Want updates? Click **Watch** above, or follow [@amjaworsky on X](https://x.com/amjaworsky).
 
