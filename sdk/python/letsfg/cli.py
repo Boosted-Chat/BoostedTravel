@@ -587,6 +587,8 @@ def search(
             limit=limit,
             max_browsers=max_browsers,
             max_stopovers=effective_max_stops,
+            departure_time_from=departure_from,
+            departure_time_to=departure_to,
         )
 
     try:

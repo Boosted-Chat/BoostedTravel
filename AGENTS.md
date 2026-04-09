@@ -187,7 +187,9 @@ letsfg search GDN BER 2026-03-03 --json
 | `--max-stops` | `-s` | `2` | Max stopovers (0–4) |
 | `--currency` | | `EUR` | Currency code |
 | `--limit` | `-l` | `20` | Max results (1–100) |
-| `--sort` | | `price` | `price` or `duration` |
+| `--sort` | | `price` | `price`, `duration`, or `departure_time` |
+| `--departure-from` | | _(none)_ | Earliest departure time `HH:MM` (e.g. `06:00`) |
+| `--departure-to` | | _(none)_ | Latest departure time `HH:MM` (e.g. `14:00`) |
 | `--max-browsers` | `-b` | _(auto)_ | Max concurrent browsers for local search (1–32) |
 | `--json` | `-j` | | JSON output for machine consumption |
 

@@ -462,6 +462,8 @@ class LetsFG:
         limit: int = 20,
         sort: str = "price",
         max_browsers: int | None = None,
+        departure_time_from: str | None = None,
+        departure_time_to: str | None = None,
     ) -> FlightSearchResult:
         """
         Search for flights — completely FREE, runs locally on your machine.
@@ -481,8 +483,10 @@ class LetsFG:
             max_stopovers: Max connections per direction (0-4)
             currency: 3-letter currency code
             limit: Max results (1-100)
-            sort: "price" or "duration"
+            sort: "price", "duration", or "departure_time"
             max_browsers: Max concurrent browser processes (1-32, default: auto-detect).
+            departure_time_from: Earliest departure time "HH:MM" (e.g. "06:00")
+            departure_time_to: Latest departure time "HH:MM" (e.g. "14:00")
 
         Returns:
             FlightSearchResult with offers, passenger_ids, and metadata.

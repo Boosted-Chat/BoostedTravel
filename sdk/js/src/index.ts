@@ -121,9 +121,13 @@ export interface SearchOptions {
   maxStopovers?: number;
   currency?: string;
   limit?: number;
-  sort?: 'price' | 'duration';
+  sort?: 'price' | 'duration' | 'departure_time';
   /** Max concurrent browser instances (1-32). Omit for auto-detect based on system RAM. */
   maxBrowsers?: number;
+  /** Earliest departure time HH:MM (e.g. '06:00' for morning flights). */
+  departureTimeFrom?: string;
+  /** Latest departure time HH:MM (e.g. '14:00' for flights before 2pm). */
+  departureTimeTo?: string;
 }
 
 export interface CheckoutProgress {
@@ -334,6 +338,8 @@ export async function searchLocal(
     return_date: options.returnDate,
     cabin_class: options.cabinClass,
     ...(options.maxBrowsers != null && { max_browsers: options.maxBrowsers }),
+    ...(options.departureTimeFrom != null && { departure_time_from: options.departureTimeFrom }),
+    ...(options.departureTimeTo != null && { departure_time_to: options.departureTimeTo }),
   });
 
   return new Promise((resolve, reject) => {

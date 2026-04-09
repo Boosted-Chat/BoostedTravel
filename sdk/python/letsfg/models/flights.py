@@ -42,7 +42,17 @@ class FlightSearchRequest(BaseModel):
     currency: str = Field("EUR", min_length=3, max_length=3)
     locale: str = Field("en", description="Language for city/airport names")
     limit: int = Field(50, ge=1, le=200, description="Max results to return")
-    sort: str = Field("price", description="Sort by: price, duration, best_per_airline")
+    sort: str = Field("price", description="Sort by: price, duration, departure_time")
+    departure_time_from: Optional[str] = Field(
+        None,
+        description="Earliest departure time HH:MM (e.g. '06:00' for morning flights)",
+        pattern=r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+    )
+    departure_time_to: Optional[str] = Field(
+        None,
+        description="Latest departure time HH:MM (e.g. '14:00' for flights before 2pm)",
+        pattern=r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+    )
 
     @field_validator("origin", "destination")
     @classmethod

@@ -38,6 +38,8 @@ async def search_local(
     limit: int = 50,
     max_browsers: int | None = None,
     max_stopovers: int | None = None,
+    departure_time_from: str | None = None,
+    departure_time_to: str | None = None,
 ) -> dict:
     """
     Run all 73 local airline connectors and return results as a dict.
@@ -70,6 +72,8 @@ async def search_local(
         currency=currency,
         limit=limit,
         max_stopovers=max_stopovers if max_stopovers is not None else 2,
+        departure_time_from=departure_time_from,
+        departure_time_to=departure_time_to,
     )
 
     resp = await multi_provider.search_flights(req)
