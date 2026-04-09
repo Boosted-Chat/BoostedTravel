@@ -38,8 +38,7 @@ async def search_local(
     limit: int = 50,
     max_browsers: int | None = None,
     max_stopovers: int | None = None,
-    departure_time_from: str | None = None,
-    departure_time_to: str | None = None,
+    mode: str | None = None,
 ) -> dict:
     """
     Run all 73 local airline connectors and return results as a dict.
@@ -52,6 +51,8 @@ async def search_local(
             None = auto-detect based on system RAM.
             Lower values use less memory but search slower.
             Higher values search faster but need more RAM.
+        mode: Search mode. None = full (all connectors, default).
+            "fast" = OTAs/aggregators + key direct airlines (~25 connectors, 20-40s).
     """
     from letsfg.connectors.engine import multi_provider
 
@@ -72,11 +73,9 @@ async def search_local(
         currency=currency,
         limit=limit,
         max_stopovers=max_stopovers if max_stopovers is not None else 2,
-        departure_time_from=departure_time_from,
-        departure_time_to=departure_time_to,
     )
 
-    resp = await multi_provider.search_flights(req)
+    resp = await multi_provider.search_flights(req, mode=mode)
     return resp.model_dump(mode="json")
 
 
@@ -331,7 +330,6 @@ def _build_location_index() -> dict[str, list[dict]]:
         "MDE": ("José María Córdova Airport", "Medellín", "airport"),
         # Africa
         "JNB": ("O.R. Tambo Airport", "Johannesburg", "airport"),
-        "HLA": ("Lanseria International Airport", "Johannesburg", "airport"),
         "CPT": ("Cape Town International Airport", "Cape Town", "airport"),
         "NBO": ("Jomo Kenyatta Airport", "Nairobi", "airport"),
         "ADD": ("Bole International Airport", "Addis Ababa", "airport"),
@@ -522,6 +520,7 @@ def _main() -> None:
             currency=params.get("currency", "EUR"),
             limit=params.get("limit", 50),
             max_browsers=params.get("max_browsers"),
+            mode=params.get("mode"),
         )
 
     try:

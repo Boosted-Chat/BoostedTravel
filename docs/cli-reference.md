@@ -44,6 +44,7 @@ All commands accept `--json` for structured output and `--api-key` to override t
 | `--currency` | | `EUR` | 3-letter currency code |
 | `--limit` | `-l` | `20` | Maximum number of results (1–100) |
 | `--sort` | | `price` | Sort by `price` or `duration` |
+| `--mode` | `-m` | _(full)_ | `fast` = OTAs + key airlines only (~25 connectors, 20-40s) |
 | `--max-browsers` | `-b` | _(auto)_ | Max concurrent browsers for local search (1–32) |
 | `--json` | `-j` | | Output raw JSON (for agents/scripts) |
 
@@ -74,6 +75,9 @@ letsfg search LON BCN 2026-04-01 --max-stops 0 --json
 
 # Limit browser concurrency for constrained environments
 letsfg search LHR BCN 2026-04-15 --max-browsers 4
+
+# Fast mode — OTAs + key airlines only (~25 connectors, 20-40s instead of 6+ min)
+letsfg search LHR BCN 2026-06-15 --mode fast
 ```
 
 All search is local — queries 180+ airline websites directly. No API key needed, just install and search.

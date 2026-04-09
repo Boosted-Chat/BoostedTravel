@@ -1,36 +1,22 @@
 <div align="center">
 
-<!-- COMMUNITY HERO BANNER -->
+<!-- FOUNDING MEMBERS HERO BANNER -->
 <table>
 <tr>
 <td align="center">
 
-## ⭐ Join the Community ⭐
+## ⭐ 1,000 Stargazers = Free Forever ⭐
 
 <a href="https://github.com/LetsFG/LetsFG/stargazers">
   <img src="https://img.shields.io/github/stars/LetsFG/LetsFG?style=for-the-badge&logo=github&label=STARS&color=gold" alt="GitHub stars">
 </a>
 
-The bigger we get, the more airlines we cover.<br>
-The more we cover, the better it gets — for all of us.
+**First 1,000 stargazers get lifetime free access.**<br>
+Search 400+ airlines, book at raw prices, zero fees — forever.
 
-**Support us with a ⭐**
+<a href="https://github.com/LetsFG/LetsFG"><img src="https://img.shields.io/badge/⭐_STAR_NOW-lock_in_free_access-FFD700?style=for-the-badge" alt="Star Now"></a>
 
-<a href="https://github.com/LetsFG/LetsFG"><img src="https://img.shields.io/badge/⭐_Star_this_repo-FFD700?style=for-the-badge" alt="Star"></a>
-
-**Share with a friend ✈️**
-
-<a href="https://twitter.com/intent/tweet?text=Found%20this.%20200%2B%20airline%20connectors%2C%20real%20prices%2C%20zero%20markup.%20Your%20AI%20agent%20can%20search%20%26%20book%20flights%20now.&url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Share_on_𝕏-000000?style=flat-square&logo=x&logoColor=white" alt="Share on X"></a>
-&nbsp;
-<a href="https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Share_on_LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white" alt="Share on LinkedIn"></a>
-&nbsp;
-<a href="https://reddit.com/submit?url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG&title=LetsFG%20-%20200%2B%20airline%20connectors%20for%20AI%20agents.%20Real%20prices%2C%20zero%20markup."><img src="https://img.shields.io/badge/Share_on_Reddit-FF4500?style=flat-square&logo=reddit&logoColor=white" alt="Share on Reddit"></a>
-&nbsp;
-<a href="https://wa.me/?text=Check%20this%20out!%20LetsFG%20searches%20200%2B%20airlines%20and%20gives%20you%20the%20real%20price.%20No%20markup.%20https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Share_on_WhatsApp-25D366?style=flat-square&logo=whatsapp&logoColor=white" alt="Share on WhatsApp"></a>
-&nbsp;
-<a href="https://t.me/share/url?url=https%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG&text=LetsFG%20-%20200%2B%20airline%20connectors%20for%20AI%20agents.%20Real%20prices%2C%20zero%20markup."><img src="https://img.shields.io/badge/Share_on_Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Share on Telegram"></a>
-&nbsp;
-<a href="mailto:?subject=Check%20out%20LetsFG&body=Found%20this.%20200%2B%20airline%20connectors%2C%20real%20prices%2C%20zero%20markup.%20Your%20AI%20agent%20can%20search%20%26%20book%20flights%20now.%0A%0Ahttps%3A%2F%2Fgithub.com%2FLetsFG%2FLetsFG"><img src="https://img.shields.io/badge/Send_via_Email-EA4335?style=flat-square&logo=gmail&logoColor=white" alt="Send via Email"></a>
+<sub>After 1,000 stars: 1% unlock fee (min $1) • Founding members: always free</sub>
 
 </td>
 </tr>
@@ -40,19 +26,11 @@ The more we cover, the better it gets — for all of us.
 
 <img src="assets/logo.png" alt="LetsFG" width="140">
 
-# We're LetsFG — a community of travelers.
-
-Finding a flight shouldn't mean checking 47 websites. Or 3 hours of searching.<br>
-Or having that feeling you could've got a better deal if you'd just waited a little longer.
-
-**So we built something about it.**<br>
-No markup. No tracking. No price that goes up because you looked twice.
-
 # Your AI agent just learned to book flights.
 
-**400+ airlines. Real prices. One function call.**
+**180+ airlines. Real prices. One function call.**
 
-LetsFG gives your AI agent flight search and booking superpowers. 200+ connectors fire in parallel on your machine, scanning the entire world for the cheapest price. Zero markup. Real airline tickets.
+LetsFG gives your AI agent flight search and booking superpowers — 180+ airline connectors fire in parallel on your machine, scanning the entire world for the cheapest price. Zero markup. Real airline tickets.
 
 **The same flight costs $20–$50 less** because you skip OTA inflation, cookie tracking, and surge pricing.
 
@@ -71,17 +49,8 @@ LetsFG gives your AI agent flight search and booking superpowers. 200+ connector
 [![GitHub stars](https://img.shields.io/github/stars/LetsFG/LetsFG?style=social)](https://github.com/LetsFG/LetsFG)
 [![PyPI](https://img.shields.io/pypi/v/letsfg)](https://pypi.org/project/letsfg/)
 [![npm](https://img.shields.io/npm/v/letsfg-mcp?label=npm%20%28MCP%29)](https://www.npmjs.com/package/letsfg-mcp)
-[![Connector Health](https://api.letsfg.co/api/v1/analytics/connectors/health/badge)](https://api.letsfg.co/health/connectors)
 [![smithery badge](https://smithery.ai/badge/letsfg)](https://smithery.ai/servers/letsfg)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-<br>
-
-### Supporters
-
-<a href="https://evomi.com/?utm_source=letsfg&utm_medium=banner">
-  <img src="assets/sponsor-evomi.png" alt="Evomi - Residential Proxies $0.49/GB" width="220">
-</a>
 
 </div>
 
@@ -102,7 +71,7 @@ We searched 5 routes on Google Flights and LetsFG on the same day (June 15, 2026
 
 > **$116 saved across 6 flights.** Google Flights inflates further on repeat searches. LetsFG returns the raw airline price every time.
 
-**Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 200+ connectors including Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, Spirit, Norwegian, AirAsia, and 190+ more). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
+**Why the difference?** Google Flights only searches its own limited set of airline partners. LetsFG searches **everywhere** — 180+ website connectors including Skyscanner, Kiwi, Kayak, Momondo, plus direct airline websites (Ryanair, United, Southwest, EasyJet, Spirit, Norwegian, AirAsia, and 170+ more). More sources = better prices. And unlike travel websites, LetsFG returns the raw price with zero markup, no tracking, no inflation.
 
 ---
 
@@ -130,11 +99,11 @@ When you're ready to integrate it into your own agent, keep reading.
 | **MCP Server (local)** | ✅ Free | ✅ Free | Ticket price only | Your machine |
 | **Messenger / Instagram** | ✅ Free | 1% (min $1) | Ticket price only | Our servers |
 
-**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 200+ connectors covering 400+ airlines on your machine. No API key needed, no fees, no limits.
+**Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 180+ airline connectors on your machine. No API key needed, no fees, no limits.
 
 **Messenger/Instagram = free search + small unlock fee.** When you chat with us on Messenger/Instagram, search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
 
-> 💡 **Know someone who travels?** The more people discover LetsFG, the more airlines we cover — and the better it gets for everyone. **[⭐ Star](https://github.com/LetsFG/LetsFG)** · **[Share with a friend](#-join-the-community-)**
+> ⭐ **First 1,000 stargazers get lifetime free access everywhere** — including server unlock. Star → verify → free forever.
 
 ---
 
@@ -143,7 +112,7 @@ When you're ready to integrate it into your own agent, keep reading.
 | | Google Flights / Expedia | **LetsFG** |
 |---|---|---|
 | Price | Inflated (tracking, cookies, surge) | **Raw airline price. $116 cheaper across 6 verified routes.** |
-| Coverage | Misses budget airlines | **200+ connectors, 400+ airlines** |
+| Coverage | Misses budget airlines | **180+ airline connectors** |
 | Speed | 30s+ (loading, ads, redirects) | **~10 seconds** |
 | Repeat search raises price? | Yes | **Never** |
 | Works in AI agents? | No | **Native** (CLI, MCP, SDK) |
@@ -164,7 +133,13 @@ Search flights immediately — **no API key, no registration, no account needed*
 letsfg search LHR BCN 2026-06-15
 ```
 
-That single command fires 200+ connectors on your machine and returns real-time prices from 400+ airlines. **Free. Unlimited. Zero setup.**
+That single command fires 180+ airline connectors on your machine and returns real-time prices. **Free. Unlimited. Zero setup.**
+
+**Short on time?** Use `--mode fast` to search only OTAs + key airlines (~25 connectors, 20-40s instead of 6+ min):
+
+```bash
+letsfg search LHR BCN 2026-06-15 --mode fast
+```
 
 Want to unlock and book? Star the repo for free access:
 
@@ -193,7 +168,7 @@ letsfg book off_xxx \
 
 </details>
 
-> 💡 **Like what you see?** Support us — **[⭐ Star](https://github.com/LetsFG/LetsFG)** · **[Share with a friend](#-join-the-community-)**
+> ⭐ **Star this repo → verify → get unlimited access forever.** No trial, no catch. First 1,000 stars only.
 
 ---
 
@@ -212,7 +187,7 @@ letsfg book off_xxx \
 }
 ```
 
-**That's it — search works immediately, no API key needed.** 200+ connectors covering 400+ airlines run locally.
+**That's it — search works immediately, no API key needed.** 180+ airline connectors run locally.
 
 <details>
 <summary>Add API key for unlock/book</summary>
@@ -263,6 +238,10 @@ console.log(`${flights.totalResults} offers`);
 from letsfg.local import search_local
 
 result = await search_local("GDN", "BCN", "2026-06-15")
+
+# Fast mode — OTAs + key airlines only, 20-40s
+result = await search_local("GDN", "BCN", "2026-06-15", mode="fast")
+
 for offer in result.offers[:5]:
     print(f"{offer.airlines[0]}: {offer.currency} {offer.price}")
 ```
@@ -273,7 +252,7 @@ for offer in result.offers[:5]:
 
 | Package | Command | What you get |
 |---------|---------|--------------|
-| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 200+ local connectors (400+ airlines) |
+| **Python SDK + CLI** | `pip install letsfg` | SDK + CLI + 180+ local airline connectors |
 | **MCP Server** | `npx letsfg-mcp` | Claude, Cursor, Windsurf — no API key needed |
 | **JS/TS SDK** | `npm install -g letsfg` | SDK + CLI |
 | **Remote MCP** | `https://api.letsfg.co/mcp` | No install (API key required) |
@@ -304,7 +283,7 @@ All commands accept `--json` for structured output and `--api-key` to override t
 Search (free) → Unlock (free) → Book (ticket price only)
 ```
 
-1. **Search** — 200+ local connectors fire in parallel on your machine, covering 400+ airlines. Returns full details: price, airlines, duration, stopovers, conditions.
+1. **Search** — 180+ local connectors fire in parallel on your machine. Returns full details: price, airlines, duration, stopovers, conditions.
 2. **Unlock** — confirms the live price with the airline and reserves the fare for 30 minutes.
 3. **Book** — creates a real airline PNR. E-ticket sent to the passenger's inbox.
 
@@ -332,7 +311,7 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 ┌─────────────────────────────────────────────────────┐
 │  AI Agents / CLI / SDK / MCP Server                 │
 ├─────────────────────────────────────────────────────┤
-│  Local connectors (200+ connectors, 400+ airlines)  │
+│  Local connectors (180+ airlines via Playwright)    │
 │  Ryanair, EasyJet, Spirit, Southwest, AirAsia, etc  │
 ├─────────────────────────────────────────────────────┤
 │  Dedup + Combo Engine + Currency Normalization      │
@@ -343,13 +322,13 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 ```
 
 <details>
-<summary><strong>200+ connectors, 400+ airlines — full list</strong></summary>
+<summary><strong>180+ airline connectors — full list</strong></summary>
 
 | Region | Airlines |
 |--------|----------|
 | **Europe** | Ryanair, Wizz Air, EasyJet, Norwegian, Vueling, Eurowings, Transavia, Pegasus, Turkish Airlines, Condor, SunExpress, Volotea, Smartwings, Jet2, LOT Polish Airlines, Finnair, SAS, Aegean, Aer Lingus, ITA Airways, TAP Portugal, Icelandair, PLAY |
 | **Middle East & Africa** | Emirates, Etihad, Qatar Airways, flydubai, Air Arabia, flynas, Salam Air, Air Peace, FlySafair, EgyptAir, Ethiopian Airlines, Kenya Airways, Royal Air Maroc, South African Airways |
-| **Asia-Pacific** | AirAsia, AirAsia X, IndiGo, SpiceJet, Akasa Air, Air India, Air India Express, VietJet, Cebu Pacific, Scoot, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR, Singapore Airlines, Cathay Pacific, Malaysian Airlines, Thai Airways, Korean Air, ANA, JAL, Qantas, Virgin Australia, Bangkok Airways, Air New Zealand, Garuda Indonesia, Philippine Airlines, US-Bangla, Biman Bangladesh |
+| **Asia-Pacific** | AirAsia, IndiGo, SpiceJet, Akasa Air, Air India, Air India Express, VietJet, Cebu Pacific, Scoot, Jetstar, Peach, Spring Airlines, Lucky Air, 9 Air, Nok Air, Batik Air, Jeju Air, T'way Air, ZIPAIR, Singapore Airlines, Cathay Pacific, Malaysian Airlines, Thai Airways, Korean Air, ANA, JAL, Qantas, Virgin Australia, Bangkok Airways, Air New Zealand, Garuda Indonesia, Philippine Airlines, US-Bangla, Biman Bangladesh |
 | **Americas** | Southwest, JetBlue, Frontier, Spirit, Allegiant, Avelo, Breeze, Sun Country, Flair, Porter, WestJet, Volaris, VivaAerobus, GOL, Azul, LATAM, JetSmart, Flybondi, Arajet, Wingo, Sky Airline, Copa, Avianca |
 | **Oceania** | Rex, Bonza, Link Airways, Air Vanuatu, Fiji Airways |
 
@@ -371,9 +350,9 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 
 <div align="center">
 
-**[Documentation](https://api.letsfg.co/docs)** · **[Connector Health](https://api.letsfg.co/health/connectors)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)** · **[Instagram](https://ig.me/m/letsfg_)**
+**[Documentation](https://api.letsfg.co/docs)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)** · **[Instagram](https://ig.me/m/letsfg_)**
 
-*Open source · MIT License · Made with ❤️ by travelers, for travelers*
+MIT License · Made with ❤️ for AI agents
 
 Want updates? Click **Watch** above, or follow [@amjaworsky on X](https://x.com/amjaworsky).
 

@@ -56,6 +56,9 @@ Search 180+ airlines via local connectors running on your machine. Returns real-
 from letsfg.local import search_local
 result = await search_local("GDN", "BCN", "2026-06-15")
 
+# Fast mode — OTAs + key airlines only, 20-40s
+result = await search_local("GDN", "BCN", "2026-06-15", mode="fast")
+
 # Limit concurrency on constrained machines
 result = await search_local("GDN", "BCN", "2026-06-15", max_browsers=4)
 ```
@@ -150,6 +153,9 @@ letsfg star --github your-username
 # Round trip
 letsfg search LON BCN 2026-04-01 --return 2026-04-08 --sort price
 
+# Fast mode — OTAs + key airlines only (~25 connectors, 20-40s instead of 6+ min)
+letsfg search LON BCN 2026-04-01 --mode fast
+
 # Multi-passenger: 2 adults + 1 child, business class
 letsfg search LHR SIN 2026-06-01 --adults 2 --children 1 --cabin C
 
@@ -187,9 +193,8 @@ letsfg search GDN BER 2026-03-03 --json
 | `--max-stops` | `-s` | `2` | Max stopovers (0–4) |
 | `--currency` | | `EUR` | Currency code |
 | `--limit` | `-l` | `20` | Max results (1–100) |
-| `--sort` | | `price` | `price`, `duration`, or `departure_time` |
-| `--departure-from` | | _(none)_ | Earliest departure time `HH:MM` (e.g. `06:00`) |
-| `--departure-to` | | _(none)_ | Latest departure time `HH:MM` (e.g. `14:00`) |
+| `--sort` | | `price` | `price` or `duration` |
+| `--mode` | `-m` | _(full)_ | `fast` = OTAs + key airlines only (~25 connectors, 20-40s) |
 | `--max-browsers` | `-b` | _(auto)_ | Max concurrent browsers for local search (1–32) |
 | `--json` | `-j` | | JSON output for machine consumption |
 

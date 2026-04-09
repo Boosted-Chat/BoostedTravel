@@ -23,6 +23,12 @@ letsfg search-local LHR BCN 2026-06-15
 
 That fires 200 airline connectors on your machine. **Free. Unlimited. Zero setup.**
 
+**Short on time?** Use `--mode fast` to search only OTAs + key airlines (~25 connectors, 20-40s instead of 6+ min):
+
+```bash
+letsfg search-local LHR BCN 2026-06-15 --mode fast
+```
+
 > ⭐ **[Star the repo](https://github.com/LetsFG/LetsFG) → register → unlimited access forever.** First 1,000 stars only.
 
 ## Authentication
