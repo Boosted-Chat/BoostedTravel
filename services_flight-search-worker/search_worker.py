@@ -5,12 +5,13 @@ Phase 1 (~3s): LetsFG API backend
   - Calls api.letsfg.co for GDS/NDC results (Duffel, Amadeus, Sabre, Travelport)
   - 400+ airlines including full-service carriers (BA, Lufthansa, Emirates, etc.)
 
-Phase 2 (~60s): Fan-out to connector-worker instances
+Phase 2 (~60-120s): Fan-out to connector-worker instances
   - Fires N parallel HTTP calls to the connector-worker Cloud Run service
   - Each call runs ONE airline connector on its OWN Cloud Run instance
   - 174 connectors registered, route-filtered to ~15-40 per search
   - Cloud Run auto-scales: 25 parallel requests = 25 separate instances
   - No Chrome/Playwright needed here — the connector-worker handles that
+  - Waits up to 3 minutes (FANOUT_TIMEOUT=180s) for all connectors
 
 Round-trip searches fire outbound + return directions in parallel,
 then combine one-way legs via the combo engine for virtual interlining
@@ -74,7 +75,7 @@ LETSFG_BASE_URL = os.environ.get("LETSFG_BASE_URL", "https://api.letsfg.co")
 CALLBACK_SECRET = os.environ.get("CALLBACK_SECRET", "")
 CONNECTOR_WORKER_URL = os.environ.get("CONNECTOR_WORKER_URL", "")
 CONNECTOR_WORKER_SECRET = os.environ.get("CONNECTOR_WORKER_SECRET", "")
-FANOUT_TIMEOUT = float(os.environ.get("FANOUT_TIMEOUT", "90"))
+FANOUT_TIMEOUT = float(os.environ.get("FANOUT_TIMEOUT", "180"))
 
 # ── Connector registry ──────────────────────────────────────────────────────
 # Static list of all direct airline connectors: (name, timeout_seconds).
@@ -782,21 +783,59 @@ async def _search_local(
                 t.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
 
-    # ── Collect offers ──────────────────────────────────────────────────
+    # ── Collect offers + telemetry ─────────────────────────────────────
     all_offers: list[dict] = []
+    connector_results: list[dict] = []
     for i, task_obj in enumerate(task_objs):
+        connector_id = tasks[i]["connector_id"]
         try:
             result = task_obj.result()
             offers = result.get("offers", [])
             all_offers.extend(offers)
+            # Telemetry from connector-worker response
+            connector_results.append({
+                "connector": connector_id,
+                "ok": len(offers) > 0 or result.get("ok", len(offers) > 0),
+                "offers": len(offers),
+                "latency_ms": int(result.get("elapsed_seconds", 0) * 1000),
+                "error_type": result.get("error_type"),
+                "error_message": result.get("error_message"),
+                "error_category": result.get("error_category"),
+                "http_status": result.get("http_status"),
+            })
         except (asyncio.CancelledError, asyncio.InvalidStateError):
-            logger.debug("Task %s cancelled/pending", tasks[i]["connector_id"])
+            logger.debug("Task %s cancelled/pending", connector_id)
+            connector_results.append({
+                "connector": connector_id,
+                "ok": False,
+                "offers": 0,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "error_type": "CancelledError",
+                "error_message": "Fan-out timeout — connector did not finish in time",
+                "error_category": "cancelled",
+                "http_status": None,
+            })
         except Exception as exc:
-            logger.warning("Task %s failed: %s", tasks[i]["connector_id"], exc)
+            logger.warning("Task %s failed: %s", connector_id, exc)
+            connector_results.append({
+                "connector": connector_id,
+                "ok": False,
+                "offers": 0,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:200],
+                "error_category": "crash",
+                "http_status": None,
+            })
 
     elapsed = time.monotonic() - t0
     logger.info("Fan-out complete: %s->%s — %d offers from %d connectors in %.1fs",
                 origin, destination, len(all_offers), len(tasks), elapsed)
+
+    # ── Report telemetry to health system ───────────────────────────────
+    asyncio.ensure_future(_report_telemetry(
+        connector_results, f"{origin}-{destination}",
+    ))
 
     return {
         "offers": all_offers,
@@ -848,6 +887,40 @@ async def _call_connector(
             logger.warning("- %s: %s", connector_id, exc)
             return {"offers": [], "total_results": 0}
     return {"offers": [], "total_results": 0}
+
+
+# ── Telemetry reporting ─────────────────────────────────────────────────────
+
+async def _report_telemetry(
+    connector_results: list[dict], route: str,
+) -> None:
+    """Fire-and-forget: POST connector health to the LetsFG analytics API.
+
+    Uses the same /api/v1/analytics/telemetry/connector-results endpoint
+    that the local SDK uses, but with client_type='cloud-fsw' so the
+    backend can distinguish cloud vs local results.
+    """
+    if not connector_results:
+        return
+    url = f"{LETSFG_BASE_URL}/api/v1/analytics/telemetry/connector-results"
+    payload = {
+        "route": route,
+        "sdk_version": "",
+        "client_type": "cloud-fsw",
+        "client_fingerprint": "fsw-cloud-run",
+        "results": connector_results,
+    }
+    headers = {"Content-Type": "application/json"}
+    if LETSFG_API_KEY:
+        headers["X-API-Key"] = LETSFG_API_KEY
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            logger.debug("Telemetry sent: %d results for %s", len(connector_results), route)
+    except Exception as exc:
+        logger.warning("Telemetry send failed: %s", exc)
 
 
 # ── Callback ────────────────────────────────────────────────────────────────

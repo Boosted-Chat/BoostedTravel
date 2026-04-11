@@ -27,12 +27,12 @@ Deploy (Cloud Run — NO --function flag):
   gcloud run deploy flight-search-worker \\
     --source=. --project=sms-caller --region=us-central1 \\
     --memory=512Mi --cpu=1 --concurrency=80 --max-instances=3 \\
-    --timeout=120 --min-instances=0 --cpu-throttling --no-traffic
+    --timeout=240 --min-instances=0 --cpu-throttling --no-traffic
 
   Cost notes:
   - concurrency=80: pure I/O (httpx fan-out), no CPU work → 1 instance serves many requests
   - max-instances=3: with concurrency=80, handles 240 concurrent searches
-  - timeout=120: fan-out is 90s max, 120s gives headroom
+  - timeout=240: fan-out is 180s max, 240s gives headroom
   - cpu-throttling: CPU allocated only during request processing
   - min-instances=0: scales to zero when idle
 """

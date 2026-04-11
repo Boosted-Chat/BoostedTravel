@@ -748,6 +748,20 @@ async def _execute(params: dict) -> dict:
     except asyncio.TimeoutError:
         logger.warning("%s: hard timeout after %.1fs",
                        connector_id, time.monotonic() - t0)
+        error_info = {
+            "error_type": "TimeoutError",
+            "error_message": f"Hard timeout after {time.monotonic() - t0:.0f}s",
+            "error_category": "search_timeout",
+        }
+    except Exception as exc:
+        logger.warning("%s: unhandled error: %s", connector_id, exc)
+        error_info = {
+            "error_type": type(exc).__name__,
+            "error_message": str(exc)[:200],
+            "error_category": "crash",
+        }
+    else:
+        error_info = {}
     finally:
         try:
             await client.close()
@@ -761,12 +775,15 @@ async def _execute(params: dict) -> dict:
                 connector_id, len(all_offers), elapsed)
 
     offers_json = [o.model_dump(mode="json") for o in all_offers]
-    return {
+    result = {
         "connector_id": connector_id,
         "offers": offers_json,
         "total_results": len(offers_json),
         "elapsed_seconds": round(elapsed, 1),
     }
+    if error_info:
+        result.update(error_info)
+    return result
 
 
 async def _cleanup_browser(client):
