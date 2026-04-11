@@ -287,6 +287,7 @@ for offer in result.offers[:5]:
 | **MCP Server** | `npx letsfg-mcp` | Claude, Cursor, Windsurf — no API key needed |
 | **JS/TS SDK** | `npm install -g letsfg` | SDK + CLI |
 | **Remote MCP** | `https://api.letsfg.co/mcp` | No install (API key required) |
+| **Agent Skill** | `npx skills add LetsFG/LetsFG` | Install flight search skill for any AI agent ([skills.sh](https://skills.sh)) |
 | **Smithery** | [smithery.ai/servers/letsfg](https://smithery.ai/servers/letsfg) | One-click MCP install |
 
 ---
