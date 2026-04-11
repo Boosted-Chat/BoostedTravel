@@ -944,7 +944,7 @@ class MultiProvider:
         # are ready after GLOBAL_TIMEOUT seconds, rather than waiting forever
         # for slow browser connectors queued behind the semaphore.
         all_tasks = tasks + combo_tasks
-        GLOBAL_TIMEOUT = float(os.environ.get("LETSFG_SEARCH_TIMEOUT", "90"))
+        GLOBAL_TIMEOUT = float(os.environ.get("LETSFG_SEARCH_TIMEOUT", "180"))
         
         # Create named Task objects so we can identify which finished
         named_tasks = [asyncio.create_task(t, name=str(i)) for i, t in enumerate(all_tasks)]
@@ -1177,6 +1177,11 @@ class MultiProvider:
             # Check if we have rich telemetry captured by _search_connector_generic
             if provider in self._connector_telemetry:
                 tel = self._connector_telemetry[provider]
+                # Skip 'cancelled' connectors — they never ran, just got
+                # killed by the global timeout while queued for a browser
+                # slot. Reporting them as failures poisons the health dashboard.
+                if tel.error_category == "cancelled":
+                    continue
                 connector_results.append({
                     "connector": tel.connector,
                     "ok": tel.ok,
@@ -1490,12 +1495,17 @@ class MultiProvider:
         except BaseException as exc:
             # Catch CancelledError / KeyboardInterrupt / any crash —
             # never let one connector take down the whole search.
-            logger.warning("%s crashed: %s", source, type(exc).__name__)
-            # Record crash with error details
+            is_cancelled = isinstance(exc, (asyncio.CancelledError,))
+            if is_cancelled:
+                logger.debug("%s cancelled (global timeout)", source)
+            else:
+                logger.warning("%s crashed: %s", source, type(exc).__name__)
+            # Record error — 'cancelled' connectors never actually ran,
+            # so they must NOT poison the health dashboard.
             telemetry.ok = False
             telemetry.error_type = type(exc).__name__
             telemetry.error_message = str(exc)[:200]  # truncate long messages
-            telemetry.error_category = "crash"
+            telemetry.error_category = "cancelled" if is_cancelled else "crash"
             # Try to extract HTTP status if it's an HTTP error
             if hasattr(exc, 'response') and hasattr(exc.response, 'status_code'):
                 telemetry.http_status = exc.response.status_code

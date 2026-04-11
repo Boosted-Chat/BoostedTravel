@@ -20,14 +20,15 @@ logger = logging.getLogger(__name__)
 
 # ── Tier thresholds (RAM in GB) ──────────────────────────────────────────────
 # Each tier maps to a recommended max concurrent browsers.
+# Each headless Chrome instance uses ~150-300 MB RAM.
 _TIERS = [
     # (min_ram_gb, max_browsers, tier_name)
     (0,   2, "minimal"),     # <2 GB — barely usable
     (2,   3, "low"),         # 2–4 GB — budget laptops
-    (4,   4, "moderate"),    # 4–8 GB — older machines
-    (8,   6, "standard"),    # 8–16 GB — typical dev machine
-    (16,  8, "high"),        # 16–32 GB — power user
-    (32,  8, "maximum"),     # 32+ GB — workstation (cap at 8)
+    (4,   5, "moderate"),    # 4–8 GB — older machines
+    (8,   8, "standard"),    # 8–16 GB — typical dev machine
+    (16, 12, "high"),        # 16–32 GB — power user
+    (32, 12, "maximum"),     # 32+ GB — workstation
 ]
 
 
