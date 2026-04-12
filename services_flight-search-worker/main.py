@@ -43,7 +43,7 @@ import os
 
 from flask import Flask, request, jsonify, abort
 
-from search_worker import run_search
+from search_worker import run_search, normalize_offer_currencies
 
 logging.basicConfig(
     level=logging.INFO,
@@ -281,7 +281,16 @@ async def _run_test_search(
     merged = _filter_route_mismatch(merged, valid_origins, valid_dests)
     if max_stops is not None:
         merged = _filter_by_stops(merged, max_stops)
-    merged.sort(key=lambda o: float(o.get("price", 999999)))
+
+    # Normalize all prices to the requested currency before sorting.
+    # Connectors return prices in their native currencies (USD, EUR, PLN, etc.)
+    # — sorting raw price numbers across currencies is meaningless.
+    normalize_offer_currencies(merged, currency)
+
+    # Rank: price + 8% penalty per stop (direct flights rank higher)
+    merged.sort(key=lambda o: float(o.get("price", 999999)) * (
+        1 + 0.08 * ((o.get("outbound") or {}).get("stopovers", 0)
+                    + (o.get("inbound") or {}).get("stopovers", 0))))
     merged = merged[:limit]
 
     elapsed = _time.monotonic() - t0

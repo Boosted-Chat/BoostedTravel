@@ -354,6 +354,24 @@ _BROWSER_SOURCES: set[str] = {
     "airasiamove_ota",
 }
 
+# Priority browser connectors — full-service carriers and key OTAs that
+# should acquire browser slots BEFORE other browser connectors.
+# Without priority, these get queued behind 80+ browser connectors sorted
+# by timeout ascending, and often get cancelled by the global search timeout
+# (180s) before they even acquire a slot.
+_PRIORITY_BROWSER_SOURCES: set[str] = {
+    # Gulf carriers — frequently cheapest on long-haul international routes
+    "emirates_direct", "etihad_direct", "qatar_direct",
+    # Global full-service carriers with native RT search support
+    "turkish_direct", "singapore_direct", "finnair_direct",
+    "korean_direct", "nh_direct",
+    # US big 3 — essential for transatlantic/transpacific routes
+    "delta_direct", "united_direct", "american_direct",
+    # Key aggregator OTAs with highest route coverage
+    "momondo_meta", "kayak_meta", "skyscanner_meta",
+    "edreams_ota", "opodo_ota",
+}
+
 # Fast mode sources — OTAs, metas, and key high-volume LCCs (~25 connectors).
 # These cover 90%+ of global routes with a ~20-40s search time vs 6+ min for all connectors.
 # Includes: all OTAs, all metas, plus key direct airlines (top EU/US LCCs).
@@ -939,13 +957,14 @@ class MultiProvider:
                         len(_DIRECT_AIRLINE_connectorS))
 
         # Smart ordering: API-only connectors first (instant, no Chrome needed),
-        # then browser connectors sorted by timeout ascending (fast scrapers get
-        # semaphore slots before slow ones). On weak VMs this means results start
-        # flowing while heavy browser connectors queue behind the semaphore.
+        # then browser connectors sorted by priority + timeout ascending.
+        # Priority connectors (full-service carriers, key OTAs) get browser
+        # slots first, preventing them from being cancelled by the global
+        # timeout when 80+ browser connectors compete for limited slots.
         api_connectors = [(s, c, t) for s, c, t in filtered_connectors if s not in _BROWSER_SOURCES]
         browser_connectors = sorted(
             ((s, c, t) for s, c, t in filtered_connectors if s in _BROWSER_SOURCES),
-            key=lambda x: x[2],  # sort by timeout (fastest first)
+            key=lambda x: (x[0] not in _PRIORITY_BROWSER_SOURCES, x[2]),
         )
         filtered_connectors = api_connectors + browser_connectors
 

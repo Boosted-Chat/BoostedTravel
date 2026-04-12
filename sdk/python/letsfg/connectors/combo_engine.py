@@ -158,6 +158,11 @@ def build_combos(
 
         if same_source:
             # Same-airline round-trip — looks like a native RT offer
+            # Merge original conditions with per-leg booking URLs so both
+            # outbound and return links are available to the consumer.
+            _rt_conds = dict(ob.conditions or {})
+            _rt_conds["outbound_booking_url"] = ob.booking_url or ""
+            _rt_conds["inbound_booking_url"] = rt.booking_url or ""
             return FlightOffer(
                 id=f"rt_{combo_hash}",
                 price=round(combo_price, 2),
@@ -168,7 +173,7 @@ def build_combos(
                 inbound=rt.outbound,
                 airlines=all_airlines,
                 owner_airline=ob.owner_airline or (all_airlines[0] if all_airlines else ""),
-                conditions=ob.conditions or {},
+                conditions=_rt_conds,
                 booking_url=ob.booking_url or "",
                 is_locked=False,
                 source=ob.source,

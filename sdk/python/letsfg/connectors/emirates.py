@@ -908,10 +908,18 @@ class EmiratesConnectorClient:
                 # Priority 2: DOM scraping (multi-strategy)
                 flights = await self._scrape_results(page, req)
 
-            # For RT requests with bounds-parsed outbound flights, ensure inbound info is set
+            # For RT requests with bounds-parsed outbound flights, ensure inbound info is set.
+            # Also covers DOM/fallback flights that lack bound_type entirely —
+            # without this, non-bounds flights would appear as one-way and get
+            # dropped by the engine's RT preference filter.
             if req.return_from is not None and flights:
                 for f in flights:
-                    if f.get("bound_type") == "OUTBOUND" and not f.get("inbound_origin"):
+                    bt = (f.get("bound_type") or "").upper()
+                    # Skip INBOUND legs — they're the return direction, not outbound
+                    if bt == "INBOUND":
+                        continue
+                    # Set inbound info for OUTBOUND legs or untyped flights (DOM/fallback)
+                    if not f.get("inbound_origin"):
                         f["inbound_origin"] = req.destination
                         f["inbound_destination"] = req.origin
                         f["inbound_depTime"] = "00:00"

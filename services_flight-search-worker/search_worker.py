@@ -77,6 +77,65 @@ CONNECTOR_WORKER_URL = os.environ.get("CONNECTOR_WORKER_URL", "")
 CONNECTOR_WORKER_SECRET = os.environ.get("CONNECTOR_WORKER_SECRET", "")
 FANOUT_TIMEOUT = float(os.environ.get("FANOUT_TIMEOUT", "180"))
 
+
+# ── Currency normalization ──────────────────────────────────────────────────
+# Connectors return prices in their native currencies (USD from OTAs,
+# EUR from European LCCs, GBP from UK airlines, etc.).  Before sorting
+# and returning results we must convert everything to the requested
+# currency so prices are directly comparable.
+
+# Hardcoded fallback rates vs EUR (updated April 2026)
+_FALLBACK_VS_EUR: dict[str, float] = {
+    "EUR": 1.0,
+    "USD": 1.08, "GBP": 0.86, "PLN": 4.28, "CZK": 25.3, "HUF": 395.0,
+    "SEK": 11.2, "NOK": 11.5, "DKK": 7.46, "CHF": 0.96, "RON": 4.97,
+    "BGN": 1.96, "TRY": 39.5, "CAD": 1.47, "AUD": 1.66, "JPY": 162.0,
+    "CNY": 7.85, "INR": 91.0, "BRL": 6.2, "THB": 37.5, "ZAR": 20.5,
+    "KWD": 0.33, "AED": 3.97, "SAR": 4.05, "KES": 140.0, "NGN": 1760.0,
+    "EGP": 53.0, "MYR": 5.05, "SGD": 1.45, "HKD": 8.42, "NZD": 1.82,
+    "MXN": 21.5, "ARS": 1085.0, "KRW": 1480.0, "IDR": 17500.0,
+    "PHP": 63.0, "VND": 27500.0, "CLP": 1020.0, "COP": 4300.0,
+    "ILS": 3.90, "QAR": 3.93, "BHD": 0.41, "OMR": 0.42, "JOD": 0.77,
+    "MAD": 10.8, "TWD": 34.5, "PKR": 300.0, "BDT": 118.0, "LKR": 330.0,
+    "RUB": 99.0, "UAH": 44.0,
+}
+
+
+def _convert_price(amount: float, from_cur: str, to_cur: str) -> float | None:
+    """Convert amount between currencies using fallback rates.
+    Returns None if conversion is not possible."""
+    from_cur = from_cur.upper()
+    to_cur = to_cur.upper()
+    if from_cur == to_cur:
+        return amount
+    from_rate = _FALLBACK_VS_EUR.get(from_cur)
+    to_rate = _FALLBACK_VS_EUR.get(to_cur)
+    if from_rate is None or to_rate is None:
+        return None
+    return round(amount / from_rate * to_rate, 2)
+
+
+def normalize_offer_currencies(offers: list[dict], target_currency: str) -> list[dict]:
+    """Convert all offer prices to target_currency.
+
+    Mutates offers in-place: updates price, currency, price_formatted.
+    Offers whose currency cannot be converted are kept as-is (rare edge case).
+    """
+    target = target_currency.upper()
+    for offer in offers:
+        offer_cur = (offer.get("currency") or "EUR").upper()
+        if offer_cur == target:
+            continue
+        price = offer.get("price")
+        if price is None:
+            continue
+        converted = _convert_price(float(price), offer_cur, target)
+        if converted is not None:
+            offer["price"] = converted
+            offer["currency"] = target
+            offer["price_formatted"] = f"{converted} {target}"
+    return offers
+
 # ── Connector registry ──────────────────────────────────────────────────────
 # Static list of all direct airline connectors: (name, timeout_seconds).
 # Kept in sync with letsfg SDK engine.py _DIRECT_AIRLINE_connectorS.
@@ -373,7 +432,12 @@ async def run_search(params: dict) -> dict:
     merged = _filter_route_mismatch(merged, valid_origins, valid_dests)
     if max_stops is not None:
         merged = _filter_by_stops(merged, max_stops)
-    merged.sort(key=lambda o: float(o.get("price", 999999)))
+    # Normalize all prices to the requested currency before sorting
+    normalize_offer_currencies(merged, currency)
+    # Rank: price + 8% penalty per stop (direct flights rank higher)
+    merged.sort(key=lambda o: float(o.get("price", 999999)) * (
+        1 + 0.08 * ((o.get("outbound") or {}).get("stopovers", 0)
+                    + (o.get("inbound") or {}).get("stopovers", 0))))
     merged = merged[:limit]
 
     elapsed = time.monotonic() - t0
@@ -532,7 +596,12 @@ async def _run_round_trip(
     merged = _filter_route_mismatch(merged, valid_origins, valid_dests)
     if max_stops is not None:
         merged = _filter_by_stops(merged, max_stops)
-    merged.sort(key=lambda o: float(o.get("price", 999999)))
+    # Normalize all prices to the requested currency before sorting
+    normalize_offer_currencies(merged, currency)
+    # Rank: price + 8% penalty per stop (direct flights rank higher)
+    merged.sort(key=lambda o: float(o.get("price", 999999)) * (
+        1 + 0.08 * ((o.get("outbound") or {}).get("stopovers", 0)
+                    + (o.get("inbound") or {}).get("stopovers", 0))))
     merged = merged[:limit]
 
     elapsed = time.monotonic() - t0
