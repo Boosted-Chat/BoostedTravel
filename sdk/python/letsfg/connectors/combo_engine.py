@@ -26,6 +26,7 @@ from ..models.flights import (
     FlightOffer,
     FlightRoute,
 )
+from .currency import _fallback_convert
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,17 @@ def build_combos(
                         cross_source_pairs.append((ob, rt))
 
     same_source_pairs.sort(key=lambda p: _sort_price(p[0]) + _sort_price(p[1]))
-    cross_source_pairs.sort(key=lambda p: _sort_price(p[0]) + _sort_price(p[1]))
+
+    def _cross_sort_price(pair: tuple[FlightOffer, FlightOffer]) -> float:
+        ob, rt = pair
+        # When both legs have price_normalized, use that for sorting.
+        # Otherwise convert to target_currency so we never compare raw
+        # numbers from different currencies.
+        ob_p = ob.price_normalized if ob.price_normalized is not None else _fallback_convert(ob.price, ob.currency, target_currency)
+        rt_p = rt.price_normalized if rt.price_normalized is not None else _fallback_convert(rt.price, rt.currency, target_currency)
+        return ob_p + rt_p
+
+    cross_source_pairs.sort(key=_cross_sort_price)
 
     def _make_offer(
         ob: FlightOffer, rt: FlightOffer, *, same_source: bool,
@@ -145,7 +156,14 @@ def build_combos(
             combo_price = total_price
         else:
             combo_currency = target_currency
-            combo_price = total_normalized if total_normalized else total_price
+            if total_normalized:
+                combo_price = total_normalized
+            else:
+                # Convert each leg to target currency before adding — never
+                # mix raw prices from different currencies.
+                ob_converted = _fallback_convert(ob.price, ob.currency, target_currency)
+                rt_converted = _fallback_convert(rt.price, rt.currency, target_currency)
+                combo_price = ob_converted + rt_converted
 
         # Airlines
         ob_airlines = set(ob.airlines) if ob.airlines else set()
