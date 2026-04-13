@@ -2,8 +2,8 @@
 Core search logic — two-phase flight search with fan-out orchestration.
 
 Phase 1 (~3s): LetsFG API backend
-  - Calls api.letsfg.co for GDS/NDC results (Duffel, Amadeus, Sabre, Travelport)
-  - 400+ airlines including full-service carriers (BA, Lufthansa, Emirates, etc.)
+  - Calls api.letsfg.co for Kiwi + MCP results
+  - LCCs + virtual interlining via Kiwi, community servers via MCP
 
 Phase 2 (~60-120s): Fan-out to connector-worker instances
   - Fires N parallel HTTP calls to the connector-worker Cloud Run service
@@ -148,19 +148,20 @@ CONNECTOR_REGISTRY: list[tuple[str, float]] = [
     ("arajet_direct", 15.0),
     ("flyarystan_direct", 15.0),
     ("jazeera_direct", 15.0),
-    ("austrian_direct", 20.0),
-    ("brusselsairlines_direct", 20.0),
-    ("discover_direct", 20.0),
+    # DISABLED: promotional JSON-LD "prices from" data, NOT actual bookable fares
+    # ("austrian_direct", 20.0),
+    # ("brusselsairlines_direct", 20.0),
+    # ("discover_direct", 20.0),
     ("egyptair_direct", 20.0),
     ("garuda_direct", 20.0),
     ("itaairways_direct", 20.0),
     ("iwantthatflight_direct", 20.0),
     ("jal_direct", 20.0),
-    ("lufthansa_direct", 20.0),
+    # ("lufthansa_direct", 20.0),  # DISABLED: promotional JSON-LD
     ("olympicair_direct", 20.0),
     ("salamair_direct", 20.0),
     ("skyexpress_direct", 20.0),
-    ("swiss_direct", 20.0),
+    # ("swiss_direct", 20.0),  # DISABLED: promotional JSON-LD
     # ── Mixed API + light browser (25s) ─────────────────────────────────
     ("airarabia_direct", 25.0),
     ("airasia_direct", 25.0),
@@ -201,8 +202,8 @@ CONNECTOR_REGISTRY: list[tuple[str, float]] = [
     ("flysafair_direct", 25.0),
     ("frontier_direct", 25.0),
     ("gol_direct", 25.0),
-    ("iberia_direct", 25.0),
-    ("iberiaexpress_direct", 25.0),
+    # ("iberia_direct", 25.0),  # DISABLED: promotional JSON-LD
+    # ("iberiaexpress_direct", 25.0),  # DISABLED: promotional JSON-LD
     ("icelandair_direct", 25.0),
     ("indigo_direct", 25.0),
     ("jejuair_direct", 25.0),
@@ -779,6 +780,29 @@ async def _search_local(
         logger.info("Route filter: %s->%s — skipped %d/%d irrelevant connectors",
                      origin, destination, skipped, len(CONNECTOR_REGISTRY))
 
+    # Skip temporarily disabled connectors (100% fail rate, wasting resources)
+    _TEMPORARILY_DISABLED = {
+        "auntbetty_ota", "flightcatchers_ota", "akbartravels_ota", "byojet_ota",
+        "travelup_ota", "yatra_ota", "musafir_ota", "webjet_ota", "wego_meta",
+        "aerlingus_direct", "westjet_direct", "saudia_direct", "airtransat_direct",
+        "airchina_direct", "cathay_direct", "singapore_direct", "royaljordanian_direct",
+        "latam_direct", "norwegian_direct", "hainan_direct", "korean_direct",
+        "play_direct", "chinaeastern_direct", "vietnamairlines_direct", "aircanada_direct",
+        "mea_direct", "delta_direct", "ethiopian_direct", "kenyaairways_direct",
+        "etihad_direct", "airserbia_direct", "finnair_direct", "nh_direct",
+        "evaair_direct", "aireuropa_direct", "saa_direct", "kuwaitairways_direct",
+        "elal_direct", "emirates_direct", "asiana_direct", "royalairmaroc_direct",
+    }
+    before_disabled = len(filtered)
+    filtered = [
+        (name, cls, t) for name, cls, t in filtered
+        if name not in _TEMPORARILY_DISABLED
+    ]
+    disabled_skipped = before_disabled - len(filtered)
+    if disabled_skipped:
+        logger.info("Health filter: skipped %d temporarily disabled connectors",
+                    disabled_skipped)
+
     # ── Build fan-out tasks ─────────────────────────────────────────────
     tasks: list[dict] = []
     origin_country = get_country(origin)
@@ -919,11 +943,13 @@ async def _call_connector(
 ) -> dict:
     """Make a single HTTP call to the connector-worker service.
 
-    Retries on HTTP 500 (Cloud Run cold-start / no available instance)
-    with exponential backoff: 2s, 4s.  By the time the retry fires,
+    Retries on HTTP 429 (rate limited) and 500 (Cloud Run cold-start)
+    with jittered exponential backoff.  By the time the retry fires,
     Cloud Run will have spun up more instances from the initial burst.
     """
+    import random
     connector_id = task["connector_id"]
+    _RETRYABLE_STATUSES = {429, 500, 502, 503}
     for attempt in range(max_retries + 1):
         try:
             resp = await client.post(
@@ -931,8 +957,12 @@ async def _call_connector(
                 json=task,
                 headers=headers,
             )
-            if resp.status_code == 500 and attempt < max_retries:
-                await asyncio.sleep(2 ** (attempt + 1))
+            if resp.status_code in _RETRYABLE_STATUSES and attempt < max_retries:
+                # Jittered backoff: 2-4s, 4-8s
+                delay = (2 ** (attempt + 1)) + random.uniform(0, 2)
+                logger.debug("- %s: HTTP %s, retry %d after %.1fs",
+                             connector_id, resp.status_code, attempt + 1, delay)
+                await asyncio.sleep(delay)
                 continue
             resp.raise_for_status()
             data = resp.json()
@@ -944,14 +974,16 @@ async def _call_connector(
                             f" (retry {attempt})" if attempt else "")
             return data
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 500 and attempt < max_retries:
-                await asyncio.sleep(2 ** (attempt + 1))
+            if exc.response.status_code in _RETRYABLE_STATUSES and attempt < max_retries:
+                delay = (2 ** (attempt + 1)) + random.uniform(0, 2)
+                await asyncio.sleep(delay)
                 continue
             logger.warning("- %s: HTTP %s", connector_id, exc.response.status_code)
-            return {"offers": [], "total_results": 0}
+            return {"offers": [], "total_results": 0, "http_status": exc.response.status_code}
         except Exception as exc:
             if attempt < max_retries:
-                await asyncio.sleep(2 ** (attempt + 1))
+                delay = (2 ** (attempt + 1)) + random.uniform(0, 2)
+                await asyncio.sleep(delay)
                 continue
             logger.warning("- %s: %s", connector_id, exc)
             return {"offers": [], "total_results": 0}

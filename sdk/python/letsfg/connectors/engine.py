@@ -430,13 +430,15 @@ _TEMPORARILY_DISABLED: set[str] = {
     # ── Direct airlines (confirmed broken 2026-04-13 audit) ──
     "airchina_direct",    # Not tested
     "hainan_direct",      # Not tested
-    "play_direct",        # Airline defunct
     "delta_direct",       # Timeout
     "etihad_direct",      # API changed ("Invalid Origin Airport Country")
     "airserbia_direct",   # Browser form detection broken
     "nh_direct",          # "no search data captured"
     "asiana_direct",      # Returns 0 offers
 }
+
+# DEFUNCT AIRLINES — Do not re-add, these airlines have ceased operations:
+# - play_direct: PLAY Airlines (OG) — Icelandic ULCC, shut down ~2024
 
 # Map our cabin codes (M/W/C/F) to normalized cabin strings used in FlightSegment.
 # Connectors may return varied cabin strings — this normalizes for comparison.

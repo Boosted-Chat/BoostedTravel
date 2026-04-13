@@ -1,4 +1,4 @@
 flask==3.1.0
 gunicorn==23.0.0
 httpx==0.28.1
-letsfg==1.5.31
+letsfg==1.10.1

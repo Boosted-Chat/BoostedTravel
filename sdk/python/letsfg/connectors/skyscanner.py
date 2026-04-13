@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -280,24 +281,35 @@ class SkyscannerConnectorClient:
             dest = req.destination.lower()
             _sky_cabin = {"M": "economy", "W": "premiumeconomy", "C": "business", "F": "first"}
             cabin = _sky_cabin.get(req.cabin_class, "economy") if req.cabin_class else "economy"
+            currency = req.currency or "EUR"
+            # Use .eu domain — less aggressive bot detection than .net
             url = (
-                f"https://www.skyscanner.net/transport/flights/"
+                f"https://www.skyscanner.eu/transport/flights/"
                 f"{origin}/{dest}/{date_str}/"
                 f"?adultsv2={req.adults or 1}"
                 f"&cabinclass={cabin}"
+                f"&currency={currency}"
+                f"&locale=en-GB"
+                f"&market=EU"
                 f"&ref=home"
             )
 
+            # Small random delay before navigation to appear more human
+            await page.wait_for_timeout(random.randint(500, 1500))
             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
 
-            # Wait for API responses — Skyscanner progressively loads results
-            for _ in range(10):
-                await page.wait_for_timeout(3000)
-                if api_responses or px_blocked:
-                    if api_responses:
-                        # Give time for progressive loading
-                        await page.wait_for_timeout(8000)
+            # Wait for API responses — Skyscanner progressively loads results.
+            # Wait up to 30s total, but once first response arrives, keep
+            # collecting for 15s more to capture late-arriving cheap offers.
+            first_response_at = None
+            for _ in range(15):
+                await page.wait_for_timeout(2000)
+                if px_blocked:
                     break
+                if api_responses and first_response_at is None:
+                    first_response_at = time.monotonic()
+                if first_response_at and (time.monotonic() - first_response_at) >= 15:
+                    break  # 15s after first response — enough progressive loading time
 
             await page.close()
             await ctx.close()
@@ -314,9 +326,18 @@ class SkyscannerConnectorClient:
             logger.warning("SKYSCANNER: no flight API response captured")
             return None
 
-        # Use the largest (most complete) response
-        best = max(api_responses, key=lambda d: len(json.dumps(d)))
-        return _parse_skyscanner(best, req)
+        logger.info("SKYSCANNER: captured %d API responses, merging all", len(api_responses))
+        # Merge ALL captured responses — cheapest offers may arrive in any response
+        all_offers: list[FlightOffer] = []
+        seen_ids: set[str] = set()
+        for resp_data in api_responses:
+            parsed = _parse_skyscanner(resp_data, req)
+            for offer in parsed:
+                if offer.id not in seen_ids:
+                    seen_ids.add(offer.id)
+                    all_offers.append(offer)
+        all_offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
+        return all_offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         return FlightSearchResponse(
@@ -377,7 +398,16 @@ def _parse_skyscanner(data: dict, req: FlightSearchRequest) -> list[FlightOffer]
     for pid, place in (results.get("places") or {}).items():
         places_map[pid] = place
 
+    # Extract currency from API response — prefer actual data over request assumption
     target_cur = req.currency or "EUR"
+    # fps3 responses may contain currency info in sortingOptions or context
+    ctx_currency = (
+        sort_data.get("currency")
+        or (content.get("context") or {}).get("currency")
+        or (content.get("context") or {}).get("currencyCode")
+    )
+    if ctx_currency and len(ctx_currency) == 3:
+        target_cur = ctx_currency
     offers: list[FlightOffer] = []
 
     itineraries = results.get("itineraries") or {}
@@ -489,7 +519,7 @@ def _parse_skyscanner(data: dict, req: FlightSearchRequest) -> list[FlightOffer]
                 source_tier="free",
                 is_locked=False,
                 booking_url=(
-                    f"https://www.skyscanner.net/transport/flights/"
+                    f"https://www.skyscanner.eu/transport/flights/"
                     f"{req.origin.lower()}/{req.destination.lower()}/"
                 ),
             ))

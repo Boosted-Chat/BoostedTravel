@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "letsfg"
-version = "2026.4.48"
+version = "2026.4.50"
 description = "Agent-native flight search & booking. 400+ airlines, 195 direct airline connectors run locally. Built for autonomous AI agents."
 readme = "README.md"
 license = {text = "MIT"}

@@ -420,6 +420,56 @@ _ECONOMY_ONLY_SOURCES: set[str] = {
     "airpeace_direct", "usbangla_direct",
 }
 
+# ── Temporarily disabled connectors ──────────────────────────────────────────
+# Connectors with 100% failure rate across 5+ attempts (health data 2026-04-02).
+# These waste browser slots and slow down searches. Disabled until fixed.
+# Coverage NOT lost — Kiwi, Duffel GDS, and healthy OTAs still cover these airlines.
+_TEMPORARILY_DISABLED: set[str] = {
+    # ── OTAs / aggregators (broken sites or API changes) ──
+    "auntbetty_ota",
+    "flightcatchers_ota",
+    "akbartravels_ota",
+    "byojet_ota",
+    "travelup_ota",
+    "yatra_ota",
+    "musafir_ota",
+    "webjet_ota",
+    "wego_meta",
+    # ── Direct airlines (bot detection or site rewrites, 100% fail, 5+ attempts) ──
+    "aerlingus_direct",
+    "westjet_direct",
+    "saudia_direct",
+    "airtransat_direct",
+    "airchina_direct",
+    "cathay_direct",
+    "singapore_direct",
+    "royaljordanian_direct",
+    "latam_direct",
+    "norwegian_direct",
+    "hainan_direct",
+    "korean_direct",
+    "play_direct",
+    "chinaeastern_direct",
+    "vietnamairlines_direct",
+    "aircanada_direct",
+    "mea_direct",
+    "delta_direct",
+    "ethiopian_direct",
+    "kenyaairways_direct",
+    "etihad_direct",
+    "airserbia_direct",
+    "finnair_direct",
+    "nh_direct",
+    "evaair_direct",
+    "aireuropa_direct",
+    "saa_direct",
+    "kuwaitairways_direct",
+    "elal_direct",
+    "emirates_direct",
+    "asiana_direct",
+    "royalairmaroc_direct",
+}
+
 # Map our cabin codes (M/W/C/F) to normalized cabin strings used in FlightSegment.
 # Connectors may return varied cabin strings — this normalizes for comparison.
 _CABIN_CODE_TO_NAMES: dict[str, set[str]] = {
@@ -916,6 +966,18 @@ class MultiProvider:
         # ── Direct airline website connectors (46 LCCs) — route-filtered ──
         filtered_connectors = get_relevant_connectors(req.origin, req.destination, _DIRECT_AIRLINE_connectorS)
 
+        # Skip temporarily disabled connectors (100% fail rate, wasting browser slots)
+        if _TEMPORARILY_DISABLED:
+            before_disabled = len(filtered_connectors)
+            filtered_connectors = [
+                (src, cls, t) for src, cls, t in filtered_connectors
+                if src not in _TEMPORARILY_DISABLED
+            ]
+            disabled_skipped = before_disabled - len(filtered_connectors)
+            if disabled_skipped:
+                logger.info("Health filter: skipped %d temporarily disabled connectors",
+                            disabled_skipped)
+
         # Cabin class pre-filter: skip economy-only connectors for non-economy cabin
         if cabin_filter_active:
             before_cabin = len(filtered_connectors)
@@ -1036,6 +1098,12 @@ class MultiProvider:
             return_filtered = get_relevant_connectors(
                 req.destination, req.origin, _DIRECT_AIRLINE_connectorS
             )
+            # Skip temporarily disabled connectors for return legs too
+            if _TEMPORARILY_DISABLED:
+                return_filtered = [
+                    (s, c, t) for s, c, t in return_filtered
+                    if s not in _TEMPORARILY_DISABLED
+                ]
             # Cabin class: skip economy-only connectors for return legs too
             if cabin_filter_active:
                 return_filtered = [

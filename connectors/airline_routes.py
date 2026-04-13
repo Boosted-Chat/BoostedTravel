@@ -23,7 +23,77 @@ based on actual results.
 
 from __future__ import annotations
 
-# ── IATA airport code → ISO country code ──────────────────────────────────
+import airportsdata as _apd
+
+# ── Build CITY_AIRPORTS and CITY_COUNTRY from airportsdata ────────────────
+# airportsdata.load_iata_macs() provides 41 IATA-official Multi Airport Cities.
+# We merge our manual overrides on top for:
+#   - Non-MAC city codes commonly used by agents/OTAs (WAW, CPH, GVA, etc.)
+#   - Extra LCC airports missing from the official MAC list (SEN, BVA, EWR, etc.)
+#   - US metro area codes (LAX, SFO, MIA) used by some search engines
+
+def _build_city_data() -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Build CITY_AIRPORTS and CITY_COUNTRY from airportsdata + manual overrides."""
+    mac = _apd.load_iata_macs()
+
+    # Start from the official MAC data
+    city_airports: dict[str, list[str]] = {}
+    city_country: dict[str, str] = {}
+    for code, data in mac.items():
+        city_airports[code] = sorted(data["airports"].keys())
+        city_country[code] = data["country"]
+
+    # ── Manual overrides / additions ──────────────────────────────────────
+    # These add LCC airports not in the official MAC, non-MAC city codes
+    # commonly used by flight search engines, and US metro areas.
+    # Format: city_code → (country, [airports])
+    # If the city code already exists from MAC, the airports are MERGED
+    # (our list is added to the MAC list, no duplicates).
+    _OVERRIDES: dict[str, tuple[str, list[str]]] = {
+        # Extra LCC airports to merge into existing MAC entries
+        "LON": ("GB", ["SEN"]),         # Southend (Ryanair/easyJet)
+        "PAR": ("FR", ["BVA"]),         # Beauvais (Ryanair)
+        "NYC": ("US", ["EWR"]),         # Newark (major airport missing from MAC)
+        "WAS": ("US", ["BWI"]),         # Baltimore (Southwest hub)
+        "MIL": ("IT", []),              # MAC has BGY/LIN/MXP — complete
+        "SAO": ("BR", []),              # MAC has CGH/GRU/VCP — complete
+        "MOW": ("RU", []),              # MAC has DME/SVO/VKO — complete
+        "STO": ("SE", ["NYO", "VST"]), # Skavsta + Västerås (Ryanair)
+        "OSL": ("NO", ["TRF", "RYG"]), # Sandefjord Torp + Moss Rygge
+        # Non-MAC city codes used by OTAs / agents
+        "WAW": ("PL", ["WAW", "WMI"]),         # Warsaw + Modlin
+        "BER": ("DE", ["BER", "SXF"]),          # Berlin + Schönefeld (legacy)
+        "CPH": ("DK", ["CPH", "MMX"]),          # Copenhagen + Malmö (cross-border)
+        "GVA": ("CH", ["GVA", "MLH"]),          # Geneva + EuroAirport
+        "DUS": ("DE", ["DUS", "NRN", "CGN"]),   # Düsseldorf + Weeze + Cologne
+        "FRA": ("DE", ["FRA", "HHN"]),          # Frankfurt + Hahn
+        "IZM": ("TR", ["ADB"]),                  # Izmir Adnan Menderes
+        "DUB": ("IE", ["DUB"]),                  # Dublin (single, but city code used)
+        "KUL": ("MY", ["KUL", "SZB"]),          # Kuala Lumpur + Subang
+        "YMQ": ("CA", ["YUL"]),                  # Montréal Trudeau
+        "MEL": ("AU", ["MEL"]),                  # Melbourne (city code = airport)
+        # US metro areas used by some search engines
+        "LAX": ("US", ["LAX", "SNA", "BUR", "LGB", "ONT"]),
+        "SFO": ("US", ["SFO", "OAK", "SJC"]),
+        "MIA": ("US", ["MIA", "FLL", "PBI"]),
+    }
+
+    for code, (country, airports) in _OVERRIDES.items():
+        if code in city_airports:
+            # Merge: add our extras without duplicating existing ones
+            existing = set(city_airports[code])
+            for apt in airports:
+                if apt not in existing:
+                    city_airports[code].append(apt)
+        else:
+            # New entry
+            city_airports[code] = airports
+            city_country[code] = country
+
+    return city_airports, city_country
+
+
+CITY_AIRPORTS, CITY_COUNTRY = _build_city_data()
 # This is a curated subset covering airports in our connector test routes
 # plus major hubs. For unknown airports, the filter falls back to "run it".
 AIRPORT_COUNTRY: dict[str, str] = {
@@ -278,55 +348,7 @@ AIRPORT_COUNTRY: dict[str, str] = {
     "ULN": "MN",  # Mongolia
 }
 
-# City codes that map to multiple airports in a country
-CITY_COUNTRY: dict[str, str] = {
-    "LON": "GB", "PAR": "FR", "ROM": "IT", "MIL": "IT", "BUE": "AR",
-    "NYC": "US", "WAS": "US", "CHI": "US", "TYO": "JP", "OSA": "JP",
-    "SEL": "KR", "BJS": "CN", "SHA": "CN", "BKK": "TH", "KUL": "MY",
-    "REK": "IS", "MOW": "RU", "STO": "SE",
-    # Additional city codes
-    "IZM": "TR",  # Izmir
-    "SPK": "JP",  # Sapporo
-    "JKT": "ID",  # Jakarta
-    "RIO": "BR",  # Rio de Janeiro
-    "SAO": "BR",  # São Paulo
-    "YMQ": "CA",  # Montréal
-    "YTO": "CA",  # Toronto
-    "DXB": "AE",  # Dubai (city code used by some agents)
-    "THR": "IR",  # Tehran
-    "MEL": "AU",  # Melbourne (city code = airport)
-}
-
-# City code → constituent airport codes (for city expansion in fan-out)
-CITY_AIRPORTS: dict[str, list[str]] = {
-    "LON": ["LHR", "LGW", "STN", "LTN", "LCY", "SEN"],
-    "PAR": ["CDG", "ORY", "BVA"],
-    "ROM": ["FCO", "CIA"],
-    "MIL": ["MXP", "LIN", "BGY"],
-    "NYC": ["JFK", "EWR", "LGA"],
-    "WAS": ["IAD", "DCA", "BWI"],
-    "CHI": ["ORD", "MDW"],
-    "TYO": ["NRT", "HND"],
-    "OSA": ["KIX", "ITM"],
-    "SEL": ["ICN", "GMP"],
-    "BJS": ["PEK", "PKX"],
-    "SHA": ["PVG", "SHA"],
-    "BUE": ["EZE", "AEP"],
-    "RIO": ["GIG", "SDU"],
-    "BKK": ["BKK", "DMK"],
-    "KUL": ["KUL", "SZB"],
-    "REK": ["KEF", "RKV"],
-    "MOW": ["SVO", "DME", "VKO"],
-    "STO": ["ARN", "BMA", "NYO", "VST"],
-    "WAW": ["WAW", "WMI"],
-    "BER": ["BER", "SXF"],
-    "BRU": ["BRU", "CRL"],
-    "OSL": ["OSL", "TRF", "RYG"],
-    "CPH": ["CPH", "MMX"],
-    "GVA": ["GVA", "MLH"],
-    "DUS": ["DUS", "NRN", "CGN"],
-    "FRA": ["FRA", "HHN"],
-}
+# CITY_AIRPORTS and CITY_COUNTRY are built from airportsdata at top of file.
 
 
 def get_city_airports(iata: str) -> list[str]:
