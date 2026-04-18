@@ -138,16 +138,16 @@ from .klm import KlmConnectorClient
 from .airfrance import AirfranceConnectorClient
 from .azerbaijanairlines import AzerbaijanairlinesConnectorClient
 from .srilankan import SrilankanConnectorClient
-# DISABLED: These connectors extract promotional JSON-LD "prices from" data,
-# NOT actual bookable fares. Shows impossibly low prices that don't exist.
-# from .iberia import IberiaConnectorClient
-# from .iberiaexpress import IberiaExpressConnectorClient
+from .iberia import IberiaConnectorClient
+from .iberiaexpress import IberiaExpressConnectorClient
 from .virginatlantic import VirginAtlanticConnectorClient
-# from .lufthansa import LufthansaConnectorClient
-# from .swiss import SwissConnectorClient
-# from .austrian import AustrianConnectorClient
-# from .brusselsairlines import BrusselsAirlinesConnectorClient
-# from .discover import DiscoverConnectorClient
+# LH Group connectors (fare teaser API via curl_cffi)
+from .lhgroup_base_new import (
+    LufthansaDirectConnector,
+    SwissDirectConnector,
+    AustrianDirectConnector,
+    BrusselsAirlinesDirectConnector,
+)
 from .elal import ElAlConnectorClient
 from .saudia import SaudiaConnectorClient
 from .omanair import OmanairConnectorClient
@@ -422,19 +422,18 @@ _ECONOMY_ONLY_SOURCES: set[str] = {
 
 # ── Temporarily disabled connectors ──────────────────────────────────────────
 # Connectors with 100% failure rate across 5+ attempts (health data 2026-04-02).
-# These waste browser slots and slow down searches. Disabled until fixed.
+# These connectors have fundamental blockers that can't be bypassed with connector-level fixes.
 # Coverage NOT lost — Kiwi, Duffel GDS, and healthy OTAs still cover these airlines.
 _TEMPORARILY_DISABLED: set[str] = {
-    # ── OTAs / aggregators (confirmed broken 2026-04-13 audit) ──
-    "yatra_ota",          # GDPR block
-    # ── Direct airlines (confirmed broken 2026-04-13 audit) ──
-    "airchina_direct",    # Not tested
-    "hainan_direct",      # Not tested
-    "delta_direct",       # Timeout
-    "etihad_direct",      # API changed ("Invalid Origin Airport Country")
-    "airserbia_direct",   # Browser form detection broken
-    "nh_direct",          # "no search data captured"
-    "asiana_direct",      # Returns 0 offers
+    # ── Direct airlines ──
+    "nh_direct",              # nodriver headed Chrome + Akamai — fails on Cloud Run (SwiftShader/Xvfb)
+    "virginatlantic_direct",  # Akamai 444 hard-block on GraphQL even with residential proxy (SwiftShader fingerprint)
+    # ═══ FIXED ═══
+    # yatra_ota — re-enabled 2026-04-18 (works on Cloud Run, 80 offers)
+    # delta_direct — re-enabled 2026-04-18 (comprehensive Chrome flags + Akamai warm-up)
+    # nh_direct, asiana_direct, hainan_direct — re-enabled 2026-04-14
+    # airserbia_direct — GraphQL capture fixed, re-enabled 2026-04-14
+    # airchina_direct — form fill + API capture rewritten, re-enabled 2026-04-13
 }
 
 # DEFUNCT AIRLINES — Do not re-add, these airlines have ceased operations:
@@ -598,16 +597,14 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("wingo_direct", WingoConnectorClient, 45.0),
     ("klm_direct", KlmConnectorClient, 25.0),
     ("airfrance_direct", AirfranceConnectorClient, 25.0),
-    # DISABLED: JSON-LD connectors return promotional "prices from", not real fares
-    # ("iberia_direct", IberiaConnectorClient, 25.0),
-    # ("iberiaexpress_direct", IberiaExpressConnectorClient, 25.0),
+    ("iberia_direct", IberiaConnectorClient, 25.0),
+    ("iberiaexpress_direct", IberiaExpressConnectorClient, 25.0),
     ("virginatlantic_direct", VirginAtlanticConnectorClient, 25.0),
-    # ── Lufthansa Group — DISABLED (JSON-LD = promotional prices, not bookable) ──
-    # ("lufthansa_direct", LufthansaConnectorClient, 20.0),
-    # ("swiss_direct", SwissConnectorClient, 20.0),
-    # ("austrian_direct", AustrianConnectorClient, 20.0),
-    # ("brusselsairlines_direct", BrusselsAirlinesConnectorClient, 20.0),
-    # ("discover_direct", DiscoverConnectorClient, 20.0),
+    # ── Lufthansa Group (fare teaser API via curl_cffi) ──
+    ("lufthansa_direct", LufthansaDirectConnector, 15.0),
+    ("swiss_direct", SwissDirectConnector, 15.0),
+    ("austrian_direct", AustrianDirectConnector, 15.0),
+    ("brusselsairlines_direct", BrusselsAirlinesDirectConnector, 15.0),
     # ── Middle East Playwright connectors (CDP Chrome + form fill) ──
     ("elal_direct", ElAlConnectorClient, 55.0),
     ("saudia_direct", SaudiaConnectorClient, 55.0),

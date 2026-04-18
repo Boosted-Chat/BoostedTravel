@@ -7,7 +7,7 @@ headed CDP Chrome with form fill + API interception is required.
 
 Strategy (CDP Chrome + API interception):
 1. Launch headed Chrome via CDP (off-screen, stealth).
-2. Navigate to airchina.com → SPA loads with search widget.
+2. Navigate to flyasiana.com → SPA loads with search widget.
 3. Accept cookies → set one-way → fill origin/dest → select date → search.
 4. Intercept the search API response (flight availability JSON).
 5. If API not captured, fall back to DOM scraping on results page.
@@ -149,17 +149,20 @@ async def _reset_profile():
 
 async def _dismiss_overlays(page) -> None:
     try:
+        # Asiana has a cookie consent with an "OK" button
         await page.evaluate("""() => {
+            // Click cookie OK button
+            const btns = document.querySelectorAll('button, a');
+            for (const b of btns) {
+                const t = b.textContent.trim();
+                if (t === 'OK' || t === 'Accept' || t === 'Agree') {
+                    if (b.offsetHeight > 0 && b.offsetHeight < 100) { b.click(); break; }
+                }
+            }
+            // Remove overlay elements
             document.querySelectorAll(
                 '#onetrust-consent-sdk, .cookie-banner, [class*="cookie"], [class*="consent"]'
             ).forEach(el => el.remove());
-            const btns = document.querySelectorAll('button');
-            for (const b of btns) {
-                const t = b.textContent.trim().toLowerCase();
-                if (t.includes('accept') || t.includes('agree') || t.includes('got it') || t.includes('ok')) {
-                    if (b.offsetHeight > 0) { b.click(); break; }
-                }
-            }
         }""")
     except Exception:
         pass
@@ -195,113 +198,73 @@ class AsianaConnectorClient:
         context = await _get_context()
         page = await context.new_page()
         await auto_block_if_proxied(page)
-
-        search_data: dict = {}
-        api_event = asyncio.Event()
-
-        async def _on_response(response):
-            url = response.url.lower()
-            if response.status not in (200, 201):
-                return
-            try:
-                if any(k in url for k in ["/search", "/availability", "/flight",
-                                           "/offer", "/fare", "/lowprice", "/schedule"]):
-                    ct = response.headers.get("content-type", "")
-                    if "json" not in ct and "text" not in ct:
-                        return
-                    body = await response.text()
-                    if len(body) < 50:
-                        return
-                    data = json.loads(body)
-                    if not isinstance(data, dict):
-                        return
-                    keys_str = " ".join(str(k).lower() for k in data.keys())
-                    if any(k in keys_str for k in ["flight", "itiner", "offer", "fare",
-                                                     "bound", "trip", "result", "segment",
-                                                     "avail", "journey", "price"]):
-                        search_data.update(data)
-                        api_event.set()
-                        logger.info("Asiana: captured API → %s (%d keys)", url[:80], len(data))
-            except Exception:
-                pass
-
-        page.on("response", _on_response)
+        page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
 
         try:
             logger.info("Asiana: loading homepage for %s→%s", req.origin, req.destination)
             await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3.0)
             await _dismiss_overlays(page)
+            await asyncio.sleep(1.0)
 
-            # One-way toggle
+            # Select One-Way trip type
             await page.evaluate("""() => {
-                const cssEls = document.querySelectorAll(
-                    '[class*="one-way"], [class*="oneway"], input[value="OW"], ' +
-                    'div[class*="trip-type"] label:nth-child(2), [data-value="OW"]'
-                );
-                for (const el of cssEls) {
-                    if (el.offsetHeight > 0) { el.click(); return; }
-                }
-                const textEls = document.querySelectorAll('label, li, a, button, span, div[class*="trip"], mat-radio-button');
-                for (const el of textEls) {
-                    const t = (el.textContent || '').trim().toLowerCase();
-                    if ((t === 'one way' || t === 'one-way' || t === 'one way trip' || t.includes('one way')) && el.offsetHeight > 0) {
-                        el.click(); return;
-                    }
-                }
+                const jq = (typeof $ !== 'undefined') ? $ : jQuery;
+                jq('.tab_triptype li').each(function() {
+                    if (jq(this).text().trim().toLowerCase().includes('one-way'))
+                        jq(this).find('a').trigger('click');
+                });
+                if (typeof bookConditionJSON !== 'undefined') bookConditionJSON.tripType = 'OW';
             }""")
             await asyncio.sleep(1.0)
 
-            ok = await self._fill_airport(page, "origin", req.origin)
-            if not ok:
-                return self._empty(req)
+            # Fill departure via jQuery UI autocomplete keyboard interaction.
+            # Clicking autocomplete items via JS doesn't populate the paired
+            # hidden fields (#departureAirportR, #departureAreaR, etc.).
+            # ArrowDown + Enter triggers the internal select handler properly.
+            dep_field = page.locator("#txtDepartureAirportR")
+            await dep_field.click(timeout=5000)
+            await dep_field.fill("")
+            await dep_field.type(req.origin, delay=100)
+            await asyncio.sleep(2.0)
+            await page.keyboard.press("ArrowDown")
+            await asyncio.sleep(0.3)
+            await page.keyboard.press("Enter")
             await asyncio.sleep(1.0)
+            logger.info("Asiana: departure → %s", req.origin)
 
-            ok = await self._fill_airport(page, "destination", req.destination)
-            if not ok:
-                return self._empty(req)
+            # Fill arrival
+            arr_field = page.locator("#txtArrivalAirportR")
+            await arr_field.click(timeout=5000)
+            await arr_field.fill("")
+            await arr_field.type(req.destination, delay=100)
+            await asyncio.sleep(2.0)
+            await page.keyboard.press("ArrowDown")
+            await asyncio.sleep(0.3)
+            await page.keyboard.press("Enter")
             await asyncio.sleep(1.0)
+            logger.info("Asiana: arrival → %s", req.destination)
 
+            # Set date — write directly into the hidden departureDateR field.
+            # The datepicker UI uses non-standard navigation; setting the
+            # hidden field is reliable and what registTravelV() reads.
             ok = await self._fill_date(page, req)
             if not ok:
                 return self._empty(req)
 
-            # Click search
-            await page.evaluate("""() => {
-                const btns = document.querySelectorAll('button, input[type="submit"], a');
-                for (const b of btns) {
-                    const t = (b.textContent || b.value || '').trim().toLowerCase();
-                    if ((t.includes('search') || t.includes('find') || t.includes('查询') || t.includes('搜索'))
-                        && b.offsetHeight > 0) {
-                        b.click(); return;
-                    }
-                }
-            }""")
-            logger.info("Asiana: search clicked")
+            # Submit via the JS function (runs validation + NetFunnel queue)
+            await page.evaluate("() => registTravelV()")
+            logger.info("Asiana: registTravelV() called")
 
-            remaining = max(self.timeout - (time.monotonic() - t0), 15)
-            deadline = time.monotonic() + remaining
-            while time.monotonic() < deadline:
-                if api_event.is_set():
-                    break
-                url = page.url
-                if any(k in url.lower() for k in ["result", "search", "flight", "availability"]):
-                    await asyncio.sleep(4.0)
-                    break
-                await asyncio.sleep(1.0)
+            # Wait for navigation to the results page
+            try:
+                await page.wait_for_url("**/Revenue*", timeout=20000)
+            except Exception:
+                pass
+            # Wait for AJAX flight data to load
+            await asyncio.sleep(8.0)
 
-            if not api_event.is_set():
-                try:
-                    await asyncio.wait_for(api_event.wait(), timeout=8.0)
-                except asyncio.TimeoutError:
-                    pass
-
-            offers = []
-            if search_data:
-                offers = self._parse_api_response(search_data, req)
-            if not offers:
-                offers = await self._scrape_dom(page, req)
-
+            offers = await self._scrape_dom(page, req)
             offers.sort(key=lambda o: o.price)
             elapsed = time.monotonic() - t0
             logger.info("Asiana %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
@@ -315,284 +278,92 @@ class AsianaConnectorClient:
                 currency=currency, offers=offers, total_results=len(offers),
             )
         except Exception as e:
-            logger.error("AirChina error: %s", e)
+            logger.error("Asiana error: %s", e)
             return self._empty(req)
         finally:
-            try:
-                page.remove_listener("response", _on_response)
-            except Exception:
-                pass
             try:
                 await page.close()
             except Exception:
                 pass
 
-    async def _fill_airport(self, page, direction: str, iata: str) -> bool:
-        try:
-            sel = await page.evaluate("""(args) => {
-                const [dir, iata] = args;
-                const selectors = dir === 'origin'
-                    ? ['#fromCity', '#departCity', '#origin', 'input[name*="from"]',
-                       'input[name*="origin"]', 'input[name*="depart"]',
-                       'input[placeholder*="From"]', 'input[placeholder*="Depart"]',
-                       'input[placeholder*="出发"]']
-                    : ['#toCity', '#arriveCity', '#destination', 'input[name*="to"]',
-                       'input[name*="dest"]', 'input[name*="arriv"]',
-                       'input[placeholder*="To"]', 'input[placeholder*="Arriv"]',
-                       'input[placeholder*="到达"]'];
-                for (const s of selectors) {
-                    const el = document.querySelector(s);
-                    if (el && el.offsetHeight > 0) return s;
-                }
-                return null;
-            }""", [direction, iata])
-            if not sel:
-                return False
-
-            field = page.locator(sel).first
-            await field.click(timeout=5000)
-            await asyncio.sleep(0.5)
-            await page.keyboard.press("Control+a")
-            await page.keyboard.press("Backspace")
-            await field.type(iata, delay=120)
-            await asyncio.sleep(2.0)
-
-            selected = await page.evaluate("""(iata) => {
-                const opts = document.querySelectorAll(
-                    '[role="option"], [class*="suggest"] li, [class*="dropdown"] li, ' +
-                    '[class*="autocomplete"] li, .search-result-item, [class*="city-item"]'
-                );
-                for (const o of opts) {
-                    if (o.textContent.includes(iata) && o.offsetHeight > 0) {
-                        o.click(); return true;
-                    }
-                }
-                return false;
-            }""", iata)
-            if not selected:
-                await page.keyboard.press("ArrowDown")
-                await asyncio.sleep(0.2)
-                await page.keyboard.press("Enter")
-
-            await asyncio.sleep(0.5)
-            logger.info("Asiana: airport %s → %s", direction, iata)
-            return True
-        except Exception as e:
-            logger.warning("Asiana: airport fill error for %s: %s", iata, e)
-            return False
-
     async def _fill_date(self, page, req: FlightSearchRequest) -> bool:
+        """Set the departure date by writing the hidden #departureDate1 field.
+
+        The datepicker UI uses non-standard month navigation that is fragile to
+        automate.  registTravelV() reads ``$('[name=departureDateR]').val()``
+        which maps to the hidden ``#departureDate1`` input.  Writing it directly
+        is reliable.
+        """
         try:
             dt = req.date_from if isinstance(req.date_from, (datetime, date)) else datetime.strptime(str(req.date_from), "%Y-%m-%d")
         except (ValueError, TypeError):
             return False
-        target_day = str(dt.day)
-        target_ym = dt.strftime("%Y-%m")
-        try:
-            await page.evaluate("""() => {
-                const inputs = document.querySelectorAll(
-                    'input[name*="date"], input[name*="Date"], input[placeholder*="Date"], ' +
-                    'input[placeholder*="日期"], input[class*="date"], #departDate, #goDate, ' +
-                    '[class*="depart-date"], [class*="departure-date"]'
-                );
-                for (const i of inputs) { if (i.offsetHeight > 0) { i.click(); return; } }
-            }""")
-            await asyncio.sleep(1.5)
-
-            for _ in range(12):
-                month_text = await page.evaluate("""() => {
-                    const h = document.querySelectorAll(
-                        '[class*="calendar"] [class*="month"], [class*="calendar"] [class*="title"], ' +
-                        '.month-title, .calendar-title, th[colspan]'
-                    );
-                    return [...h].map(e => e.textContent.trim()).join('|');
-                }""")
-                if target_ym in month_text or dt.strftime("%B %Y").lower() in month_text.lower() or f"{dt.year}年{dt.month}月" in month_text:
-                    break
-                await page.evaluate("""() => {
-                    const n = document.querySelector(
-                        '[class*="next"], [aria-label*="next"], [class*="forward"], ' +
-                        'button[class*="arrow-right"], .next-month, [class*="right-arrow"]'
-                    );
-                    if (n && n.offsetHeight > 0) n.click();
-                }""")
-                await asyncio.sleep(0.5)
-
-            clicked = await page.evaluate("""(day) => {
-                const cells = document.querySelectorAll(
-                    'td[class*="day"], td[role="gridcell"], [class*="calendar-day"], ' +
-                    '[class*="date-cell"], .day, td.available'
-                );
-                for (const c of cells) {
-                    const text = c.textContent.trim();
-                    if (text === day && !c.classList.contains('disabled') &&
-                        c.getAttribute('aria-disabled') !== 'true' && c.offsetHeight > 0) {
-                        c.click(); return true;
-                    }
-                }
-                return false;
-            }""", target_day)
-            if clicked:
-                logger.info("Asiana: date selected %s", dt.strftime("%Y-%m-%d"))
-            await asyncio.sleep(1.0)
-            return True
-        except Exception as e:
-            logger.warning("Asiana: date error: %s", e)
-            return False
-
-    def _parse_api_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
-        offers = []
-        flights = (
-            data.get("flights") or data.get("results") or data.get("itineraries") or
-            data.get("flightInfos") or data.get("offers") or data.get("journeys") or
-            data.get("routeList") or data.get("flightList") or []
-        )
-        if isinstance(flights, dict):
-            for key in ("flights", "results", "itineraries", "options", "list"):
-                if key in flights:
-                    flights = flights[key]
-                    break
-            else:
-                flights = [flights]
-        if not isinstance(flights, list):
-            flights = self._find_flights(data)
-        for flight in flights:
-            offer = self._build_offer(flight, req)
-            if offer:
-                offers.append(offer)
-        return offers
-
-    def _find_flights(self, data, depth=0) -> list:
-        if depth > 4 or not isinstance(data, dict):
-            return []
-        for key, val in data.items():
-            if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                sample_keys = {str(k).lower() for k in val[0].keys()}
-                if sample_keys & {"price", "fare", "flight", "departure", "segment", "leg"}:
-                    return val
-            elif isinstance(val, dict):
-                result = self._find_flights(val, depth + 1)
-                if result:
-                    return result
-        return []
-
-    def _build_offer(self, flight: dict, req: FlightSearchRequest) -> Optional[FlightOffer]:
-        try:
-            price = (
-                flight.get("price") or flight.get("totalPrice") or
-                flight.get("fare") or flight.get("amount") or
-                flight.get("adultPrice") or 0
-            )
-            if isinstance(price, dict):
-                price = price.get("amount") or price.get("total") or price.get("value") or 0
-            price = float(price) if price else 0
-            if price <= 0:
-                return None
-
-            currency = self._extract_currency(flight)
-
-            segments_data = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
-            if not isinstance(segments_data, list):
-                segments_data = [flight]
-
-            segments = []
-            for seg in segments_data:
-                dep_str = seg.get("departure") or seg.get("departureTime") or seg.get("depTime") or ""
-                arr_str = seg.get("arrival") or seg.get("arrivalTime") or seg.get("arrTime") or ""
-                dep_dt = self._parse_dt(dep_str, req.date_from)
-                arr_dt = self._parse_dt(arr_str, req.date_from)
-                airline_code = seg.get("airline") or seg.get("carrierCode") or seg.get("operatingCarrier") or self.IATA
-                flight_no = seg.get("flightNumber") or seg.get("flightNo") or ""
-                if flight_no and not flight_no.startswith(airline_code):
-                    flight_no = f"{airline_code}{flight_no}"
-
-                _oz_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
-                segments.append(FlightSegment(
-                    airline=airline_code[:2], airline_name=self.AIRLINE_NAME if airline_code == self.IATA else airline_code,
-                    flight_no=flight_no or self.IATA, origin=seg.get("origin") or seg.get("departureAirport") or req.origin,
-                    destination=seg.get("destination") or seg.get("arrivalAirport") or req.destination,
-                    departure=dep_dt, arrival=arr_dt, cabin_class=_oz_cabin,
-                ))
-
-            if not segments:
-                return None
-
-            route = FlightRoute(segments=segments, total_duration_seconds=0, stopovers=max(0, len(segments) - 1))
-            offer_id = hashlib.md5(
-                f"{self.IATA.lower()}_{req.origin}_{req.destination}_{req.date_from}_{price}_{segments[0].flight_no}".encode()
-            ).hexdigest()[:12]
-
-            return FlightOffer(
-                id=f"{self.IATA.lower()}_{offer_id}", price=round(price, 2), currency=currency,
-                price_formatted=f"{currency} {price:,.0f}", outbound=route, inbound=None,
-                airlines=list({s.airline for s in segments}), owner_airline=self.IATA,
-                booking_url=self._booking_url(req), is_locked=False,
-                source=self.SOURCE, source_tier="free",
-            )
-        except Exception as e:
-            logger.debug("Asiana: offer parse error: %s", e)
-            return None
-
-    def _extract_currency(self, d: dict) -> str:
-        for key in ("currency", "currencyCode"):
-            val = d.get(key)
-            if isinstance(val, str) and len(val) == 3:
-                return val.upper()
-        if isinstance(d.get("price"), dict):
-            return d["price"].get("currency", self.DEFAULT_CURRENCY)
-        return self.DEFAULT_CURRENCY
-
-    @staticmethod
-    def _parse_dt(s, fallback_date) -> datetime:
-        if not s:
-            try:
-                dt = fallback_date if isinstance(fallback_date, (datetime, date)) else datetime.strptime(str(fallback_date), "%Y-%m-%d")
-                return datetime(dt.year, dt.month, dt.day) if isinstance(dt, date) and not isinstance(dt, datetime) else dt
-            except Exception:
-                return datetime.now()
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-            try:
-                return datetime.strptime(s[:19], fmt)
-            except (ValueError, TypeError):
-                continue
-        m = re.search(r"(\d{1,2}):(\d{2})", str(s))
-        if m:
-            try:
-                dt = fallback_date if isinstance(fallback_date, (datetime, date)) else datetime.strptime(str(fallback_date), "%Y-%m-%d")
-                d = dt if isinstance(dt, date) and not isinstance(dt, datetime) else dt.date() if isinstance(dt, datetime) else dt
-                return datetime(d.year, d.month, d.day, int(m.group(1)), int(m.group(2)))
-            except Exception:
-                pass
-        return datetime.now()
+        date_str = dt.strftime("%Y%m%d")  # "20260715"
+        display_str = dt.strftime("%y.%m.%d")  # "26.07.15"
+        await page.evaluate("""(args) => {
+            const [dateStr, displayStr] = args;
+            const jq = (typeof $ !== 'undefined') ? $ : jQuery;
+            jq('#departureDate1').val(dateStr);
+            jq('#sCalendarR').val(displayStr);
+        }""", [date_str, display_str])
+        logger.info("Asiana: date set %s", dt.strftime("%Y-%m-%d"))
+        return True
 
     async def _scrape_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
-        await asyncio.sleep(3)
+        """Extract flight offers from the Asiana results table.
+
+        The results page at ``RevenueInternationalFareDrivenFlightsSelect.do``
+        renders an ``<table class="table_list airline_ticketing">`` with one
+        ``<tr>`` per flight.  Each row contains departure/arrival times, flight
+        number, aircraft type, and fare class prices with seat counts.  The
+        cheapest economy fare per flight becomes an offer.
+        """
         flights = await page.evaluate(r"""(params) => {
             const [origin, destination] = params;
             const results = [];
-            const cards = document.querySelectorAll(
-                '[class*="flight-card"], [class*="flight-row"], [class*="itinerary"], ' +
-                '[class*="result-card"], [class*="bound"], [class*="flight-item"], ' +
-                '[class*="flightInfo"], [class*="flight_item"]'
-            );
-            for (const card of cards) {
-                const text = card.innerText || '';
+            // Primary: parse the fare/flight selection table
+            const rows = document.querySelectorAll('table.airline_ticketing tbody tr, table.table_list.airline_ticketing tbody tr');
+            for (const row of rows) {
+                if (row.offsetHeight === 0) continue;
+                const text = row.innerText || '';
                 if (text.length < 20) continue;
+                // Extract times: "08:25" and "10:50"
                 const times = text.match(/\b(\d{1,2}:\d{2})\b/g) || [];
                 if (times.length < 2) continue;
-                const priceMatch = text.match(/(CNY|USD|EUR|¥|\$|€)\s*[\d,]+\.?\d*/i) ||
-                                   text.match(/[\d,]+\.?\d*\s*(CNY|USD|EUR|¥|\$|€)/i);
-                if (!priceMatch) continue;
-                const priceStr = priceMatch[0].replace(/[^0-9.]/g, '');
-                const price = parseFloat(priceStr);
-                if (!price || price <= 0) continue;
-                let currency = 'CNY';
-                if (/USD|\$/.test(priceMatch[0])) currency = 'USD';
-                else if (/EUR|€/.test(priceMatch[0])) currency = 'EUR';
-                const fnMatch = text.match(/\b(CA\s*\d{2,4})\b/i);
+                // Extract flight number: OZ102
+                const fnMatch = text.match(/\b(OZ\s*\d{2,4})\b/i);
+                if (!fnMatch) continue;
+                // Extract cheapest price from <td> cells
+                const cells = row.querySelectorAll('td');
+                let cheapest = Infinity;
+                let currency = 'KRW';
+                let seats = 0;
+                for (const cell of cells) {
+                    const ct = cell.textContent || '';
+                    // Match "KRW 263,900" or "USD 450" or "EUR 305,900"
+                    const pm = ct.match(/(KRW|USD|EUR)\s*([\d,]+)/);
+                    if (pm) {
+                        const p = parseFloat(pm[2].replace(/,/g, ''));
+                        if (p > 0 && p < cheapest && !ct.toLowerCase().includes('sold')) {
+                            cheapest = p;
+                            currency = pm[1];
+                            const sm = ct.match(/(\d+)\s*Seat/i);
+                            seats = sm ? parseInt(sm[1], 10) : 0;
+                        }
+                    }
+                }
+                if (cheapest === Infinity) continue;
+                // Extract duration text: "2hr25min"
+                const durMatch = text.match(/(\d+)\s*hr\s*(\d+)\s*min/i);
+                let durSec = 0;
+                if (durMatch) durSec = parseInt(durMatch[1], 10) * 3600 + parseInt(durMatch[2], 10) * 60;
+                // Check for stops
+                const isNonstop = /non-?stop/i.test(text);
                 results.push({
-                    depTime: times[0], arrTime: times[1], price, currency,
-                    flightNo: fnMatch ? fnMatch[1].replace(/\s/g, '') : 'CA',
+                    depTime: times[0], arrTime: times[1],
+                    flightNo: fnMatch[1].replace(/\s/g, ''),
+                    price: cheapest, currency: currency,
+                    duration: durSec, nonstop: isNonstop, seats: seats,
                 });
             }
             return results;
@@ -632,6 +403,8 @@ class AsianaConnectorClient:
 
         flight_no = f.get("flightNo", self.IATA)
         currency = f.get("currency", self.DEFAULT_CURRENCY)
+        dur_sec = f.get("duration", 0) or int((arr_dt - dep_dt).total_seconds())
+        stopovers = 0 if f.get("nonstop", True) else 1
         offer_id = hashlib.md5(f"{self.IATA.lower()}_{req.origin}_{req.destination}_{dep_date}_{flight_no}_{price}".encode()).hexdigest()[:12]
 
         _oz_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
@@ -639,7 +412,7 @@ class AsianaConnectorClient:
             airline=self.IATA, airline_name=self.AIRLINE_NAME, flight_no=flight_no,
             origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class=_oz_cabin,
         )
-        route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
+        route = FlightRoute(segments=[segment], total_duration_seconds=dur_sec, stopovers=stopovers)
         return FlightOffer(
             id=f"{self.IATA.lower()}_{offer_id}", price=round(price, 2), currency=currency,
             price_formatted=f"{currency} {price:,.0f}", outbound=route, inbound=None,
@@ -680,3 +453,12 @@ class AsianaConnectorClient:
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=self.DEFAULT_CURRENCY, offers=[], total_results=0,
         )
+
+
+# ── Module-level interface (required by connector loader) ────────────────────
+
+_client = AsianaConnectorClient()
+
+
+async def search(request: FlightSearchRequest) -> FlightSearchResponse:
+    return await _client.search_flights(request)

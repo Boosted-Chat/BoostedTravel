@@ -138,16 +138,16 @@ from .klm import KlmConnectorClient
 from .airfrance import AirfranceConnectorClient
 from .azerbaijanairlines import AzerbaijanairlinesConnectorClient
 from .srilankan import SrilankanConnectorClient
-# DISABLED: These connectors extract promotional JSON-LD "prices from" data,
-# NOT actual bookable fares. Shows impossibly low prices that don't exist.
-# from .iberia import IberiaConnectorClient
-# from .iberiaexpress import IberiaExpressConnectorClient
+from .iberia import IberiaConnectorClient
+from .iberiaexpress import IberiaExpressConnectorClient
 from .virginatlantic import VirginAtlanticConnectorClient
-# from .lufthansa import LufthansaConnectorClient
-# from .swiss import SwissConnectorClient
-# from .austrian import AustrianConnectorClient
-# from .brusselsairlines import BrusselsAirlinesConnectorClient
-# from .discover import DiscoverConnectorClient
+# LH Group connectors (fare teaser API via curl_cffi)
+from .lhgroup_base_new import (
+    LufthansaDirectConnector,
+    SwissDirectConnector,
+    AustrianDirectConnector,
+    BrusselsAirlinesDirectConnector,
+)
 from .elal import ElAlConnectorClient
 from .saudia import SaudiaConnectorClient
 from .omanair import OmanairConnectorClient
@@ -422,53 +422,21 @@ _ECONOMY_ONLY_SOURCES: set[str] = {
 
 # ── Temporarily disabled connectors ──────────────────────────────────────────
 # Connectors with 100% failure rate across 5+ attempts (health data 2026-04-02).
-# These waste browser slots and slow down searches. Disabled until fixed.
+# These connectors have fundamental blockers that can't be bypassed with connector-level fixes.
 # Coverage NOT lost — Kiwi, Duffel GDS, and healthy OTAs still cover these airlines.
 _TEMPORARILY_DISABLED: set[str] = {
-    # ── OTAs / aggregators (broken sites or API changes) ──
-    "auntbetty_ota",
-    "flightcatchers_ota",
-    "akbartravels_ota",
-    "byojet_ota",
-    "travelup_ota",
-    "yatra_ota",
-    "musafir_ota",
-    "webjet_ota",
-    "wego_meta",
-    # ── Direct airlines (bot detection or site rewrites, 100% fail, 5+ attempts) ──
-    "aerlingus_direct",
-    "westjet_direct",
-    "saudia_direct",
-    "airtransat_direct",
-    "airchina_direct",
-    "cathay_direct",
-    "singapore_direct",
-    "royaljordanian_direct",
-    "latam_direct",
-    "norwegian_direct",
-    "hainan_direct",
-    "korean_direct",
-    "play_direct",
-    "chinaeastern_direct",
-    "vietnamairlines_direct",
-    "aircanada_direct",
-    "mea_direct",
-    "delta_direct",
-    "ethiopian_direct",
-    "kenyaairways_direct",
-    "etihad_direct",
-    "airserbia_direct",
-    "finnair_direct",
-    "nh_direct",
-    "evaair_direct",
-    "aireuropa_direct",
-    "saa_direct",
-    "kuwaitairways_direct",
-    "elal_direct",
-    "emirates_direct",
-    "asiana_direct",
-    "royalairmaroc_direct",
+    # ── OTAs / aggregators ──
+    "yatra_ota",          # GDPR block — redirects to /online/gdpr from EU/US IPs (needs Indian proxy)
+    # ── Direct airlines ──
+    # ═══ FIXED ═══
+    # delta_direct — re-enabled 2026-04-18 (comprehensive Chrome flags + Akamai warm-up)
+    # nh_direct, asiana_direct, hainan_direct — re-enabled 2026-04-14
+    # airserbia_direct — GraphQL capture fixed, re-enabled 2026-04-14
+    # airchina_direct — form fill + API capture rewritten, re-enabled 2026-04-13
 }
+
+# DEFUNCT AIRLINES — Do not re-add, these airlines have ceased operations:
+# - play_direct: PLAY Airlines (OG) — Icelandic ULCC, shut down ~2024
 
 # Map our cabin codes (M/W/C/F) to normalized cabin strings used in FlightSegment.
 # Connectors may return varied cabin strings — this normalizes for comparison.
@@ -628,16 +596,14 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("wingo_direct", WingoConnectorClient, 45.0),
     ("klm_direct", KlmConnectorClient, 25.0),
     ("airfrance_direct", AirfranceConnectorClient, 25.0),
-    # DISABLED: JSON-LD connectors return promotional "prices from", not real fares
-    # ("iberia_direct", IberiaConnectorClient, 25.0),
-    # ("iberiaexpress_direct", IberiaExpressConnectorClient, 25.0),
+    ("iberia_direct", IberiaConnectorClient, 25.0),
+    ("iberiaexpress_direct", IberiaExpressConnectorClient, 25.0),
     ("virginatlantic_direct", VirginAtlanticConnectorClient, 25.0),
-    # ── Lufthansa Group — DISABLED (JSON-LD = promotional prices, not bookable) ──
-    # ("lufthansa_direct", LufthansaConnectorClient, 20.0),
-    # ("swiss_direct", SwissConnectorClient, 20.0),
-    # ("austrian_direct", AustrianConnectorClient, 20.0),
-    # ("brusselsairlines_direct", BrusselsAirlinesConnectorClient, 20.0),
-    # ("discover_direct", DiscoverConnectorClient, 20.0),
+    # ── Lufthansa Group (fare teaser API via curl_cffi) ──
+    ("lufthansa_direct", LufthansaDirectConnector, 15.0),
+    ("swiss_direct", SwissDirectConnector, 15.0),
+    ("austrian_direct", AustrianDirectConnector, 15.0),
+    ("brusselsairlines_direct", BrusselsAirlinesDirectConnector, 15.0),
     # ── Middle East Playwright connectors (CDP Chrome + form fill) ──
     ("elal_direct", ElAlConnectorClient, 55.0),
     ("saudia_direct", SaudiaConnectorClient, 55.0),

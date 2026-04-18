@@ -642,8 +642,10 @@ class AirChinaConnectorClient:
             if response.status not in (200, 201):
                 return
             try:
-                if any(k in url for k in ["/search", "/availability", "/flight",
-                                           "/offer", "/fare", "/lowprice", "/schedule"]):
+                # Air China uses /gateway/api/flight/list for search results
+                # Also capture other common flight API patterns
+                if any(k in url for k in ["/gateway/api/flight/list", "/flight/list", "/search",
+                                           "/availability", "/offer", "/fare", "/lowprice", "/schedule"]):
                     ct = response.headers.get("content-type", "")
                     if "json" not in ct and "text" not in ct:
                         return
@@ -653,6 +655,14 @@ class AirChinaConnectorClient:
                     data = json.loads(body)
                     if not isinstance(data, dict):
                         return
+                    # Air China response has Data.Journeys structure
+                    if "Data" in data and isinstance(data.get("Data"), dict):
+                        if "Journeys" in data["Data"]:
+                            search_data.update(data)
+                            api_event.set()
+                            logger.info("AirChina: captured flight/list API → %d journeys", len(data["Data"]["Journeys"]))
+                            return
+                    # Fallback: check for common flight data keys
                     keys_str = " ".join(str(k).lower() for k in data.keys())
                     if any(k in keys_str for k in ["flight", "itiner", "offer", "fare",
                                                      "bound", "trip", "result", "segment",
@@ -697,11 +707,10 @@ class AirChinaConnectorClient:
                     # We have a working session! Check if route matches
                     if target_route in current_url.lower():
                         logger.info("AirChina: session active, using calendar click for date change")
-                        needs_form_fill = False
-                        
                         # Click on calendar date instead of navigating
                         clicked = await _click_calendar_date(page, target_day)
                         if clicked:
+                            needs_form_fill = False
                             await asyncio.sleep(3.0)  # Wait for results to load
                             
                             # Scrape results
@@ -824,21 +833,15 @@ class AirChinaConnectorClient:
             
             # Verify airports are correctly set (debug)
             form_state = await page.evaluate("""() => {
-                const inputs = document.querySelectorAll('input');
-                const result = {};
-                for (const i of inputs) {
-                    if (i.offsetHeight > 0) {
-                        const p = (i.placeholder || '').toLowerCase();
-                        const v = i.value || '';
-                        // Check for 机场 (airport) in placeholder - NOT just 出发/到达 
-                        // because date field also has 出发
-                        if (p.includes('出发') && p.includes('机场')) result.origin = v;
-                        else if (p.includes('到达') && p.includes('机场')) result.dest = v;
-                        else if (p.includes('出发机场')) result.origin = v;
-                        else if (p.includes('到达机场')) result.dest = v;
-                    }
-                }
-                return result;
+                const inputs = [...document.querySelectorAll('input')].filter(i => i.offsetHeight > 0);
+                const airportInputs = inputs.filter(i => {
+                    const p = i.placeholder || '';
+                    return (p.includes('机场') || p.includes('城市') || p.includes('三字码'));
+                });
+                return {
+                    origin: airportInputs[0]?.value || '',
+                    dest: airportInputs.length > 1 ? airportInputs[1]?.value : (airportInputs[0]?.value || ''),
+                };
             }""")
             logger.info("AirChina: form verification - origin=%s dest=%s", 
                        form_state.get('origin', '?'), form_state.get('dest', '?'))
@@ -950,7 +953,7 @@ class AirChinaConnectorClient:
                     logger.info("AirChina: Captcha auto-solved! Waiting for results...")
                     # After captcha solve, wait for results to load.
                     # First try: just wait — the SPA may already have results behind captcha.
-                    await asyncio.sleep(5.0)
+                    await asyncio.sleep(4.0)
                     has_data = await page.evaluate(r"""() => {
                         const text = document.body.innerText || '';
                         return /CA\d{3,4}/.test(text) && /[￥¥]\d{3,}/.test(text);
@@ -974,8 +977,8 @@ class AirChinaConnectorClient:
                             await page.reload(wait_until="domcontentloaded", timeout=30000)
                         await asyncio.sleep(3.0)
                         # Wait for flight data after re-search/reload
-                        for wait_round in range(6):  # Up to 30 seconds
-                            await asyncio.sleep(5.0)
+                        for wait_round in range(6):  # Up to 18 seconds
+                            await asyncio.sleep(3.0)
                             # Check if flight data appeared
                             has_data = await page.evaluate(r"""() => {
                                 const text = document.body.innerText || '';
@@ -1051,61 +1054,85 @@ class AirChinaConnectorClient:
     async def _fill_airport(self, page, direction: str, iata: str) -> bool:
         logger.debug("AirChina: _fill_airport called - direction=%s iata=%s", direction, iata)
         try:
-            # Use index-based selection (more reliable than placeholder detection)
-            # Index 0 = origin, Index 1 = destination
-            target_index = 0 if direction == "origin" else 1
+            # Close any existing dropdowns first
+            await page.evaluate("() => document.body.click()")
+            await asyncio.sleep(0.3)
             
-            # Focus and clear the target input field
+            # Air China has 2 airport inputs: origin (placeholder contains 出发机场)
+            # and destination (placeholder 到达机场 — but changes to 输入城市或机场三字码 when active).
+            # After origin selection, destination auto-focuses and placeholder changes.
+            # Strategy: for origin, find by 出发机场; for destination, find by 到达 or use 2nd airport input.
             focused = await page.evaluate("""(args) => {
-                const [targetIdx, iata] = args;
+                const [direction, iata] = args;
                 const inputs = [...document.querySelectorAll('input')].filter(i => i.offsetHeight > 0);
-                if (inputs[targetIdx]) {
-                    const el = inputs[targetIdx];
-                    // Check if already has correct value
-                    if (el.value && el.value.toUpperCase().includes(iata)) {
-                        return {alreadyFilled: true, value: el.value};
+                
+                // Find airport inputs (exclude date input which has 出发日期/日期 in placeholder)
+                const airportInputs = inputs.filter(i => {
+                    const p = i.placeholder || '';
+                    return (p.includes('机场') || p.includes('城市') || p.includes('三字码'));
+                });
+                
+                let target = null;
+                if (direction === 'origin') {
+                    // Origin: first airport input (usually placeholder=出发机场)
+                    target = airportInputs.find(i => i.placeholder.includes('出发')) || airportInputs[0];
+                } else {
+                    // Destination: second airport input or one with 到达/城市/三字码
+                    target = airportInputs.find(i => i.placeholder.includes('到达'));
+                    if (!target) {
+                        // After origin fill, dest has placeholder 输入城市或机场三字码
+                        target = airportInputs.find(i => i.placeholder.includes('三字码') || i.placeholder.includes('城市'));
                     }
-                    el.click();
-                    el.focus();
-                    el.value = '';
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    return {focused: true, placeholder: el.placeholder};
+                    if (!target && airportInputs.length > 1) {
+                        target = airportInputs[1];
+                    }
                 }
-                return {focused: false};
-            }""", [target_index, iata])
+                
+                if (!target) return {focused: false, count: airportInputs.length};
+                
+                // Check if already has correct value
+                if (target.value && target.value.toUpperCase().includes(iata)) {
+                    return {alreadyFilled: true, value: target.value};
+                }
+                target.focus();
+                target.value = '';
+                target.dispatchEvent(new Event('input', {bubbles: true}));
+                return {focused: true, placeholder: target.placeholder};
+            }""", [direction, iata])
             
             if focused.get('alreadyFilled'):
                 logger.info("AirChina: %s already has %s", direction, iata)
                 return True
             
             if not focused.get('focused'):
-                logger.warning("AirChina: could not focus %s field (index %d)", direction, target_index)
+                logger.warning("AirChina: could not focus %s field (airport inputs: %d)", direction, focused.get('count', 0))
                 return False
             
             logger.debug("AirChina: focused %s field (placeholder=%s)", direction, focused.get('placeholder'))
-            await asyncio.sleep(random.uniform(0.4, 0.8))
+            await asyncio.sleep(random.uniform(0.3, 0.5))
             
-            # Human-like typing
-            await _human_type(page, iata)
-            await asyncio.sleep(random.uniform(1.0, 1.5))
+            # Type the IATA code using keyboard (JS focus + keyboard type works with React)
+            await page.keyboard.type(iata, delay=80)
+            await asyncio.sleep(random.uniform(1.2, 1.8))
 
-            # Move mouse randomly before clicking suggestion (human-like)
-            await _random_scroll(page)
-            
-            # Select from dropdown - Air China uses CitySelector_airportItem class
+            # Select from dropdown - Air China uses airportItem class
             selected = await page.evaluate("""(iata) => {
                 const items = document.querySelectorAll('[class*="airportItem"]');
                 for (const item of items) {
                     if (item.textContent.includes(iata) && item.offsetHeight > 0) {
                         item.click();
-                        return true;
+                        return {selected: true, text: item.textContent.substring(0, 30)};
                     }
                 }
-                // Fallback to ArrowDown + Enter if no dropdown
-                return false;
+                // Fallback: click first item
+                if (items.length > 0 && items[0].offsetHeight > 0) {
+                    items[0].click();
+                    return {selected: true, text: items[0].textContent.substring(0, 30), fallback: true};
+                }
+                return {selected: false};
             }""", iata)
             
-            if not selected:
+            if not selected.get('selected'):
                 # Use keyboard navigation as fallback
                 await asyncio.sleep(random.uniform(0.2, 0.4))
                 await page.keyboard.press("ArrowDown")
@@ -1113,7 +1140,7 @@ class AirChinaConnectorClient:
                 await page.keyboard.press("Enter")
 
             await asyncio.sleep(random.uniform(0.3, 0.7))
-            logger.info("AirChina: airport %s → %s", direction, iata)
+            logger.info("AirChina: airport %s → %s (%s)", direction, iata, selected.get('text', '?'))
             return True
         except Exception as e:
             logger.warning("AirChina: airport fill error for %s: %s", iata, e)
@@ -1130,7 +1157,7 @@ class AirChinaConnectorClient:
         target_date_str = f"{target_year}-{target_month:02d}-{dt.day:02d}"
         
         try:
-            # First check if date is already correct (Chrome autofill)
+            # First check if date is already correct
             current_date = await page.evaluate("""() => {
                 const inputs = document.querySelectorAll('input');
                 for (const i of inputs) {
@@ -1144,124 +1171,55 @@ class AirChinaConnectorClient:
                 logger.info("AirChina: date already set to %s", target_date_str)
                 return True
             
-            # Click date input to open calendar
+            # Click date input to open calendar (using JS focus to bypass overlays)
             await page.evaluate("""() => {
-                const inputs = document.querySelectorAll('input');
-                for (const i of inputs) {
-                    if (i.placeholder && i.placeholder.includes('日期') && i.offsetHeight > 0) {
-                        i.click();
-                        return true;
-                    }
+                const inputs = [...document.querySelectorAll('input')].filter(i => i.offsetHeight > 0);
+                const dateInput = inputs.find(i => i.placeholder && i.placeholder.includes('日期'));
+                if (dateInput) {
+                    dateInput.click();
+                    dateInput.focus();
                 }
-                return false;
             }""")
-            await asyncio.sleep(random.uniform(1.2, 2.0))
+            await asyncio.sleep(random.uniform(1.0, 1.5))
 
-            # Air China calendar navigation - uses 2026年/6月 format
-            for _ in range(24):  # up to 2 years navigation
-                month_info = await page.evaluate("""() => {
-                    // Air China uses styles_calendarHeaderView__xmR28 which contains "2026年/9月"
-                    const headers = document.querySelectorAll('[class*="calendarHeaderView"], [class*="calendarHeader"]');
-                    const months = [];
-                    for (const h of headers) {
-                        const text = h.textContent || '';
-                        // Match patterns like "2026年/6月" or "2026年6月"
-                        const match = text.match(/(\\d{4})年\\/?\\s*(\\d{1,2})月/);
-                        if (match) {
-                            months.push({ year: parseInt(match[1]), month: parseInt(match[2]) });
-                        }
-                    }
-                    return months;
+            # Calculate how many months to navigate forward
+            # Air China calendar uses carousel-next-btn for month navigation
+            now = datetime.now()
+            current_month_val = now.year * 12 + now.month
+            target_month_val = target_year * 12 + target_month
+            months_to_advance = target_month_val - current_month_val
+            
+            logger.debug("AirChina: navigating %d months forward", months_to_advance)
+            for _ in range(max(0, months_to_advance)):
+                await page.evaluate("""() => {
+                    const btn = document.querySelector('[class*="carousel-next-btn"]');
+                    if (btn) btn.click();
                 }""")
-                
-                if month_info:
-                    # Check if target month is visible
-                    for m in month_info:
-                        if m['year'] == target_year and m['month'] == target_month:
-                            # Found target month
-                            break
-                    else:
-                        # Need to navigate
-                        current = month_info[0]
-                        current_val = current['year'] * 12 + current['month']
-                        target_val = target_year * 12 + target_month
-                        
-                        if target_val < current_val:
-                            # Go backwards
-                            await page.evaluate("""() => {
-                                const prev = document.querySelector('[class*="calendarHeaderPrevBtn"]');
-                                if (prev && prev.offsetHeight > 0) prev.click();
-                            }""")
-                        else:
-                            # Go forwards
-                            await page.evaluate("""() => {
-                                const next = document.querySelector('[class*="calendarHeaderNextBtn"]');
-                                if (next && next.offsetHeight > 0) next.click();
-                            }""")
-                        await asyncio.sleep(random.uniform(0.3, 0.6))
-                        continue
-                    break
-                else:
-                    # Fallback: try generic next button
-                    await page.evaluate("""() => {
-                        const n = document.querySelector('[class*="next"], [aria-label*="next"]');
-                        if (n && n.offsetHeight > 0) n.click();
-                    }""")
-                    await asyncio.sleep(random.uniform(0.3, 0.6))
+                await asyncio.sleep(random.uniform(0.35, 0.55))
 
-            # Click the target day - Air China uses SPAN for day number, parent DIV for click
-            # NOTE: Don't check ancestor classes - Air China marks all cells with "Other" class
-            # but they ARE clickable. Just click span.parentElement directly.
-            clicked = await page.evaluate("""(args) => {
-                const [targetDay, targetMonth] = args;
-                // Find the correct month panel first
-                const panels = document.querySelectorAll('[class*="calendarPanel"]');
-                for (const panel of panels) {
-                    const header = panel.querySelector('[class*="calendarHeaderView"]');
-                    const monthText = header ? header.textContent : '';
-                    // Check if this panel shows our target month (e.g., "6月" for June)
-                    if (monthText.includes(targetMonth + '月')) {
-                        // Find day spans in this panel
-                        const spans = panel.querySelectorAll('span[class*="calendarInnerBodyDate"]');
-                        for (const span of spans) {
-                            const text = span.textContent.trim();
-                            if (text === targetDay) {
-                                // Only check immediate parent for disabled - don't walk up ancestors
-                                const parentCls = (span.parentElement?.className || '').toLowerCase();
-                                const isDisabled = parentCls.includes('disabled');
-                                if (!isDisabled && span.parentElement && span.parentElement.offsetHeight > 0) {
-                                    span.parentElement.click();
-                                    return true;
-                                }
-                            }
-                        }
-                    }
+            # Click the target day - find enabled (not disabled) td cells
+            clicked = await page.evaluate("""(targetDay) => {
+                const cells = [...document.querySelectorAll('td[class*="calendar"]')];
+                const enabled = cells.filter(c => {
+                    const cls = c.className || '';
+                    return !cls.includes('Disabled') && c.offsetHeight > 0;
+                });
+                
+                // Find cell with target day text
+                const target = enabled.find(c => c.textContent.trim() === targetDay);
+                if (target) {
+                    target.click();
+                    target.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                    return {clicked: true, day: targetDay};
                 }
-                // Fallback: try clicking any matching day that's not disabled
-                const spans = document.querySelectorAll('span[class*="calendarInnerBodyDate"]');
-                for (const span of spans) {
-                    const text = span.textContent.trim();
-                    if (text === targetDay && span.parentElement) {
-                        let el = span.parentElement;
-                        let isDisabled = false;
-                        while (el && el !== document.body) {
-                            const cls = (el.className || '').toLowerCase();
-                            if (cls.includes('disabled') || cls.includes('other')) {
-                                isDisabled = true;
-                                break;
-                            }
-                            el = el.parentElement;
-                        }
-                        if (!isDisabled && span.parentElement.offsetHeight > 0) {
-                            span.parentElement.click();
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            }""", [target_day, str(target_month)])
-            if clicked:
+                return {clicked: false, enabledCount: enabled.length};
+            }""", target_day)
+            
+            if clicked.get('clicked'):
                 logger.info("AirChina: date selected %s", dt.strftime("%Y-%m-%d"))
+            else:
+                logger.warning("AirChina: could not click day %s (enabled cells: %d)", 
+                              target_day, clicked.get('enabledCount', 0))
             await asyncio.sleep(1.0)
             return True
         except Exception as e:
@@ -1270,6 +1228,17 @@ class AirChinaConnectorClient:
 
     def _parse_api_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
         offers = []
+        
+        # Air China uses Data.Journeys format from /gateway/api/flight/list
+        if "Data" in data and isinstance(data["Data"], dict):
+            journeys = data["Data"].get("Journeys", [])
+            if journeys:
+                logger.info("AirChina: parsing %d journeys from API", len(journeys))
+                offers = self._parse_journeys(journeys, req)
+                if offers:
+                    return offers
+        
+        # Fallback to generic parsing
         flights = (
             data.get("flights") or data.get("results") or data.get("itineraries") or
             data.get("flightInfos") or data.get("offers") or data.get("journeys") or
@@ -1288,6 +1257,101 @@ class AirChinaConnectorClient:
             offer = self._build_offer(flight, req)
             if offer:
                 offers.append(offer)
+        return offers
+
+    def _parse_journeys(self, journeys: list, req: FlightSearchRequest) -> list[FlightOffer]:
+        """Parse Air China's Journeys format from /gateway/api/flight/list."""
+        offers = []
+        for journey in journeys:
+            try:
+                # Extract segments
+                segments_data = journey.get("Segments", [])
+                if not segments_data:
+                    continue
+                
+                segments = []
+                for seg in segments_data:
+                    dep_info = seg.get("Dep", {})
+                    arr_info = seg.get("Arrival", {})
+                    
+                    dep_dt = self._parse_dt(dep_info.get("AircraftScheduledDateTime", ""), req.date_from)
+                    arr_dt = self._parse_dt(arr_info.get("AircraftScheduledDateTime", ""), req.date_from)
+                    
+                    carrier = seg.get("MarketingCarrier", "") or seg.get("OperatingCarrier", "")
+                    # Extract flight number from carrier string like "CA1507"
+                    flight_no = carrier if carrier else self.IATA
+                    airline_code = carrier[:2] if len(carrier) >= 2 else self.IATA
+                    
+                    segments.append(FlightSegment(
+                        airline=airline_code,
+                        airline_name=self.AIRLINE_NAME if airline_code == self.IATA else airline_code,
+                        flight_no=flight_no,
+                        origin=dep_info.get("IATA_LocationCode", req.origin),
+                        destination=arr_info.get("IATA_LocationCode", req.destination),
+                        departure=dep_dt,
+                        arrival=arr_dt,
+                        cabin_class="economy",
+                    ))
+                
+                if not segments:
+                    continue
+                
+                # Extract best price from Fares
+                # Fares is a dict keyed by cabin type, each with Fare list
+                fares_data = journey.get("Fares", {})
+                best_price = None
+                best_offer_id = None
+                
+                for cabin_key, cabin_data in fares_data.items():
+                    if isinstance(cabin_data, dict):
+                        # Check cabin-level Price (lowest in that cabin)
+                        cabin_price = cabin_data.get("Price", 0)
+                        if cabin_price and cabin_price > 0 and (best_price is None or cabin_price < best_price):
+                            best_price = cabin_price
+                        # Also check individual fares
+                        fare_list = cabin_data.get("Fare", [])
+                        for fare in fare_list:
+                            if isinstance(fare, dict):
+                                fare_price = fare.get("Price", 0)
+                                if fare_price and fare_price > 0 and (best_price is None or fare_price < best_price):
+                                    best_price = fare_price
+                                    best_offer_id = fare.get("OfferID", "")
+                
+                if not best_price or best_price <= 0:
+                    continue
+                
+                logger.debug("AirChina: journey %s → best_price=%s (cabins: %s)",
+                            journey.get("JourneyRefID", "?"), best_price,
+                            {k: v.get("Price") for k, v in fares_data.items() if isinstance(v, dict)})
+                
+                route = FlightRoute(
+                    segments=segments,
+                    total_duration_seconds=segments_data[0].get("Duration", 0) if segments_data else 0,
+                    stopovers=max(0, len(segments) - 1),
+                )
+                
+                offer_id = hashlib.md5(
+                    f"{self.IATA.lower()}_{journey.get('JourneyRefID', '')}_{best_price}_{segments[0].flight_no}".encode()
+                ).hexdigest()[:12]
+                
+                offers.append(FlightOffer(
+                    id=f"{self.IATA.lower()}_{offer_id}",
+                    price=round(float(best_price), 2),
+                    currency=self.DEFAULT_CURRENCY,
+                    price_formatted=f"CNY {best_price:,.0f}",
+                    outbound=route,
+                    inbound=None,
+                    airlines=list({s.airline for s in segments}),
+                    owner_airline=self.IATA,
+                    booking_url=self._booking_url(req),
+                    is_locked=False,
+                    source=self.SOURCE,
+                    source_tier="free",
+                ))
+            except Exception as e:
+                logger.debug("AirChina: journey parse error: %s", e)
+                continue
+        
         return offers
 
     def _find_flights(self, data, depth=0) -> list:

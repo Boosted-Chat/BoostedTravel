@@ -157,14 +157,23 @@ class EskyConnectorClient:
             # Navigate to eSky.pl homepage
             logger.info("eSky: loading homepage")
             await page.goto("https://www.esky.pl/", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(4000)
+            await page.wait_for_timeout(2000)
 
-            # Accept cookies if dialog appears
-            try:
-                await page.click('button[data-testid="uc-accept-all-button"]', timeout=3000)
+            # Dismiss Usercentrics cookie consent overlay (uses shadow DOM)
+            # Must be done BEFORE any form interaction — it blocks pointer events
+            for _uc_try in range(3):
+                try:
+                    removed = await page.evaluate("""() => {
+                        const uc = document.getElementById('usercentrics-root');
+                        if (uc) { uc.remove(); return true; }
+                        return false;
+                    }""")
+                    if removed:
+                        break
+                except Exception:
+                    pass
                 await page.wait_for_timeout(1000)
-            except Exception:
-                pass
+            await page.wait_for_timeout(1000)
 
             # Select one-way trip
             try:
@@ -298,7 +307,7 @@ class EskyConnectorClient:
                 airlines_set.append(airline_name)
 
             for leg in leg_group.get("legs", []):
-                seg = self._parse_esky_leg(leg, airline_code, airline_name)
+                seg = self._parse_esky_leg(leg, airline_code, airline_name, cabin=_CABIN_MAP.get(req.cabin_class or "M", "economy"))
                 if seg:
                     ob_segments.append(seg)
 
@@ -330,7 +339,7 @@ class EskyConnectorClient:
             source_tier="free",
         )
 
-    def _parse_esky_leg(self, leg: dict, airline_code: str, airline_name: str) -> FlightSegment | None:
+    def _parse_esky_leg(self, leg: dict, airline_code: str, airline_name: str, cabin: str = "economy") -> FlightSegment | None:
         """Parse an eSky leg into a FlightSegment."""
         if not isinstance(leg, dict):
             return None
@@ -360,7 +369,7 @@ class EskyConnectorClient:
             departure=dep_dt,
             arrival=arr_dt,
             duration_seconds=dur_sec,
-            cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
+            cabin_class=cabin,
         )
 
     async def _extract_from_dom(self, page, req: FlightSearchRequest, date_str: str) -> list[FlightOffer]:

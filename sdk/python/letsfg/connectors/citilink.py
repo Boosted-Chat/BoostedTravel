@@ -39,6 +39,8 @@ from .browser import (
     _launched_procs,
     acquire_browser_slot,
     release_browser_slot,
+    proxy_chrome_args,
+    auto_block_if_proxied,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,6 +130,7 @@ async def _get_browser():
         "--no-default-browser-check",
         "--disable-blink-features=AutomationControlled",
         "--disable-http2",
+        *proxy_chrome_args(),
         "--window-position=-2400,-2400",
         "--window-size=1366,768",
         "about:blank",
@@ -258,10 +261,31 @@ class CitilinkConnectorClient:
         page.on("response", _on_response)
 
         try:
-            # Try main website first (more likely to pass Cloudflare)
-            logger.info("Citilink: loading site for %s->%s", req.origin, req.destination)
-            await page.goto(_HOME_URL, wait_until="domcontentloaded", timeout=25000)
+            # Try Navitaire booking engine first (less aggressive WAF than main site)
+            logger.info("Citilink: loading booking site for %s->%s", req.origin, req.destination)
+            await page.goto(_BOOK_URL, wait_until="domcontentloaded", timeout=25000)
             await asyncio.sleep(3)
+
+            title = await page.title()
+            content = await page.content()
+            current_url = page.url
+            logger.info("Citilink: booking page — url=%s title=%r content_len=%d", current_url, title[:80], len(content))
+
+            booking_blocked = "403" in title or "forbidden" in title.lower() or "you have been blocked" in content.lower()
+
+            if booking_blocked:
+                # Fallback to main website
+                logger.info("Citilink: booking site blocked, trying main site")
+                await page.goto(_HOME_URL, wait_until="domcontentloaded", timeout=25000)
+                await asyncio.sleep(3)
+
+                title = await page.title()
+                content = await page.content()
+                current_url = page.url
+                logger.info("Citilink: main page — url=%s title=%r content_len=%d", current_url, title[:80], len(content))
+                if "403" in title or "forbidden" in title.lower() or "you have been blocked" in content.lower():
+                    logger.warning("Citilink: WAF blocked (403 Forbidden) — title=%r url=%s", title, current_url)
+                    raise RuntimeError("403 Forbidden - WAF blocked")
 
             # Wait for possible Cloudflare challenge
             await self._wait_for_cf(page)
@@ -270,20 +294,48 @@ class CitilinkConnectorClient:
             if "just a moment" in title.lower():
                 logger.warning("Citilink: stuck on Cloudflare challenge")
                 await _reset_profile()
-                return self._empty(req)
+                raise RuntimeError("Cloudflare challenge blocked")
 
             # Dismiss popups
             await self._dismiss_popups(page)
 
-            # Fill search form
-            ok = await self._fill_form(page, req)
-            if not ok:
-                # Try direct Navitaire URL
-                logger.info("Citilink: trying direct Navitaire URL")
-                await page.goto(_BOOK_URL, wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(3)
-                await self._wait_for_cf(page)
+            # Check if we got redirected away from booking page (e.g. F5 challenge → homepage)
+            on_booking = "book.citilink.co.id" in page.url.lower()
+
+            if not booking_blocked and not on_booking:
+                # F5 resolved but redirected us to homepage — navigate back (cookies are set now)
+                logger.info("Citilink: WAF redirected to %s, re-navigating to booking page", page.url[:80])
+                await page.goto(_BOOK_URL, wait_until="domcontentloaded", timeout=25000)
+                await asyncio.sleep(5)
+                on_booking = "book.citilink.co.id" in page.url.lower()
+                title = await page.title()
+                content = await page.content()
+                logger.info("Citilink: re-nav booking — url=%s title=%r content_len=%d", page.url, title[:80], len(content))
+                if "403" in title or "forbidden" in title.lower() or (len(content) < 2000 and not title):
+                    on_booking = False
+
+            # Fill search form based on which page we're actually on
+            if on_booking:
                 ok = await self._fill_navitaire_form(page, req)
+            else:
+                # On homepage or other page — try homepage form
+                ok = await self._fill_form(page, req)
+                if not ok:
+                    # Last resort: try booking page directly
+                    logger.info("Citilink: homepage form failed, trying direct Navitaire URL")
+                    logger.info("Citilink: trying direct Navitaire URL")
+                    await page.goto(_BOOK_URL, wait_until="domcontentloaded", timeout=20000)
+                    await asyncio.sleep(3)
+                    
+                    # Check for WAF block on booking site
+                    title = await page.title()
+                    content = await page.content()
+                    if "403" in title or "forbidden" in title.lower() or "you have been blocked" in content.lower():
+                        logger.warning("Citilink: WAF blocked on booking site (403 Forbidden)")
+                        raise RuntimeError("403 Forbidden - WAF blocked")
+                    
+                    await self._wait_for_cf(page)
+                    ok = await self._fill_navitaire_form(page, req)
 
             if ok:
                 # Wait for results
@@ -320,6 +372,8 @@ class CitilinkConnectorClient:
                 total_results=len(offers),
             )
 
+        except RuntimeError:
+            raise  # Let block-detection errors propagate for retry logic
         except Exception as e:
             logger.error("Citilink CDP error: %s", e)
             return self._empty(req)

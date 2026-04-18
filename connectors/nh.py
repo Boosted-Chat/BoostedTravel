@@ -200,40 +200,20 @@ class ANAConnectorClient:
         # Phase 1: Navigate via nodriver (bypasses Akamai sensor)
         nd_tab = await browser.get("https://www.ana.co.jp/en/us/")
         logger.info("NH: loading homepage for %s->%s on %s", req.origin, req.destination, date_str)
-        await asyncio.sleep(10.0)
+        await asyncio.sleep(5.0)
 
-        # Dismiss overlays + set hidden inputs via nodriver
+        # Dismiss overlays (OneTrust + Ensighten consent dialogs)
         await nd_tab.evaluate("""
             (function() {
                 document.querySelectorAll(
                     '#onetrust-consent-sdk, .onetrust-pc-dark-filter, ' +
-                    '#onetrust-banner-sdk, [role="dialog"], ' +
-                    '[class*="cookie"], [class*="consent"]'
+                    '#onetrust-banner-sdk, #ensModalWrapper, #ensNotifyBanner, ' +
+                    '.ens-notice, dialog[open], [class*="consent"]'
                 ).forEach(function(el) { el.remove(); });
-                document.querySelectorAll('*').forEach(function(el) {
-                    var s = window.getComputedStyle(el);
-                    if (s.position === 'fixed' && parseInt(s.zIndex) > 999 && el.offsetHeight > 100) el.remove();
-                });
             })()
         """)
 
-        await nd_tab.evaluate("""
-            (function() {
-                var set = function(n,v) { var i=document.querySelector('input[name="'+n+'"]'); if(i) i.value=v; };
-                set('origin', '""" + req.origin + """');
-                set('destination', '""" + req.destination + """');
-                set('departureDate', '""" + date_str + """');
-                set('wayToMonth', '""" + f"{dt.month:02d}" + """');
-                set('wayToDay', '""" + f"{dt.day:02d}" + """');
-                set('returnDate', '""" + ret_dt.strftime("%Y-%m-%d") + """');
-                set('wayBackMonth', '""" + f"{ret_dt.month:02d}" + """');
-                set('wayBackDay', '""" + f"{ret_dt.day:02d}" + """');
-                set('ADT', '""" + str(adults) + """');
-            })()
-        """)
-        logger.info("NH: hidden inputs set")
-
-        # Phase 2: Connect Playwright AFTER nodriver has loaded the page
+        # Phase 2: Connect Playwright for UI interaction + response capture
         context = await _connect_playwright()
         if not context:
             logger.error("NH: failed to connect Playwright")
@@ -252,6 +232,108 @@ class ANAConnectorClient:
             return self._empty(req)
         logger.info("NH: Playwright found page at %s", ana_page.url[:80])
 
+        # Remove any overlays that reappeared via Playwright
+        await ana_page.evaluate("""() => {
+            document.querySelectorAll(
+                '#ensModalWrapper, dialog[open], .ens-notice, ' +
+                '#onetrust-consent-sdk, .onetrust-pc-dark-filter'
+            ).forEach(el => el.remove());
+        }""")
+        await asyncio.sleep(0.3)
+
+        # Phase 3: Select airports via UI dialog interaction
+        try:
+            # Select DEPARTURE airport
+            dep_btn = ana_page.locator("button.be-wws-reserve-ticket-departure-airport__button")
+            await dep_btn.click(timeout=5000)
+            await asyncio.sleep(1.0)
+
+            dep_dialog = ana_page.locator("div.be-dialog.be-dialog--show")
+            dep_search = dep_dialog.locator("input.be-list-with-search__searchbox-input")
+            await dep_search.fill(req.origin)
+            await asyncio.sleep(0.5)
+
+            dep_click = await dep_dialog.evaluate("""(el, iata) => {
+                let item = el.querySelector('li.be-list__item[data-value="' + iata + '"]');
+                if (item) { item.click(); return 'ok'; }
+                for (const li of el.querySelectorAll('li.be-list__item')) {
+                    if (li.innerText.includes(iata)) { li.click(); return 'ok_text'; }
+                }
+                return 'not_found';
+            }""", req.origin)
+            if "not_found" in str(dep_click):
+                logger.warning("NH: departure airport %s not found in dialog", req.origin)
+                await _disconnect_playwright()
+                return self._empty(req)
+            logger.info("NH: selected departure %s", req.origin)
+            await asyncio.sleep(0.5)
+
+            # Close dep dialog if still open
+            if await ana_page.locator("div.be-dialog.be-dialog--show").count() > 0:
+                close = ana_page.locator("div.be-dialog.be-dialog--show button.be-dialog__close-button")
+                if await close.count() > 0:
+                    await close.first.click()
+                    await asyncio.sleep(0.3)
+
+            # Select ARRIVAL airport
+            arr_btn = ana_page.locator("button.be-wws-reserve-ticket-arrival-airport__button")
+            await arr_btn.click(timeout=5000)
+            await asyncio.sleep(1.0)
+
+            arr_dialog = ana_page.locator("div.be-dialog.be-dialog--show")
+            arr_search = arr_dialog.locator("input.be-list-with-search__searchbox-input")
+            await arr_search.fill(req.destination)
+            await asyncio.sleep(0.5)
+
+            arr_click = await arr_dialog.evaluate("""(el, iata) => {
+                let item = el.querySelector('li.be-list__item[data-value="' + iata + '"]');
+                if (item) { item.click(); return 'ok'; }
+                for (const li of el.querySelectorAll('li.be-list__item')) {
+                    if (li.innerText.includes(iata)) { li.click(); return 'ok_text'; }
+                }
+                return 'not_found';
+            }""", req.destination)
+            if "not_found" in str(arr_click):
+                logger.warning("NH: arrival airport %s not found in dialog", req.destination)
+                await _disconnect_playwright()
+                return self._empty(req)
+            logger.info("NH: selected arrival %s", req.destination)
+            await asyncio.sleep(0.5)
+
+            # Close arr dialog if still open
+            if await ana_page.locator("div.be-dialog.be-dialog--show").count() > 0:
+                close2 = ana_page.locator("div.be-dialog.be-dialog--show button.be-dialog__close-button")
+                if await close2.count() > 0:
+                    await close2.first.click()
+                    await asyncio.sleep(0.3)
+
+            # Set date via hidden inputs (date dialogs are complex, hidden inputs work)
+            await ana_page.evaluate("""(params) => {
+                const set = (n,v) => { const i=document.querySelector('input[name="'+n+'"]'); if(i) i.value=v; };
+                set('departureDate', params.date);
+                set('wayToMonth', params.month);
+                set('wayToDay', params.day);
+                set('returnDate', params.retDate);
+                set('wayBackMonth', params.retMonth);
+                set('wayBackDay', params.retDay);
+                set('ADT', params.adults);
+            }""", {
+                "date": date_str,
+                "month": f"{dt.month:02d}",
+                "day": f"{dt.day:02d}",
+                "retDate": ret_dt.strftime("%Y-%m-%d"),
+                "retMonth": f"{ret_dt.month:02d}",
+                "retDay": f"{ret_dt.day:02d}",
+                "adults": str(adults),
+            })
+            logger.info("NH: date set to %s, adults=%d", date_str, adults)
+
+        except Exception as e:
+            logger.error("NH: form fill failed: %s", e)
+            await _disconnect_playwright()
+            return self._empty(req)
+
+        # Phase 4: Setup response interception + submit search
         search_data: dict = {}
         akamai_blocked = False
 
@@ -282,25 +364,12 @@ class ANAConnectorClient:
         ana_page.on("response", _on_response)
 
         try:
-            # Phase 3: Submit form via Playwright (nodriver's evaluate may conflict
-            # with Playwright's CDP session on the same target)
-            btn_found = await ana_page.evaluate("""() => {
-                var btn = document.querySelector('button.be-wws-reserve-ticket-submit__button');
-                if (btn) { btn.click(); return 'clicked'; }
-                // Fallback: submit the form directly
-                var forms = document.querySelectorAll('form');
-                for (var i = 0; i < forms.length; i++) {
-                    if (forms[i].action && forms[i].action.indexOf('flight-search') !== -1) {
-                        forms[i].submit();
-                        return 'form_submitted';
-                    }
-                }
-                return 'not_found';
-            }""")
-            logger.info("NH: form submitted %s->%s (method: %s)", req.origin, req.destination, btn_found)
+            # Click search button (force=True to bypass any remaining overlays)
+            submit = ana_page.locator("button.be-wws-reserve-ticket-submit__button")
+            await submit.click(force=True, timeout=5000)
+            logger.info("NH: search submitted %s->%s", req.origin, req.destination)
 
-            # Wait for JWT + search response
-            spa_ready = False
+            # Wait for search API response
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + min(remaining, 45)
             while time.monotonic() < deadline:
@@ -309,25 +378,15 @@ class ANAConnectorClient:
                     break
                 if akamai_blocked:
                     break
-                if not spa_ready:
-                    try:
-                        token = await ana_page.evaluate(
-                            "(() => { try { return sessionStorage.getItem('accessToken'); } catch { return null; } })()"
-                        )
-                    except Exception:
-                        continue
-                    if token:
-                        spa_ready = True
-                        logger.info("NH: SPA ready, JWT obtained")
-                elif not search_data and time.monotonic() - t0 > 40:
-                    # Check for soft block (page shows "heavy traffic" without 403)
+                # Check for soft block after 30s
+                if time.monotonic() - t0 > 30 and not search_data:
                     try:
                         content = await ana_page.evaluate(
                             "() => (document.body?.innerText||'').substring(0,200)"
                         )
-                        if "cannot be accepted" in content or "heavy" in content.lower():
+                        if "cannot be accepted" in content or "heavy" in content.lower() or "could not be processed" in content.lower():
                             akamai_blocked = True
-                            logger.warning("NH: Akamai soft-blocked (page content)")
+                            logger.warning("NH: soft-blocked (page content)")
                             break
                     except Exception:
                         pass
@@ -432,6 +491,7 @@ class ANAConnectorClient:
 
             if best_ib_ts and best_ib_price < float("inf"):
                 ib_price = best_ib_price
+                _nh_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 ib_segs = []
                 for fl in best_ib_ts.get("flights", []):
                     dep = fl.get("departure", {})
@@ -447,7 +507,7 @@ class ANAConnectorClient:
                         departure=_parse_nh_datetime(dep.get("dateTime", "")),
                         arrival=_parse_nh_datetime(arr.get("dateTime", "")),
                         duration_seconds=fl.get("duration", 0),
-                        cabin_class="economy",
+                        cabin_class=_nh_cabin,
                         aircraft=fl.get("aircraftName", ""),
                     ))
                 if ib_segs:
@@ -497,6 +557,7 @@ class ANAConnectorClient:
             if not flights:
                 continue
 
+            _nh_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments = []
             for flight in flights:
                 dep = flight.get("departure", {})
@@ -516,7 +577,7 @@ class ANAConnectorClient:
                         departure=_parse_nh_datetime(dep.get("dateTime", "")),
                         arrival=_parse_nh_datetime(arr.get("dateTime", "")),
                         duration_seconds=flight.get("duration", 0),
-                        cabin_class="economy",
+                        cabin_class=_nh_cabin,
                         aircraft=flight.get("aircraftName", ""),
                     )
                 )

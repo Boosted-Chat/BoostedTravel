@@ -1,11 +1,11 @@
 """
-Sky Airline connector — EveryMundo airTRFX fare pages.
+Sky Airline connector — EveryMundo airTRFX fare pages via curl_cffi.
 
 Sky Airline (IATA: H2) is Chile's largest low-cost carrier.
 Operates 45+ domestic and regional routes from SCL hub.
 Destinations in Chile, Peru, Argentina, Brazil, Uruguay.
 
-Strategy (httpx, no browser):
+Strategy (curl_cffi, no browser):
   Sky Airline uses EveryMundo airTRFX at skyairline.com/flights/.
   1. Fetch route page: skyairline.com/flights/en/flights-from-{o}-to-{d}
   2. Extract __NEXT_DATA__ JSON from <script> tag
@@ -23,7 +23,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-import httpx
+from curl_cffi import requests as creq
 
 from ..models.flights import (
     FlightOffer,
@@ -32,7 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import get_httpx_proxy_url
+from .browser import get_curl_cffi_proxies
 from .airline_routes import city_match_set
 
 logger = logging.getLogger(__name__)
@@ -76,22 +76,13 @@ _IATA_TO_SLUG: dict[str, str] = {
 
 
 class SkyAirlineConnectorClient:
-    """Sky Airline Chile — EveryMundo airTRFX fare pages."""
+    """Sky Airline Chile — EveryMundo airTRFX fare pages via curl_cffi."""
 
     def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
-        self._http: Optional[httpx.AsyncClient] = None
-
-    async def _client(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                timeout=self.timeout, headers=_HEADERS, follow_redirects=True,
-                proxy=get_httpx_proxy_url(),)
-        return self._http
 
     async def close(self):
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
+        pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         ob_result = await self._search_ow(req)
@@ -106,7 +97,6 @@ class SkyAirlineConnectorClient:
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
-        client = await self._client()
 
         origin_slug = _IATA_TO_SLUG.get(req.origin)
         dest_slug = _IATA_TO_SLUG.get(req.destination)
@@ -118,7 +108,8 @@ class SkyAirlineConnectorClient:
         logger.info("Sky Airline: fetching %s", url)
 
         try:
-            resp = await client.get(url)
+            with creq.Session(impersonate="chrome136", proxies=get_curl_cffi_proxies()) as sess:
+                resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
             if resp.status_code != 200:
                 logger.warning("Sky Airline: %s returned %d", url, resp.status_code)
                 return self._empty(req)
@@ -137,7 +128,8 @@ class SkyAirlineConnectorClient:
         if req.return_from and offers:
             try:
                 _rev_url = f"{_BASE}/flights/en/flights-from-{dest_slug}-to-{origin_slug}"
-                _rev_resp = await client.get(_rev_url)
+                with creq.Session(impersonate="chrome136", proxies=get_curl_cffi_proxies()) as sess:
+                    _rev_resp = sess.get(_rev_url, timeout=self.timeout, headers=_HEADERS)
                 if _rev_resp.status_code == 200:
                     _ib_fares = self._extract_fares(_rev_resp.text)
                     _ib_best = float("inf")

@@ -32,7 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied
+from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied, inject_stealth_js
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,7 @@ class PorterConnectorClient:
                 req.origin, req.destination, req.date_from.strftime("%Y-%m-%d"),
             )
 
+            await inject_stealth_js(page)
             await auto_block_if_proxied(page)
             try:
                 await page.goto(results_url, wait_until="commit", timeout=15000)

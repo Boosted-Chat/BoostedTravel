@@ -199,79 +199,77 @@ class AirCairoConnectorClient:
             await page.goto(f"{_BASE}{_BOOK_PATH}", wait_until="domcontentloaded", timeout=20000)
             await asyncio.sleep(2)
 
-            # Dismiss cookie consent
-            for sel in ['button:has-text("Accept")', '.cookie-accept', '#acceptCookies',
-                        'button:has-text("I Accept")', 'button:has-text("OK")']:
-                try:
-                    btn = page.locator(sel)
-                    if await btn.count() > 0:
-                        await btn.first.click(timeout=2000)
-                        await asyncio.sleep(0.5)
-                        break
-                except Exception:
-                    continue
+            # Dismiss cookie consent + terms modals + header overlay via JS
+            await page.evaluate("""() => {
+                // Remove cookie consent
+                document.querySelectorAll('.cookie-banner, .cookie-consent, #cookieConsent')
+                    .forEach(el => el.remove());
+                // Remove terms modal and backdrop
+                const m = document.querySelector('#termsModal');
+                if (m) m.remove();
+                document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                document.body.classList.remove('modal-open');
+                document.body.style.overflow = '';
+            }""")
+            await asyncio.sleep(0.5)
 
-            # Wait for CSRF token to be populated by JavaScript
-            await asyncio.sleep(1)
+            # Fill form entirely via JS to avoid overlay/click issues
+            filled = await page.evaluate("""([origin, dest, dateStr, adults]) => {
+                // Set departure
+                const depInput = document.querySelector('input[name="departureFrom"], #departureFrom');
+                if (depInput) {
+                    depInput.value = origin;
+                    depInput.dispatchEvent(new Event('input', {bubbles: true}));
+                    depInput.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                // Set arrival
+                const arrInput = document.querySelector('input[name="departureTo"], #departureTo');
+                if (arrInput) {
+                    arrInput.value = dest;
+                    arrInput.dispatchEvent(new Event('input', {bubbles: true}));
+                    arrInput.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                // Set trip type
+                const tripSel = document.querySelector('select[name="tripType"]');
+                if (tripSel) {
+                    tripSel.value = 'oneWay';
+                    tripSel.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                // Set date
+                const dateInput = document.querySelector('input[name="date"]');
+                if (dateInput) {
+                    dateInput.value = dateStr;
+                    dateInput.dispatchEvent(new Event('input', {bubbles: true}));
+                    dateInput.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                // Set adults
+                const adultInput = document.querySelector('input[name="adult"], #adult, select[name="adult"]');
+                if (adultInput) {
+                    adultInput.value = String(adults);
+                    adultInput.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                return {
+                    dep: depInput ? depInput.value : null,
+                    arr: arrInput ? arrInput.value : null,
+                    date: dateInput ? dateInput.value : null,
+                };
+            }""", [req.origin, req.destination, date_str, req.adults or 1])
+            logger.info("AirCairo: form filled via JS: %s", filled)
+            await asyncio.sleep(0.5)
 
-            # Fill departure airport
-            dep_input = page.locator('input[name="departureFrom"], #departureFrom')
-            if await dep_input.count() > 0:
-                await dep_input.first.click()
-                await dep_input.first.fill(req.origin)
-                await asyncio.sleep(1)
-                # Select from autocomplete suggestions
-                suggestion = page.locator(f'li:has-text("{req.origin}"), .suggestion:has-text("{req.origin}"), .autocomplete-item:has-text("{req.origin}")')
-                if await suggestion.count() > 0:
-                    await suggestion.first.click()
-                    await asyncio.sleep(0.5)
-                else:
-                    await page.keyboard.press("Enter")
-                    await asyncio.sleep(0.5)
-
-            # Fill arrival airport
-            arr_input = page.locator('input[name="departureTo"], #departureTo')
-            if await arr_input.count() > 0:
-                await arr_input.first.click()
-                await arr_input.first.fill(req.destination)
-                await asyncio.sleep(1)
-                suggestion = page.locator(f'li:has-text("{req.destination}"), .suggestion:has-text("{req.destination}"), .autocomplete-item:has-text("{req.destination}")')
-                if await suggestion.count() > 0:
-                    await suggestion.first.click()
-                    await asyncio.sleep(0.5)
-                else:
-                    await page.keyboard.press("Enter")
-                    await asyncio.sleep(0.5)
-
-            # Set one-way trip type
-            trip_select = page.locator('select[name="tripType"]')
-            if await trip_select.count() > 0:
-                await trip_select.first.select_option("oneWay")
-                await asyncio.sleep(0.3)
-
-            # Fill departure date
-            date_input = page.locator('input[name="date"], #date, input[name="departureDate"]')
-            if await date_input.count() > 0:
-                await date_input.first.click()
-                await date_input.first.fill(date_str)
-                await asyncio.sleep(0.5)
-                await page.keyboard.press("Escape")
-                await asyncio.sleep(0.3)
-
-            # Set passenger count
-            adult_input = page.locator('input[name="adult"], #adult')
-            if await adult_input.count() > 0:
-                await adult_input.first.fill(str(req.adults or 1))
-
-            # Submit the form
-            submit = page.locator('button[type="submit"], input[type="submit"], .search-btn, button:has-text("Search")')
-            if await submit.count() > 0:
-                await submit.first.click()
-                logger.info("AirCairo: submitted search form")
-            else:
-                # Try submitting the form directly via JS
-                await page.evaluate("document.querySelector('form').submit()")
-                logger.info("AirCairo: submitted form via JS")
+            # Submit the form via JS
+            submitted = await page.evaluate("""() => {
+                // Remove any remaining modals/overlays
+                document.querySelectorAll('#termsModal, .modal-backdrop').forEach(el => el.remove());
+                document.body.classList.remove('modal-open');
+                // Submit form
+                const form = document.querySelector('form');
+                if (form) { form.submit(); return true; }
+                const btn = document.querySelector('button[type="submit"], input[type="submit"]');
+                if (btn) { btn.click(); return true; }
+                return false;
+            }""")
+            logger.info("AirCairo: form submitted via JS: %s", submitted)
 
             # Wait for results page
             await page.wait_for_load_state("domcontentloaded", timeout=15000)

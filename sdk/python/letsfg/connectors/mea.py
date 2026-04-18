@@ -200,33 +200,99 @@ class MEAConnectorClient:
 
         search_data: dict = {}
         api_event = asyncio.Event()
+        booking_page_ref: list = [None]
 
         async def _on_response(response):
-            url = response.url
+            url = response.url.lower()
             if response.status not in (200, 201):
                 return
             try:
-                if "air-bounds" in url:
-                    ct = response.headers.get("content-type", "")
-                    if "json" not in ct:
-                        return
-                    body = await response.text()
-                    if len(body) < 100:
-                        return
-                    data = json.loads(body)
-                    if isinstance(data, dict) and "data" in data:
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct:
+                    return
+                body = await response.text()
+                if len(body) < 100:
+                    return
+                data = json.loads(body)
+                if not isinstance(data, dict):
+                    return
+
+                # Log ALL JSON responses for diagnostic (more verbose)
+                keys = list(data.keys())[:8]
+                keys_str = " ".join(str(k) for k in keys)
+                # Always log responses from digital.mea.com.lb (new booking platform)
+                if "digital.mea.com.lb" in url or len(body) > 5000:
+                    logger.info("MEA: API → %s | keys=%s | size=%d", url[:100], keys_str[:60], len(body))
+
+                # Capture any air/flight/availability related responses
+                if any(ep in url for ep in ["air-bounds", "air-search", "search/air", "/availability",
+                                              "/offers", "/flight", "/bound", "/fare", "/api/v"]):
+                    if data or len(body) > 1000:
                         search_data.update(data)
                         api_event.set()
-                        logger.info("MEA: captured air-bounds API (%d bytes)", len(body))
+                        logger.info("MEA: captured flight API (%d bytes, keys: %s)", len(body), keys_str[:40])
+                        logger.info("MEA: captured flight API (%d bytes)", len(body))
             except Exception:
                 pass
 
+        def _on_new_page(new_page):
+            """Attach listener to new pages (booking site opens in new tab)."""
+            new_page.on("response", _on_response)
+            booking_page_ref[0] = new_page
+            logger.info("MEA: attached listener to new page: %s", new_page.url[:80] if new_page.url else "blank")
+
         page.on("response", _on_response)
+        context.on("page", _on_new_page)
 
         try:
             logger.info("MEA: loading homepage for %s→%s", req.origin, req.destination)
             await page.goto(self.HOMEPAGE, wait_until="load", timeout=30000)
             await asyncio.sleep(2.5)
+
+            # Cloudflare challenge detection and bypass
+            for cf_attempt in range(20):  # Wait up to 40s for CF challenge
+                cf_status = await page.evaluate("""() => {
+                    const title = document.title.toLowerCase();
+                    const body = document.body?.innerText?.toLowerCase() || '';
+                    const isCFChallenge = title.includes('just a moment') ||
+                                          title.includes('checking your browser') ||
+                                          body.includes('checking your browser') ||
+                                          body.includes('ray id');
+                    const hasForm = !!document.querySelector('.bookATripForm');
+                    return { isCFChallenge, hasForm, title: document.title.slice(0, 50), bodyLen: body.length };
+                }""")
+                if cf_status.get("hasForm"):
+                    logger.info("MEA: page ready after %d CF waits", cf_attempt)
+                    break
+                if cf_status.get("isCFChallenge"):
+                    if cf_attempt == 0:
+                        logger.info("MEA: Cloudflare challenge detected, waiting for JS solve...")
+                    await asyncio.sleep(2.0)
+                else:
+                    # Not a CF challenge but no form either - might be loading
+                    if cf_status.get("bodyLen", 0) > 1000:
+                        logger.info("MEA: page loaded but no form (bodyLen=%d), title=%s",
+                                    cf_status.get("bodyLen"), cf_status.get("title"))
+                        break
+                    await asyncio.sleep(1.0)
+            else:
+                logger.warning("MEA: Cloudflare challenge not resolved after 40s")
+
+            # Diagnostic: log current URL and page state
+            current_url = page.url
+            page_status = await page.evaluate("""() => {
+                const title = document.title;
+                const hasJQuery = typeof jQuery !== 'undefined';
+                const bodyLen = document.body?.innerText?.length || 0;
+                const hasForm = !!document.querySelector('.bookATripForm');
+                const hasSelect2 = !!document.querySelector('.select2-container');
+                return { title, hasJQuery, bodyLen, hasForm, hasSelect2 };
+            }""")
+            logger.info("MEA: page loaded, url=%s, title=%s, hasForm=%s, hasSelect2=%s, bodyLen=%d",
+                        current_url[:80], page_status.get("title", "")[:50],
+                        page_status.get("hasForm"), page_status.get("hasSelect2"),
+                        page_status.get("bodyLen", 0))
+
             await _dismiss_overlays(page)
 
             # One-way toggle
@@ -290,7 +356,9 @@ class MEAConnectorClient:
             if search_data:
                 offers = self._parse_api_response(search_data, req)
             if not offers:
-                offers = await self._scrape_dom(page, req)
+                # Try scraping from the booking page (new tab) first, then homepage
+                scrape_page = booking_page_ref[0] if booking_page_ref[0] else page
+                offers = await self._scrape_dom(scrape_page, req)
 
             offers.sort(key=lambda o: o.price)
             elapsed = time.monotonic() - t0
@@ -313,17 +381,53 @@ class MEAConnectorClient:
             except Exception:
                 pass
             try:
+                context.remove_listener("page", _on_new_page)
+            except Exception:
+                pass
+            try:
+                if booking_page_ref[0]:
+                    await booking_page_ref[0].close()
+            except Exception:
+                pass
+            try:
                 await page.close()
             except Exception:
                 pass
 
     async def _fill_airport(self, page, direction: str, iata: str) -> bool:
-        """Set airport via jQuery Select2 dropdown API."""
+        """Set airport via jQuery Select2 dropdown API with jQuery/Select2 load wait."""
         try:
             dropdown = "fromDropdown" if direction == "origin" else "toDropdown"
+
+            # Wait for jQuery AND Select2 initialization (up to 15s)
+            # Select2 adds .data('select2') to the element when initialized
+            select2_ready = False
+            for attempt in range(30):
+                status = await page.evaluate(f"""() => {{
+                    if (typeof jQuery === 'undefined') return 'no-jquery';
+                    const $sel = jQuery("select[name='{dropdown}']");
+                    if (!$sel.length) return 'no-element';
+                    if (!$sel.data('select2')) return 'no-select2';
+                    return 'ready';
+                }}""")
+                if status == 'ready':
+                    select2_ready = True
+                    logger.info("MEA: Select2 ready for %s after %d attempts", dropdown, attempt + 1)
+                    break
+                if attempt % 5 == 4:
+                    logger.info("MEA: waiting for Select2 on %s, status=%s", dropdown, status)
+                await asyncio.sleep(0.5)
+
+            if not select2_ready:
+                logger.warning("MEA: Select2 not initialized for %s after 15s", dropdown)
+
+            # Try Select2 API first
             ok = await page.evaluate(f"""() => {{
                 try {{
-                    jQuery("select[name='{dropdown}']").val('{iata}').trigger('change');
+                    if (typeof jQuery === 'undefined') return false;
+                    const $sel = jQuery("select[name='{dropdown}']");
+                    if (!$sel.length) return false;
+                    $sel.val('{iata}').trigger('change');
                     return true;
                 }} catch(e) {{
                     return false;
@@ -331,9 +435,31 @@ class MEAConnectorClient:
             }}""")
             if ok:
                 logger.info("MEA: airport %s → %s (Select2)", direction, iata)
-            else:
-                logger.warning("MEA: Select2 set failed for %s → %s", direction, iata)
-            return ok
+                return True
+
+            # Fallback: try native select change
+            ok = await page.evaluate(f"""() => {{
+                try {{
+                    const sel = document.querySelector("select[name='{dropdown}']");
+                    if (!sel) return false;
+                    for (const opt of sel.options) {{
+                        if (opt.value === '{iata}' || opt.textContent.includes('{iata}')) {{
+                            sel.value = opt.value;
+                            sel.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            return true;
+                        }}
+                    }}
+                    return false;
+                }} catch(e) {{
+                    return false;
+                }}
+            }}""")
+            if ok:
+                logger.info("MEA: airport %s → %s (native select)", direction, iata)
+                return True
+
+            logger.warning("MEA: Select2 set failed for %s → %s", direction, iata)
+            return False
         except Exception as e:
             logger.warning("MEA: airport fill error for %s: %s", iata, e)
             return False
@@ -505,28 +631,83 @@ class MEAConnectorClient:
 
     async def _scrape_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
         """Fallback: scrape flight data from refx web components on the booking page."""
-        await asyncio.sleep(1.5)
+        # Wait longer for async content to load
+        await asyncio.sleep(4.0)
+
+        # Log current URL for diagnostics
+        url = page.url
+        logger.info("MEA: DOM scrape on %s", url[:80])
+
+        # Get page diagnostics first
+        page_info = await page.evaluate("""() => {
+            const title = document.title;
+            const bodyText = document.body?.innerText?.slice(0, 500) || '';
+            const allDivs = document.querySelectorAll('div').length;
+            // Find any flight-like content
+            const hasPrice = /USD|EUR|\$|€/.test(bodyText);
+            const hasTimes = /\d{1,2}:\d{2}/.test(bodyText);
+            const hasFlightNo = /ME\d{2,4}/.test(bodyText);
+            // Check for loading states
+            const hasLoading = document.querySelector('[class*="loading"], [class*="spinner"], .ant-spin') !== null;
+            // Check for error messages
+            const hasError = /no.*flight|sorry|error|unavailable/i.test(bodyText);
+            return { title, allDivs, hasPrice, hasTimes, hasFlightNo, hasLoading, hasError,
+                     textSample: bodyText.replace(/\s+/g, ' ').slice(0, 200) };
+        }""")
+        logger.info("MEA: page info: title=%s, divs=%d, hasPrice=%s, hasTimes=%s, hasFlightNo=%s, loading=%s, error=%s",
+                    page_info.get("title", "")[:40], page_info.get("allDivs", 0),
+                    page_info.get("hasPrice"), page_info.get("hasTimes"),
+                    page_info.get("hasFlightNo"), page_info.get("hasLoading"),
+                    page_info.get("hasError"))
+        if page_info.get("textSample"):
+            logger.info("MEA: page text sample: %s", page_info.get("textSample", "")[:150])
+
         flights = await page.evaluate(r"""(params) => {
             const [origin, destination] = params;
             const results = [];
-            const cards = document.querySelectorAll(
-                'refx-flight-card-pres, refx-upsell-premium-row-pres, ' +
-                '[class*="flight-card"], [class*="bound-card"], [class*="flight-row"]'
-            );
+
+            // Try multiple selector patterns for flight cards
+            const cardSelectors = [
+                'refx-flight-card-pres', 'refx-upsell-premium-row-pres',
+                '[class*="flight-card"]', '[class*="bound-card"]', '[class*="flight-row"]',
+                '[class*="journey-card"]', '[class*="itinerary-card"]', '[class*="fare-card"]',
+                '[data-testid*="flight"]', '[data-testid*="bound"]',
+                'article[class*="flight"]', 'div[class*="result"]'
+            ];
+            
+            let cards = [];
+            for (const sel of cardSelectors) {
+                const found = document.querySelectorAll(sel);
+                if (found.length > cards.length) cards = Array.from(found);
+            }
+
+            // Diagnostic: log what we found
+            console.log('MEA DOM: found', cards.length, 'cards');
+
             for (const card of cards) {
                 const text = card.innerText || '';
                 if (text.length < 20) continue;
+                
+                // Extract times (HH:MM format)
                 const times = text.match(/\b(\d{1,2}:\d{2})\b/g) || [];
                 if (times.length < 2) continue;
-                const priceMatch = text.match(/(USD|EUR|GBP)\s*[\d,]+\.?\d*/i) ||
-                                   text.match(/[\d,]+\.?\d*\s*(USD|EUR|GBP)/i);
+                
+                // Extract price with multiple patterns
+                let priceMatch = text.match(/(USD|EUR|GBP|LBP)\s*[\d,]+\.?\d*/i) ||
+                                 text.match(/[\d,]+\.?\d*\s*(USD|EUR|GBP|LBP)/i) ||
+                                 text.match(/\$\s*[\d,]+\.?\d*/i) ||
+                                 text.match(/€\s*[\d,]+\.?\d*/i);
                 if (!priceMatch) continue;
+                
                 const priceStr = priceMatch[0].replace(/[^0-9.]/g, '');
                 const price = parseFloat(priceStr);
-                if (!price || price <= 0) continue;
+                if (!price || price <= 0 || price > 50000) continue;
+                
                 let currency = 'USD';
                 if (/EUR|€/.test(priceMatch[0])) currency = 'EUR';
                 else if (/GBP|£/.test(priceMatch[0])) currency = 'GBP';
+                else if (/LBP/.test(priceMatch[0])) currency = 'LBP';
+                
                 const fnMatch = text.match(/\b(ME\s*\d{2,4})\b/i);
                 results.push({
                     depTime: times[0], arrTime: times[1], price, currency,
@@ -535,6 +716,8 @@ class MEAConnectorClient:
             }
             return results;
         }""", [req.origin, req.destination])
+
+        logger.info("MEA: DOM scrape found %d flights", len(flights or []))
 
         offers = []
         for f in (flights or []):
