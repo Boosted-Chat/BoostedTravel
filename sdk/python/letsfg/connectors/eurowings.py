@@ -78,15 +78,31 @@ def _get_farm_lock() -> asyncio.Lock:
 
 
 async def _get_browser():
-    """Shared real Chrome via CDP (launched once, reused across searches)."""
-    global _pw_instance, _cdp_browser, _chrome_proc
+    """Get headless Playwright browser with stealth settings."""
+    global _pw_instance, _cdp_browser
     lock = _get_lock()
     async with lock:
+        # Try CDP first if it's already connected
         if _cdp_browser and _cdp_browser.is_connected():
             return _cdp_browser
-        from .browser import get_or_launch_cdp
-        _cdp_browser, _chrome_proc = await get_or_launch_cdp(_CDP_PORT, _USER_DATA_DIR)
-        logger.info("Eurowings: Chrome ready via CDP (port %d)", _CDP_PORT)
+        
+        # Launch fresh Playwright headless browser (more reliable than CDP for Eurowings)
+        from playwright.async_api import async_playwright
+        if _pw_instance is None:
+            _pw_instance = await async_playwright().start()
+        
+        browser = await _pw_instance.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--window-size=1920,1080",
+            ],
+        )
+        _cdp_browser = browser
+        logger.info("Eurowings: Playwright headless browser ready")
         return _cdp_browser
 
 
@@ -351,7 +367,7 @@ class EurowingsConnectorClient:
     async def _playwright_fallback(
         self, req: FlightSearchRequest, t0: float,
     ) -> FlightSearchResponse:
-        """Full browser automation fallback — fill form + intercept API."""
+        """Full browser automation fallback — deep link to search + intercept results."""
         browser = await _get_browser()
         vp = random.choice(_VIEWPORTS)
         ctx = await browser.new_context(
@@ -389,31 +405,48 @@ class EurowingsConnectorClient:
         page.on("response", on_response)
 
         try:
-            logger.info("Eurowings %s→%s: Playwright fallback …", req.origin, req.destination)
-            await page.goto("https://www.eurowings.com/en.html", wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(random.uniform(2.5, 4))
-
-            await self._dismiss_cookies(page)
-            await asyncio.sleep(1)
-            await self._remove_overlays(page)
-            await asyncio.sleep(0.5)
-
-            await self._fill_search_form(page, req)
-            start_url = page.url
-            await self._click_search(page)
-
-            deadline = time.monotonic() + 25
-            while time.monotonic() < deadline:
-                if captured.get("data"):
+            logger.info("Eurowings %s→%s: deep link search …", req.origin, req.destination)
+            
+            # Build deep link URL (April 2026 format)
+            date_str = req.date_from.strftime("%Y-%m-%d")
+            is_rt = bool(req.return_from)
+            deep_url = (
+                f"https://www.eurowings.com/en/booking/flights/flight-search.html"
+                f"?isReward=false&destination={req.destination}&origin={req.origin}"
+                f"&source=web&origins={req.origin}&fromdate={date_str}"
+                f"&triptype={'return' if is_rt else 'oneway'}"
+                f"&adults={req.adults}&children={req.children}&infants={req.infants}"
+                f"&lng=en-GB"
+            )
+            if is_rt and req.return_from:
+                deep_url += f"&todate={req.return_from.strftime('%Y-%m-%d')}"
+            
+            await page.goto(deep_url, wait_until="domcontentloaded", timeout=45000)
+            
+            # Wait for Cloudflare challenge to resolve
+            for _cf_tick in range(15):
+                title = await page.title()
+                body_text = await page.evaluate("() => (document.body?.innerText || '').substring(0, 500)")
+                if ("just a moment" not in title.lower()
+                    and "checking" not in body_text.lower()
+                    and "please wait" not in body_text.lower()):
                     break
-                if page.url != start_url:
-                    logger.info("Eurowings: SPA navigated to %s", page.url[:120])
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=10_000)
-                    except Exception:
-                        pass
-                    break
-                await asyncio.sleep(0.5)
+                logger.info("Eurowings: CF challenge in progress (%d)...", _cf_tick)
+                await asyncio.sleep(2)
+            
+            # Wait for results to load (look for price indicator or flight count)
+            try:
+                await page.wait_for_function(
+                    "() => /€\\s*\\d+|\\d+\\s*(out of|flights)/i.test(document.body.innerText)",
+                    timeout=25000
+                )
+                logger.info("Eurowings: results indicator found")
+            except Exception:
+                # Log what we see on the page for debugging
+                body_sample = await page.evaluate("() => document.body?.innerText?.substring(0, 300) || 'empty'")
+                logger.warning("Eurowings: no results indicator, page says: %s", body_sample[:150])
+            
+            await asyncio.sleep(4)  # Let JS fully render
 
             offers: list[FlightOffer] = []
             if captured.get("data"):
@@ -486,13 +519,18 @@ class EurowingsConnectorClient:
         """Click trigger button → dialog opens → type in autocomplete → select matching option."""
         logger.info("Eurowings: filling %s → %s", label, code)
 
-        # Click the trigger button (has aria-haspopup="dialog")
-        trigger = page.locator(f'button:has-text("{label}")').first
+        # April 2026 UI: The form has buttons with role="button" containing a textbox
+        # e.g. button with name "Departure airport" that contains textbox "Departure airport"
+        trigger = page.get_by_role("button", name=label).first
         try:
-            await trigger.click(timeout=5000)
+            if await trigger.count() > 0:
+                await trigger.click(timeout=5000)
+            else:
+                raise Exception("trigger not found by getByRole")
         except Exception:
             # Try broader selectors — Eurowings may have changed button text
             for sel in (
+                f'button:has-text("{label}")',
                 f'[aria-label="{label}"]',
                 f'[aria-label*="{label.split()[0]}"]',  # "Departure" or "Destination"
                 f'button[aria-haspopup="dialog"]:has-text("{label.split()[0]}")',
@@ -511,18 +549,16 @@ class EurowingsConnectorClient:
                 return
         await asyncio.sleep(1)
 
-        # The dialog contains an autocomplete input (not readonly)
-        dialog_input = page.locator(
-            f'[role="dialog"] input[type="text"][placeholder="{label}"]'
-        ).first
+        # April 2026 UI: The dialog contains a placeholder-based textbox (not readonly)
+        # Use getByPlaceholder which matches better on this SPA
+        dialog_input = page.get_by_placeholder(label).first
+        if await dialog_input.count() == 0:
+            dialog_input = page.locator(
+                f'[role="dialog"] input[type="text"]'
+            ).first
         if await dialog_input.count() == 0:
             dialog_input = page.locator(
                 f'input[aria-label="{label}"]:not([readonly])'
-            ).first
-        if await dialog_input.count() == 0:
-            # Fallback: any non-readonly text input inside a dialog
-            dialog_input = page.locator(
-                '[role="dialog"] input[type="text"]:not([readonly])'
             ).first
 
         await dialog_input.fill("")
@@ -531,32 +567,27 @@ class EurowingsConnectorClient:
         logger.info("Eurowings: typed '%s' in %s field", code, label)
         await asyncio.sleep(1.5)
 
-        # Find and click the matching suggestion
-        # Suggestions are button.list-option inside the dialog/popover
-        dialog = page.locator('[role="dialog"]')
-        dialog_count = await dialog.count()
+        # April 2026 UI: Suggestions are [role="option"] inside [role="listbox"]
         clicked = False
-        for di in range(dialog_count):
-            opts = dialog.nth(di).locator("button.list-option")
-            opt_count = await opts.count()
-            if opt_count == 0:
-                continue
-            # Look for option containing the IATA code
-            for i in range(min(opt_count, 15)):
-                text = await opts.nth(i).inner_text()
+        options = page.get_by_role("option")
+        opt_count = await options.count()
+        logger.info("Eurowings: found %d autocomplete options", opt_count)
+        for i in range(min(opt_count, 20)):
+            try:
+                text = await options.nth(i).inner_text()
+                # Match e.g. "Dusseldorf • DUS Germany" or "Palma de Mallorca • PMI Spain"
                 if code.upper() in text.upper():
-                    await opts.nth(i).click(timeout=3000)
-                    logger.info("Eurowings: selected '%s'", text.strip()[:40])
+                    await options.nth(i).click(timeout=3000)
+                    logger.info("Eurowings: selected '%s'", text.strip()[:50])
                     clicked = True
                     break
-            if clicked:
-                break
+            except Exception:
+                continue
 
         if not clicked:
-            # Fallback: click first list-option anywhere
-            first_opt = page.locator("button.list-option").first
-            if await first_opt.count() > 0:
-                await first_opt.click(timeout=3000)
+            # Fallback: click first option
+            if opt_count > 0:
+                await options.first.click(timeout=3000)
                 logger.info("Eurowings: selected first option (fallback)")
 
         await asyncio.sleep(1)
@@ -567,39 +598,65 @@ class EurowingsConnectorClient:
         logger.info("Eurowings: %s = '%s'", label, val)
 
     async def _fill_date(self, page, target) -> None:
-        """Click date trigger → type DD/MM/YY in the date input → press Enter."""
+        """Click date trigger → find and click the target date button in calendar."""
         logger.info("Eurowings: filling date %s", target)
 
-        # Click the "Outgoing flight" trigger button
-        date_trigger = page.locator('button:has-text("Outgoing flight")').first
+        # April 2026 UI: Click the "Outgoing flight" button by role
+        date_trigger = page.get_by_role("button", name="Outgoing flight").first
         try:
-            await date_trigger.click(timeout=5000)
+            if await date_trigger.count() > 0:
+                await date_trigger.click(timeout=5000)
+            else:
+                raise Exception("date trigger not found by getByRole")
         except Exception:
             await self._remove_overlays(page)
+            date_trigger = page.locator('button:has-text("Outgoing flight")').first
             await date_trigger.click(timeout=5000)
-        await asyncio.sleep(1)
+        await asyncio.sleep(1.5)
 
-        # The date input inside the popover has placeholder "DD/MM/YY"
-        date_input = page.locator('input[placeholder="DD/MM/YY"]').first
-        if await date_input.count() == 0:
-            date_input = page.locator('input[aria-label="Outgoing flight"]:not([readonly])').first
-        if await date_input.count() == 0:
-            date_input = page.locator('[data-modal-input] input[type="text"]').first
+        # April 2026 UI: Calendar has buttons with aria-labels like "Saturday, 15 August 2026"
+        # Find and click the target date button
+        target_str = target.strftime("%A, %-d %B %Y")  # "Saturday, 15 August 2026"
+        target_str_win = target.strftime("%A, %d %B %Y").replace(" 0", " ")  # Windows strftime
+        date_btn = page.get_by_role("button", name=target_str).first
+        if await date_btn.count() == 0:
+            date_btn = page.get_by_role("button", name=target_str_win).first
+        
+        if await date_btn.count() > 0:
+            await date_btn.click(timeout=3000)
+            logger.info("Eurowings: clicked date '%s'", target_str[:30])
+            await asyncio.sleep(1)
+            return
 
+        # Fallback: try locator with aria-label containing date components
+        day = target.day
+        month = target.strftime("%B")
+        for sel in [
+            f'button[aria-label*="{day} {month}"]',
+            f'button[aria-label*="{day}, {month}"]',
+            f'[role="gridcell"] button:has-text("{day}")',
+        ]:
+            try:
+                btn = page.locator(sel).first
+                if await btn.count() > 0 and not await btn.is_disabled():
+                    await btn.click(timeout=3000)
+                    logger.info("Eurowings: clicked date via fallback %s", sel[:30])
+                    await asyncio.sleep(1)
+                    return
+            except Exception:
+                continue
+
+        # Older fallback: try typing in DD/MM/YY input
+        date_input = page.get_by_placeholder("dateInputMask").first
         if await date_input.count() > 0:
             date_str = target.strftime("%d/%m/%y")
-            await date_input.fill("")
-            await asyncio.sleep(0.2)
             await date_input.fill(date_str)
-            logger.info("Eurowings: typed date '%s'", date_str)
-            await asyncio.sleep(0.5)
             await date_input.press("Enter")
+            logger.info("Eurowings: typed date '%s' in input", date_str)
             await asyncio.sleep(1)
-        else:
-            logger.warning("Eurowings: date input not found, trying calendar click")
-            await self._fill_date_calendar(page, target)
+            return
 
-        # Close the date popover overlay
+        logger.warning("Eurowings: could not select date %s", target)
         await self._close_popover(page)
 
     async def _fill_date_calendar(self, page, target) -> None:
@@ -643,7 +700,17 @@ class EurowingsConnectorClient:
         await self._close_popover(page)
         await asyncio.sleep(0.3)
 
-        # Primary: the submit button with data attribute
+        # April 2026 UI: Use getByRole for the submit button
+        submit = page.get_by_role("button", name="Search for flight").first
+        if await submit.count() > 0:
+            try:
+                await submit.click(timeout=5000)
+                logger.info("Eurowings: clicked search (getByRole)")
+                return
+            except Exception:
+                pass
+
+        # Fallback: data attribute
         submit = page.locator("button[data-flight-search-submit-button]").first
         if await submit.count() > 0:
             try:
@@ -707,39 +774,73 @@ class EurowingsConnectorClient:
 
     async def _scrape_flight_cards(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
         """Extract flight data from rendered result cards."""
+        # April 2026 UI: Flight results are in a region with clickable generic elements
+        # Each flight row has departure/arrival times, duration, stops, and price
         cards_data = await page.evaluate(r"""() => {
             const results = [];
+            
+            // New UI (April 2026): flights are in [cursor=pointer] wrappers inside a region
+            // Each has: times (6:05AM DUS → 8:30AM PMI), duration (2h 25min), price (€153.99)
             const cards = document.querySelectorAll(
+                '[cursor="pointer"], [style*="cursor: pointer"], [role="button"], ' +
                 '[class*="flight-card"], [class*="FlightCard"], [class*="result-card"], ' +
                 '[class*="fare-card"], [data-flight], [class*="journey"]'
             );
+            
             cards.forEach(card => {
-                const text = card.textContent;
-                const priceMatch = text.match(/(\d+[.,]\d{2})\s*€|€\s*(\d+[.,]\d{2})|EUR\s*(\d+[.,]\d{2})/);
-                const timeMatches = text.match(/(\d{1,2}:\d{2})/g);
-                const fnMatch = text.match(/EW\s*\d{3,4}/);
-                if (priceMatch || timeMatches) {
+                const text = card.textContent || '';
+                // Skip non-flight elements
+                if (text.length < 20 || text.length > 2000) return;
+                if (!text.match(/\d{1,2}:\d{2}/) && !text.match(/€\s?\d+/)) return;
+                
+                // Extract price: €153.99 or 153.99 € or EUR 153.99
+                const priceMatch = text.match(/€\s*(\d+[.,]\d{2})|(\d+[.,]\d{2})\s*€|EUR\s*(\d+[.,]\d{2})/);
+                // Extract times: 6:05AM or 06:05 or 6:05 AM
+                const timeMatches = text.match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?)/gi);
+                // Extract flight number: EW123 or EW1234
+                const fnMatch = text.match(/EW\s*\d{3,4}/i);
+                // Extract duration: 2h 25min or 2h25m
+                const durMatch = text.match(/(\d+)h\s*(\d+)?\s*min/i);
+                // Extract stops: Nonstop or 1 stop
+                const stopsMatch = text.match(/Nonstop|(\d+)\s*stop/i);
+                
+                if (priceMatch && timeMatches && timeMatches.length >= 2) {
+                    const priceStr = (priceMatch[1] || priceMatch[2] || priceMatch[3] || '').replace(',', '.');
                     results.push({
-                        price: (priceMatch?.[1] || priceMatch?.[2] || priceMatch?.[3] || '').replace(',', '.'),
-                        times: timeMatches || [],
-                        flightNo: fnMatch?.[0] || '',
-                        text: text.trim().substring(0, 200),
+                        price: priceStr,
+                        times: timeMatches.slice(0, 2),  // dep, arr
+                        flightNo: fnMatch ? fnMatch[0].replace(' ', '') : '',
+                        duration: durMatch ? (parseInt(durMatch[1] || 0) * 60 + parseInt(durMatch[2] || 0)) : 0,
+                        stops: stopsMatch ? (stopsMatch[0].toLowerCase() === 'nonstop' ? 0 : parseInt(stopsMatch[1] || 1)) : 0,
+                        text: text.trim().substring(0, 250),
                     });
                 }
             });
-            return results;
+            
+            // Deduplicate by price + time combination
+            const seen = new Set();
+            return results.filter(r => {
+                const key = r.price + r.times.join('_');
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
         }""")
 
         offers: list[FlightOffer] = []
         booking_url = self._build_booking_url(req)
+        logger.info("Eurowings: scraped %d flight cards from DOM", len(cards_data))
         for card in cards_data:
             try:
                 price = float(card["price"]) if card.get("price") else None
                 if not price or price <= 0:
                     continue
-                dep_time = card["times"][0] if len(card.get("times", [])) >= 1 else None
-                arr_time = card["times"][1] if len(card.get("times", [])) >= 2 else None
+                times = card.get("times", [])
+                dep_time = times[0] if len(times) >= 1 else None
+                arr_time = times[1] if len(times) >= 2 else None
                 flight_no = card.get("flightNo", "").replace(" ", "")
+                duration_mins = card.get("duration", 0)
+                stops = card.get("stops", 0)
 
                 dep_dt = self._parse_time_on_date(dep_time, req.date_from) if dep_time else datetime(2000, 1, 1)
                 arr_dt = self._parse_time_on_date(arr_time, req.date_from) if arr_time else datetime(2000, 1, 1)
@@ -750,9 +851,15 @@ class EurowingsConnectorClient:
                     origin=req.origin, destination=req.destination,
                     departure=dep_dt, arrival=arr_dt, cabin_class=_ew_cabin,
                 )
-                dur = int((arr_dt - dep_dt).total_seconds()) if dep_dt.year > 2000 and arr_dt.year > 2000 else 0
-                route = FlightRoute(segments=[seg], total_duration_seconds=max(dur, 0), stopovers=0)
-                fkey = f"{flight_no}_{dep_dt.isoformat()}"
+                # Use scraped duration if available, else compute from times
+                if duration_mins > 0:
+                    dur = duration_mins * 60
+                elif dep_dt.year > 2000 and arr_dt.year > 2000:
+                    dur = int((arr_dt - dep_dt).total_seconds())
+                else:
+                    dur = 0
+                route = FlightRoute(segments=[seg], total_duration_seconds=max(dur, 0), stopovers=stops)
+                fkey = f"{flight_no}_{dep_dt.isoformat()}_{price}"
                 offers.append(FlightOffer(
                     id=f"ew_{hashlib.md5(fkey.encode()).hexdigest()[:12]}",
                     price=round(price, 2), currency=req.currency or "EUR",
@@ -1075,10 +1182,28 @@ class EurowingsConnectorClient:
 
     @staticmethod
     def _parse_time_on_date(time_str: str, date) -> datetime:
-        """Parse HH:MM time string and combine with search date."""
+        """Parse time string (HH:MM, HH:MMAM, HH:MM PM, etc.) and combine with search date."""
         try:
-            h, m = time_str.split(":")
-            return datetime(date.year, date.month, date.day, int(h), int(m))
+            # Clean the time string
+            t = time_str.strip().upper()
+            
+            # Check for AM/PM format: "6:05AM", "6:05 AM", "06:05AM"
+            is_pm = "PM" in t
+            is_am = "AM" in t
+            t = t.replace("AM", "").replace("PM", "").strip()
+            
+            # Parse hour and minute
+            parts = t.split(":")
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            
+            # Convert 12-hour to 24-hour
+            if is_pm and h < 12:
+                h += 12
+            elif is_am and h == 12:
+                h = 0
+            
+            return datetime(date.year, date.month, date.day, h, m)
         except Exception:
             return datetime(2000, 1, 1)
 

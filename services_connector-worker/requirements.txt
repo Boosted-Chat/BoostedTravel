@@ -1,8 +1,11 @@
 # LetsFG Connector Worker — Cloud Run dependencies
 # The worker imports from the letsfg SDK (connectors, models, browser).
-# Pin to latest release — 2026.4.11
-letsfg==2026.4.30
+# Pin to latest release — 2026.4.43
+letsfg==2026.4.43
+airportsdata>=20240101
 flask>=3.0
 gunicorn>=22.0
 nodriver>=0.39
 patchright>=1.0
+
+

@@ -175,7 +175,6 @@ async def _get_context():
                 *proxy_chrome_args(),
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
-                "--disable-http2",
                 "--window-position=-2400,-2400",
                 "--window-size=1400,900",
                 "about:blank",
@@ -306,7 +305,8 @@ class EtihadConnectorClient:
 
         context = await _get_context()
         page = await context.new_page()
-        await inject_stealth_js(page)
+        # NOTE: Do NOT inject stealth JS here — Akamai detects the navigator/canvas
+        # patches and returns 403.  Real Chrome via CDP already passes bot checks.
         await auto_block_if_proxied(page)
 
         try:
@@ -318,7 +318,9 @@ class EtihadConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=int(self.timeout * 1000),
             )
-            await asyncio.sleep(3.0)
+            # Wait for Akamai bot management JS to complete its challenge
+            # (fresh sessions need 5+ seconds for _abck cookie to be set)
+            await asyncio.sleep(5.0)
 
             # Dismiss cookie overlay
             await _dismiss_overlays(page)
@@ -332,46 +334,59 @@ class EtihadConnectorClient:
             api_origin = origins[0] if origins else req.origin
             api_dest = destinations[0] if destinations else req.destination
 
-            # Direct API call from browser JS context (bypasses Akamai — same origin, valid session)
-            dep = req.date_from.strftime("%Y-%m-%d") if hasattr(req.date_from, 'strftime') else str(req.date_from)
-            is_rt = bool(req.return_from)
-            if is_rt:
+            # Fill form to establish Akamai trust, then intercept calendar pricing API response
+            # (Direct fetch() from fresh sessions gets 403 — Akamai requires natural page interaction)
+            fill_req = req.model_copy(update={"origin": api_origin, "destination": api_dest})
+            ok = await self._fill_form(page, fill_req)
+            if not ok:
+                logger.warning("Etihad: form fill failed for %s→%s, proceeding anyway", api_origin, api_dest)
+
+            # Set up response interception for the calendar pricing API
+            api_result_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+            async def _on_calendar_response(response):
+                if "fetch-prices" in response.url and not api_result_future.done():
+                    try:
+                        if response.status == 200:
+                            data = await response.json()
+                            api_result_future.set_result(data)
+                        else:
+                            text = await response.text()
+                            api_result_future.set_result({"_error": response.status, "_text": text[:300]})
+                    except Exception as e:
+                        if not api_result_future.done():
+                            api_result_future.set_result({"_error": -1, "_msg": str(e)})
+
+            page.on("response", _on_calendar_response)
+
+            # Click the "Travelling when?" date card to trigger the calendar pricing API
+            try:
+                await page.locator("div.ey-fsp-stat--guest-and-date[role='tab']").last.click(timeout=5000)
+                logger.info("Etihad: clicked date card, waiting for calendar pricing API...")
+            except Exception as e:
+                logger.warning("Etihad: date card click failed: %s, trying fallback", e)
+                # Fallback: try any date-related element
                 try:
-                    d1 = req.date_from if hasattr(req.date_from, 'toordinal') else datetime.strptime(str(req.date_from), "%Y-%m-%d")
-                    d2 = req.return_from if hasattr(req.return_from, 'toordinal') else datetime.strptime(str(req.return_from), "%Y-%m-%d")
-                    trip_dur = max(1, (d2 - d1).days)
+                    await page.evaluate("""() => {
+                        const els = document.querySelectorAll('[class*="guest-and-date"], [class*="date"]');
+                        for (const el of els) {
+                            if ((el.textContent || '').includes('Travelling') && el.offsetHeight > 0) {
+                                el.click(); return true;
+                            }
+                        }
+                        return false;
+                    }""")
                 except Exception:
-                    trip_dur = 7
-            else:
-                trip_dur = 0
-            _ey_cabin = {"M": "ECONOMY", "W": "ECONOMY", "C": "BUSINESS", "F": "FIRST"}.get(req.cabin_class or "M", "ECONOMY")
-            result = await page.evaluate("""async (params) => {
-                const [origin, dest, depDate, isRt, tripDur, cabinCls] = params;
-                try {
-                    const body = {
-                        originAirportCode: origin,
-                        destinationAirportCode: dest,
-                        cabinClass: cabinCls,
-                        tripType: isRt ? 'return' : 'oneway',
-                        passengerTypeCode: 'ADT',
-                        departureDate: depDate,
-                    };
-                    if (isRt) body.tripDuration = String(tripDur);
-                    const resp = await fetch('/ada-services/bff-calendar-pricing/service/instant-search/v2/fetch-prices', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json, text/plain, */*',
-                        },
-                        body: JSON.stringify(body),
-                        credentials: 'include',
-                    });
-                    if (!resp.ok) return {_error: resp.status, _text: (await resp.text()).substring(0, 300)};
-                    return await resp.json();
-                } catch (e) {
-                    return {_error: -1, _msg: e.message};
-                }
-            }""" , [api_origin, api_dest, dep, is_rt, trip_dur, _ey_cabin])
+                    pass
+
+            # Wait for the intercepted response (up to 10 seconds)
+            try:
+                result = await asyncio.wait_for(api_result_future, timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Etihad: calendar pricing API did not fire within 10s")
+                result = None
+
+            page.remove_listener("response", _on_calendar_response)
 
             if not result or result.get("_error"):
                 err = result.get("_error", "?") if result else "null"
@@ -382,12 +397,19 @@ class EtihadConnectorClient:
                     await _reset_profile()
                 return self._empty(req)
 
-            if not result.get("pricePerDay"):
-                logger.warning("Etihad: no pricePerDay in response (keys=%s)", list(result.keys())[:10])
+            has_ppd = bool(result.get("pricePerDay"))
+            has_agg = bool(result.get("monthAggregatePrice"))
+            if not has_ppd and not has_agg:
+                logger.warning("Etihad: no pricing data in response (keys=%s)", list(result.keys())[:10])
                 return self._empty(req)
 
             currency = result.get("currency", "AED")
-            offers = self._parse_calendar(result, req, currency)
+            if has_ppd:
+                offers = self._parse_calendar(result, req, currency)
+                if not offers and has_agg:
+                    offers = self._parse_month_aggregate(result, req, currency)
+            else:
+                offers = self._parse_month_aggregate(result, req, currency)
             offers.sort(key=lambda o: o.price)
 
             elapsed = time.monotonic() - t0
@@ -423,7 +445,16 @@ class EtihadConnectorClient:
     # ------------------------------------------------------------------
 
     async def _fill_form(self, page, req: FlightSearchRequest) -> bool:
-        """Fill Etihad search form: origin + destination + date."""
+        """Fill Etihad search form: origin + destination (no date — date card click triggers API separately)."""
+        # Switch to One-way tab (Etihad defaults to Round trip)
+        try:
+            ow_tab = page.locator("li[role='tab']").filter(has_text="One-way")
+            if await ow_tab.count() > 0:
+                await ow_tab.click(timeout=3000)
+                await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
         # Origin
         ok = await self._fill_airport(page, "#fsporigin", req.origin)
         if not ok:
@@ -435,12 +466,6 @@ class EtihadConnectorClient:
         if not ok:
             return False
         await asyncio.sleep(0.5)
-
-        # Departure date — click the date field and select target date
-        ok = await self._fill_date(page, req)
-        if not ok:
-            logger.warning("Etihad: date fill failed, proceeding anyway")
-            # Don't fail — search may still work with default dates
 
         return True
 
@@ -579,44 +604,44 @@ class EtihadConnectorClient:
             return False
 
     async def _fill_airport(self, page, selector: str, iata: str) -> bool:
-        """Fill an airport typeahead field and select first match."""
+        """Fill an airport typeahead field and select first match (React Bootstrap Typeahead)."""
         try:
             field = page.locator(selector)
             await field.click(timeout=5000)
             await asyncio.sleep(0.3)
-            await field.press("Control+a")
+            # Clear existing value (triple-click to select all, then clear)
+            await field.click(click_count=3)
+            await asyncio.sleep(0.1)
+            await field.fill("")
+            await asyncio.sleep(0.3)
             await field.type(iata, delay=80)
             await asyncio.sleep(2.0)
 
-            # Select first dropdown option via keyboard
+            # Try clicking the first dropdown item (React Bootstrap Typeahead)
+            for sel in [
+                ".rbt-menu .dropdown-item",
+                "[role='option']",
+                ".rbt-menu li",
+            ]:
+                try:
+                    opt = page.locator(sel).first
+                    if await opt.count() > 0 and await opt.is_visible(timeout=1000):
+                        await opt.click(timeout=2000)
+                        logger.info("Etihad: selected %s via %s", iata, sel)
+                        await asyncio.sleep(0.5)
+                        return True
+                except Exception:
+                    continue
+
+            # Fallback: keyboard navigation
             await field.press("ArrowDown")
             await asyncio.sleep(0.2)
             await field.press("Enter")
             await asyncio.sleep(0.5)
 
             value = await field.input_value()
-            if iata.upper() in value.upper():
-                logger.info("Etihad: filled %s → %s", selector, value)
-                return True
-
-            # Fallback: click dropdown item
-            for sel in [
-                ".rbt-menu .dropdown-item:first-child",
-                "[role='option']:first-child",
-                ".rbt-menu li:first-child",
-            ]:
-                try:
-                    opt = page.locator(sel)
-                    if await opt.count() > 0:
-                        await opt.first.click(timeout=2000)
-                        logger.info("Etihad: selected airport via %s", sel)
-                        return True
-                except Exception:
-                    continue
-
-            # Even if exact match not confirmed, proceed if field has value
             if value and len(value) > 2:
-                logger.info("Etihad: field %s has value '%s', proceeding", selector, value)
+                logger.info("Etihad: filled %s → %s", selector, value)
                 return True
 
             logger.warning("Etihad: could not fill airport %s for %s", selector, iata)
@@ -683,6 +708,63 @@ class EtihadConnectorClient:
         logger.info("Etihad: no price for day %s in month %s", day_key, month_key)
         return offers
 
+    def _parse_month_aggregate(
+        self, data: dict, req: FlightSearchRequest, currency: str,
+    ) -> list[FlightOffer]:
+        """Parse monthAggregatePrice into a FlightOffer for the requested date's month."""
+        offers: list[FlightOffer] = []
+        agg_list = data.get("monthAggregatePrice", [])
+        if not agg_list:
+            return offers
+
+        try:
+            dt = req.date_from if hasattr(req.date_from, 'strftime') else datetime.strptime(str(req.date_from), "%Y-%m-%d")
+        except (ValueError, TypeError):
+            logger.warning("Etihad: invalid date_from: %s", req.date_from)
+            return offers
+
+        month_key = dt.strftime("%Y%m")  # e.g. "202604"
+
+        # Find the target month in the aggregate list
+        for entry in agg_list:
+            if not isinstance(entry, dict):
+                continue
+            month_data = entry.get(month_key)
+            if not month_data:
+                continue
+
+            price = self._parse_price(month_data.get("lowestPrice", "0"))
+            if price <= 0:
+                continue
+
+            if not req.return_from:
+                price = round(price * 0.55, 2)  # estimate one-way from RT aggregate
+
+            offer = self._build_offer(req, price, currency, dt, month_data)
+            if offer:
+                offers.append(offer)
+            return offers
+
+        # Target month not found — use any available month's lowest as fallback
+        for entry in agg_list:
+            if not isinstance(entry, dict):
+                continue
+            for mk, month_data in entry.items():
+                if not isinstance(month_data, dict):
+                    continue
+                price = self._parse_price(month_data.get("lowestPrice", "0"))
+                if price <= 0:
+                    continue
+                if not req.return_from:
+                    price = round(price * 0.55, 2)
+                offer = self._build_offer(req, price, currency, dt, month_data)
+                if offer:
+                    offers.append(offer)
+                return offers
+
+        logger.info("Etihad: no aggregate price for month %s", month_key)
+        return offers
+
     def _build_offer(
         self,
         req: FlightSearchRequest,
@@ -701,7 +783,6 @@ class EtihadConnectorClient:
         if not isinstance(dep_dt, datetime):
             dep_dt = datetime(dep_dt.year, dep_dt.month, dep_dt.day)
 
-        _ey_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segment = FlightSegment(
             airline="EY",
             airline_name="Etihad Airways",
@@ -711,7 +792,7 @@ class EtihadConnectorClient:
             departure=dep_dt,
             arrival=dep_dt,  # time unknown from calendar API
             duration_seconds=0,
-            cabin_class=_ey_cabin,
+            cabin_class="economy",
         )
 
         route = FlightRoute(
@@ -737,7 +818,7 @@ class EtihadConnectorClient:
                 departure=rdt if isinstance(rdt, datetime) else datetime(rdt.year, rdt.month, rdt.day),
                 arrival=rdt if isinstance(rdt, datetime) else datetime(rdt.year, rdt.month, rdt.day),
                 duration_seconds=0,
-                cabin_class=_ey_cabin,
+                cabin_class="economy",
             )
             inbound = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
 

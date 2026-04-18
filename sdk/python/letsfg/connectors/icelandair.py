@@ -1,16 +1,19 @@
 """
-Icelandair connector — EveryMundo airTRFX fare pages via curl_cffi.
+Icelandair connector — www.icelandair.com via curl_cffi.
 
 Icelandair (IATA: FI) is Iceland's flag carrier. Key for transatlantic routes
 via KEF (Reykjavik-Keflavik) hub connecting Europe <> North America.
-90+ destinations including US, Canada, and European cities.
 
-Strategy (curl_cffi required — Cloudflare blocks httpx):
-  1. Fetch route page: icelandair.com/en-us/flights/flights-from-{origin}-to-{dest}
-  2. Extract __NEXT_DATA__ JSON from <script> tag
-  3. Parse StandardFareModule fares from Apollo GraphQL state
-  4. Filter by origin/destination airport codes and departure date
-  Note: Uses city codes (NYC, REK, LON) — we match both IATA and city codes.
+Status: Icelandair migrated from EveryMundo airTRFX to Next.js App Router (RSC).
+  - Old URL (/en-us/flights/) → 404 since early 2026
+  - New URL (/us/flights/) → 200, RSC page, fare data loaded client-side only
+  - No inline fare data available without browser JS execution
+  - Connector returns empty gracefully; will auto-recover if upstream adds RSC fares.
+
+Strategy:
+  1. Fetch /us/flights/flights-from-{origin}-to-{dest} page
+  2. Try __NEXT_DATA__ extraction (for any future EveryMundo partial pages)
+  3. Returns empty if no structured fare data found
 """
 
 from __future__ import annotations
@@ -109,7 +112,7 @@ class IcelandairConnectorClient:
             logger.warning("Icelandair: unmapped IATA %s or %s", req.origin, req.destination)
             return self._empty(req)
 
-        url = f"{_BASE}/en-us/flights/flights-from-{origin_slug}-to-{dest_slug}"
+        url = f"{_BASE}/us/flights/flights-from-{origin_slug}-to-{dest_slug}"
         logger.info("Icelandair: fetching %s", url)
 
         try:
@@ -133,7 +136,7 @@ class IcelandairConnectorClient:
         # RT: fetch reverse route for inbound fares
         if req.return_from and offers and dest_slug:
             try:
-                _rev_url = f"{_BASE}/en-us/flights/flights-from-{dest_slug}-to-{origin_slug}"
+                _rev_url = f"{_BASE}/us/flights/flights-from-{dest_slug}-to-{origin_slug}"
                 _rev_html = await asyncio.get_event_loop().run_in_executor(
                     None, self._fetch_sync, _rev_url
                 )
@@ -148,12 +151,11 @@ class IcelandairConnectorClient:
                         if _ib_best_price < float("inf"):
                             _ret = req.return_from
                             _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
-                            _fi_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                             _ib_seg = FlightSegment(
                                 airline="FI", airline_name="Icelandair", flight_no="",
                                 origin=req.destination, destination=req.origin,
                                 departure=_ret_dt, arrival=_ret_dt,
-                                duration_seconds=0, cabin_class=_fi_cabin,
+                                duration_seconds=0, cabin_class="economy",
                             )
                             _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
                             for _i, _o in enumerate(offers):

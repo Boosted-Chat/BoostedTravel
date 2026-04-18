@@ -33,7 +33,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied
+from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied, inject_stealth_js
 from .airline_routes import get_city_airports
 
 logger = logging.getLogger(__name__)
@@ -250,6 +250,7 @@ class PegasusConnectorClient:
                 req.destination,
                 req.date_from.strftime("%Y-%m-%d"),
             )
+            await inject_stealth_js(page)
             await auto_block_if_proxied(page)
             await page.goto(
                 search_url,

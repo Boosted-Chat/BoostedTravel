@@ -1,15 +1,15 @@
 """
-Solomon Airlines connector — EveryMundo airTRFX fare pages via curl_cffi.
+Solomon Airlines connector — Next.js RSC route pages via requests.
 
 Solomon Airlines (IATA: IE) is the national airline of the Solomon Islands.
 Hub at Honiara (HIR) with routes to Brisbane, Nadi, Port Vila, and
 domestic Solomon Islands destinations.
 
-Strategy (curl_cffi required — WAF protections):
-  1. Resolve IATA codes to city slugs via static mapping
-  2. Fetch route page: flights.flysolomons.com/en-us/flights-from-{origin}-to-{dest}
-  3. Extract __NEXT_DATA__ JSON from <script> tag
-  4. Parse DpaHeadline + StandardFareModule → fares for route pricing data
+Strategy:
+  1. Resolve IATA codes to city slugs and destination-country category
+  2. Fetch route page: www.flysolomons.com/explore/destinations/{category}/{o}-to-{d}
+  3. Extract initialPage.fares from RSC self.__next_f.push() inline scripts
+  4. Parse Fare objects: fareFamily, price, currency, tripType
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import re
 import time
 from datetime import datetime
 
-from curl_cffi import requests as creq
+import requests as _req
 
 from ..models.flights import (
     FlightOffer,
@@ -31,33 +31,81 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://flights.flysolomons.com"
-_SITE_EDITION = "en-us"
+_BASE = "https://www.flysolomons.com"
 _HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Static slug mapping for Solomon Airlines destinations
+# IATA → URL city slug
 _IATA_TO_SLUG: dict[str, str] = {
     # Solomon Islands
-    "HIR": "honiara", "MUA": "munda", "GZO": "gizo",
-    "IRA": "kirakira", "SCZ": "santa-cruz",
-    "RNL": "rennell", "BAS": "balalae",
+    "HIR": "honiara", "GZO": "gizo", "MUA": "munda",
+    "IRA": "arona", "SCZ": "santa-cruz", "AFT": "atoifi",
+    "AKS": "auki", "BAS": "balalae", "BNY": "bellona",
+    "LML": "lomlom", "PRS": "parasi", "RNL": "rennell",
+    "NAZ": "santa-ana", "RUA": "suavanao",
     # Australia
-    "BNE": "brisbane", "SYD": "sydney",
-    # Pacific
-    "NAN": "nadi", "VLI": "port-vila",
+    "BNE": "brisbane", "SYD": "sydney", "MEL": "melbourne",
+    "ADL": "adelaide", "PER": "perth", "CBR": "canberra",
+    "DRW": "darwin", "CNS": "cairns", "MKY": "mackay",
+    "TSV": "townsville",
+    # New Zealand
+    "AKL": "auckland", "CHC": "christchurch", "WLG": "wellington",
+    "DUD": "dunedin",
+    # Fiji
+    "NAN": "nadi",
+    # Vanuatu
+    "VLI": "port-vila", "SON": "santo",
+    # Papua New Guinea
     "POM": "port-moresby",
+}
+
+# Destination IATA → URL country-category segment
+_DEST_CATEGORY: dict[str, str] = {
+    # Solomon Islands (all domestic + main hub)
+    "HIR": "flights-to-solomon-islands",
+    "GZO": "flights-to-solomon-islands",
+    "MUA": "flights-to-solomon-islands",
+    "IRA": "flights-to-solomon-islands",
+    "SCZ": "flights-to-solomon-islands",
+    "AFT": "flights-to-solomon-islands",
+    "AKS": "flights-to-solomon-islands",
+    "BAS": "flights-to-solomon-islands",
+    "BNY": "flights-to-solomon-islands",
+    "LML": "flights-to-solomon-islands",
+    "PRS": "flights-to-solomon-islands",
+    "RNL": "flights-to-solomon-islands",
+    "NAZ": "flights-to-solomon-islands",
+    "RUA": "flights-to-solomon-islands",
+    # Australia
+    "BNE": "flights-to-australia",
+    "SYD": "flights-to-australia",
+    "MEL": "flights-to-australia",
+    "ADL": "flights-to-australia",
+    "PER": "flights-to-australia",
+    "CBR": "flights-to-australia",
+    "DRW": "flights-to-australia",
+    "CNS": "flights-to-australia",
+    "MKY": "flights-to-australia",
+    "TSV": "flights-to-australia",
+    # New Zealand
+    "AKL": "flights-to-new-zealand",
+    "CHC": "flights-to-new-zealand",
+    "WLG": "flights-to-new-zealand",
+    "DUD": "flights-to-new-zealand",
+    # Vanuatu
+    "VLI": "flights-to-vanuatu",
+    "SON": "flights-to-vanuatu",
 }
 
 
 class SolomonAirlinesConnectorClient:
-    """Solomon Airlines (IE) — EveryMundo airTRFX route pages via curl_cffi."""
+    """Solomon Airlines (IE) — Next.js RSC route fare pages via requests."""
 
     def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
@@ -68,7 +116,10 @@ class SolomonAirlinesConnectorClient:
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         ob_result = await self._search_ow(req)
         if req.return_from and ob_result.total_results > 0:
-            ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
+            ib_req = req.model_copy(update={
+                "origin": req.destination, "destination": req.origin,
+                "date_from": req.return_from, "return_from": None,
+            })
             ib_result = await self._search_ow(ib_req)
             if ib_result.total_results > 0:
                 ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
@@ -80,11 +131,12 @@ class SolomonAirlinesConnectorClient:
 
         origin_slug = _IATA_TO_SLUG.get(req.origin)
         dest_slug = _IATA_TO_SLUG.get(req.destination)
-        if not origin_slug or not dest_slug:
+        dest_category = _DEST_CATEGORY.get(req.destination)
+        if not origin_slug or not dest_slug or not dest_category:
             logger.warning("Solomon Airlines: unmapped IATA %s or %s", req.origin, req.destination)
             return self._empty(req)
 
-        url = f"{_BASE}/{_SITE_EDITION}/flights-from-{origin_slug}-to-{dest_slug}"
+        url = f"{_BASE}/explore/destinations/{dest_category}/{origin_slug}-to-{dest_slug}"
         logger.info("Solomon Airlines: fetching %s", url)
 
         try:
@@ -100,54 +152,10 @@ class SolomonAirlinesConnectorClient:
 
         offers = self._extract_offers(html, req)
 
-        # RT: fetch reverse route for inbound fares
-        if req.return_from and offers:
-            _rev_url = f"{_BASE}/{_SITE_EDITION}/flights-from-{dest_slug}-to-{origin_slug}"
-            try:
-                _rev_html = await asyncio.get_event_loop().run_in_executor(
-                    None, self._fetch_sync, _rev_url
-                )
-                if _rev_html:
-                    _ib_offers = self._extract_offers(_rev_html, req)
-                    _ib_valid = [o for o in _ib_offers if o.price > 0]
-                    if _ib_valid:
-                        _ib_best = min(_ib_valid, key=lambda o: o.price)
-                        _ret = req.return_from
-                        _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
-                        _ib_seg = FlightSegment(
-                            airline="IE",
-                            airline_name="Solomon Airlines",
-                            flight_no="",
-                            origin=req.destination,
-                            destination=req.origin,
-                            departure=_ret_dt,
-                            arrival=_ret_dt,
-                            duration_seconds=0,
-                            cabin_class="economy",
-                        )
-                        _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
-                        for _i, _o in enumerate(offers):
-                            offers[_i] = FlightOffer(
-                                id=f"rt_{_o.id}",
-                                price=round(_o.price + _ib_best.price, 2),
-                                currency=_o.currency,
-                                price_formatted=f"{round(_o.price + _ib_best.price, 2):.2f} {_o.currency}",
-                                outbound=_o.outbound,
-                                inbound=_ib_route,
-                                airlines=_o.airlines,
-                                owner_airline=_o.owner_airline,
-                                booking_url=_o.booking_url,
-                                is_locked=False,
-                                source=_o.source,
-                                source_tier=_o.source_tier,
-                            )
-            except Exception:
-                pass
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
-
         elapsed = time.monotonic() - t0
         logger.info(
-            "Solomon Airlines %s→%s: %d offers in %.1fs",
+            "Solomon Airlines %s->%s: %d offers in %.1fs",
             req.origin, req.destination, len(offers), elapsed,
         )
 
@@ -158,171 +166,115 @@ class SolomonAirlinesConnectorClient:
             search_id=f"fs_{h}",
             origin=req.origin,
             destination=req.destination,
-            currency=offers[0].currency if offers else "USD",
+            currency=offers[0].currency if offers else "AUD",
             offers=offers,
             total_results=len(offers),
         )
 
     def _fetch_sync(self, url: str) -> str | None:
-        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
         try:
-            r = sess.get(url, headers=_HEADERS, timeout=int(self.timeout))
+            r = _req.get(url, headers=_HEADERS, timeout=int(self.timeout))
             if r.status_code != 200:
                 logger.warning("Solomon Airlines: %s returned %d", url, r.status_code)
                 return None
             return r.text
         except Exception as e:
-            logger.warning("Solomon Airlines curl_cffi error: %s", e)
+            logger.warning("Solomon Airlines fetch error: %s", e)
             return None
 
-    def _extract_offers(
-        self, html: str, req: FlightSearchRequest
-    ) -> list[FlightOffer]:
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            html,
-            re.S,
-        )
-        if not m:
-            logger.info("Solomon Airlines: no __NEXT_DATA__ found")
+    def _extract_offers(self, html: str, req: FlightSearchRequest) -> list[FlightOffer]:
+        """Extract fares from RSC self.__next_f.push() scripts → initialPage.fares."""
+        # Extract all RSC chunks
+        rsc_chunks = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.DOTALL)
+
+        fares: list[dict] = []
+        for chunk in rsc_chunks:
+            try:
+                decoded = json.loads(f'"{chunk}"')
+            except Exception:
+                decoded = chunk
+            if '"initialPage"' not in decoded:
+                continue
+            # Find the fares array within initialPage
+            m = re.search(r'"fares"\s*:\s*(\[.*?\])', decoded, re.DOTALL)
+            if m:
+                try:
+                    fares = json.loads(m.group(1))
+                    break
+                except Exception:
+                    pass
+
+        if not fares:
+            logger.info("Solomon Airlines: no initialPage.fares found at %s->%s",
+                        req.origin, req.destination)
             return []
 
-        try:
-            nd = json.loads(m.group(1))
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("Solomon Airlines: __NEXT_DATA__ JSON parse failed")
-            return []
-
-        props = nd.get("props", {}).get("pageProps", {})
-        apollo = props.get("apolloState", {}).get("data", {})
-
+        dep_dt = datetime.combine(req.date_from, datetime.min.time()) if hasattr(req.date_from, 'year') else datetime(2000, 1, 1)
         offers: list[FlightOffer] = []
-        seen: set[str] = set()
 
-        # 1) DpaHeadline → lowestFare
-        for key, val in apollo.items():
-            if not isinstance(val, dict) or val.get("__typename") != "DpaHeadline":
+        for fare in fares:
+            if not isinstance(fare, dict):
                 continue
-            meta = val.get("metaData", {})
-            if not isinstance(meta, dict):
+            price = fare.get("price")
+            currency = fare.get("currency", "AUD")
+            fare_family = fare.get("fareFamily", "Economy")
+            if not price or float(price) <= 0:
                 continue
-            headline = meta.get("headline", {})
-            if not isinstance(headline, dict):
-                continue
-            lf = headline.get("lowestFare", {})
-            if isinstance(lf, dict) and "__ref" in lf:
-                lf = apollo.get(lf["__ref"], {})
-            if isinstance(lf, dict):
-                offer = self._build_offer_from_fare(lf, req, seen)
-                if offer:
-                    offers.append(offer)
 
-        # 2) StandardFareModule → fares
-        for key, val in apollo.items():
-            if not isinstance(val, dict) or val.get("__typename") != "StandardFareModule":
-                continue
-            fares = val.get("fares", [])
-            for fare_ref in fares:
-                fare = fare_ref
-                if isinstance(fare_ref, dict) and "__ref" in fare_ref:
-                    fare = apollo.get(fare_ref["__ref"], {})
-                if isinstance(fare, dict):
-                    offer = self._build_offer_from_fare(fare, req, seen)
-                    if offer:
-                        offers.append(offer)
+            price_f = round(float(price), 2)
+            cabin = "business" if fare_family.lower() == "business" else "economy"
+
+            seg = FlightSegment(
+                airline="IE",
+                airline_name="Solomon Airlines",
+                flight_no="",
+                origin=req.origin,
+                destination=req.destination,
+                departure=dep_dt,
+                arrival=dep_dt,
+                duration_seconds=0,
+                cabin_class=cabin,
+            )
+            route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
+
+            fid = hashlib.md5(
+                f"ie_{req.origin}{req.destination}{price_f}{fare_family}".encode()
+            ).hexdigest()[:12]
+
+            offers.append(FlightOffer(
+                id=f"ie_{fid}",
+                price=price_f,
+                currency=currency,
+                price_formatted=f"{price_f:.2f} {currency}",
+                outbound=route,
+                inbound=None,
+                airlines=["Solomon Airlines"],
+                owner_airline="IE",
+                booking_url=(
+                    f"https://www.flysolomons.com/book/"
+                    f"?from={req.origin}&to={req.destination}"
+                    f"&adultCount={req.adults or 1}"
+                    f"&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
+                ),
+                is_locked=False,
+                source="solomonairlines_direct",
+                source_tier="free",
+            ))
 
         return offers
-
-    def _build_offer_from_fare(
-        self,
-        fare: dict,
-        req: FlightSearchRequest,
-        seen: set[str],
-    ) -> FlightOffer | None:
-        price = fare.get("usdTotalPrice") or fare.get("totalPrice")
-        if not price:
-            return None
-        try:
-            price_f = round(float(price), 2)
-        except (ValueError, TypeError):
-            return None
-        if price_f <= 0:
-            return None
-
-        dep_date_str = fare.get("departureDate", "")[:10]
-        if not dep_date_str:
-            return None
-
-        if fare.get("usdTotalPrice"):
-            currency = "USD"
-        else:
-            currency = fare.get("currencyCode") or "USD"
-
-        origin_code = fare.get("originAirportCode") or req.origin
-        dest_code = fare.get("destinationAirportCode") or req.destination
-        cabin = (fare.get("formattedTravelClass") or "Economy").strip()
-
-        dedup_key = f"{origin_code}_{dest_code}_{dep_date_str}_{price_f}_{cabin}"
-        if dedup_key in seen:
-            return None
-        seen.add(dedup_key)
-
-        try:
-            dep_dt = datetime.strptime(dep_date_str, "%Y-%m-%d")
-        except ValueError:
-            dep_dt = datetime(2000, 1, 1)
-
-        seg = FlightSegment(
-            airline="IE",
-            airline_name="Solomon Airlines",
-            flight_no="",
-            origin=origin_code,
-            destination=dest_code,
-            origin_city=fare.get("originCity", ""),
-            destination_city=fare.get("destinationCity", ""),
-            departure=dep_dt,
-            arrival=dep_dt,
-            duration_seconds=0,
-            cabin_class=cabin.lower(),
-        )
-        route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
-
-        fid = hashlib.md5(
-            f"ie_{origin_code}{dest_code}{dep_date_str}{price_f}{cabin}".encode()
-        ).hexdigest()[:12]
-
-        return FlightOffer(
-            id=f"ie_{fid}",
-            price=price_f,
-            currency=currency,
-            price_formatted=f"{price_f:.2f} {currency}",
-            outbound=route,
-            inbound=None,
-            airlines=["Solomon Airlines"],
-            owner_airline="IE",
-            booking_url=(
-                f"https://www.flysolomons.com/book/"
-                f"?from={req.origin}&to={req.destination}"
-                f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
-            ),
-            is_locked=False,
-            source="solomonairlines_direct",
-            source_tier="free",
-        )
-
 
     @staticmethod
     def _combine_rt(
         ob: list[FlightOffer], ib: list[FlightOffer], req,
     ) -> list[FlightOffer]:
         combos: list[FlightOffer] = []
-        for o in ob[:15]:
-            for i in ib[:10]:
+        for o in ob[:10]:
+            for i in ib[:5]:
                 price = round(o.price + i.price, 2)
                 cid = hashlib.md5(f"{o.id}_{i.id}".encode()).hexdigest()[:12]
                 combos.append(FlightOffer(
                     id=f"rt_solo_{cid}", price=price, currency=o.currency,
+                    price_formatted=f"{price:.2f} {o.currency}",
                     outbound=o.outbound, inbound=i.outbound,
                     airlines=list(dict.fromkeys(o.airlines + i.airlines)),
                     owner_airline=o.owner_airline,
@@ -341,7 +293,7 @@ class SolomonAirlinesConnectorClient:
             search_id=f"fs_{h}",
             origin=req.origin,
             destination=req.destination,
-            currency="USD",
+            currency="AUD",
             offers=[],
             total_results=0,
         )

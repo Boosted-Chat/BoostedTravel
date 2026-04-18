@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     libu2f-udev \
     libvulkan1 \
+    psmisc \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome stable (found by find_chrome at /usr/bin/google-chrome-stable)

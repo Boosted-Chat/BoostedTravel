@@ -1,16 +1,15 @@
 """
-Hainan Airlines (HU) — CDP Chrome connector — form fill + API intercept.
+Hainan Airlines (HU) — CDP Chrome connector — form fill + clientSideData parse.
 
-Hainan Airlines's website at www.hainanairlines.com uses a search widget with autocomplete
-airport fields and calendar date picker. Direct API calls are blocked;
-headed CDP Chrome with form fill + API interception is required.
+Hainan Airlines's website at www.hainanairlines.com uses HUPortal (Amadeus IBE).
+Direct API calls are blocked; headed CDP Chrome with form fill is required.
 
-Strategy (CDP Chrome + API interception):
+Strategy (CDP Chrome + clientSideData.AVAI):
 1. Launch headed Chrome via CDP (off-screen, stealth).
-2. Navigate to hainanairlines.com → SPA loads with search widget.
-3. Accept cookies → set one-way → fill origin/dest → select date → search.
-4. Intercept the search API response (flight availability JSON).
-5. If API not captured, fall back to DOM scraping on results page.
+2. Navigate to /CN/GB/Search → loads booking form.
+3. Click one-way → fill origin/dest autocomplete → set date via huCalendar → submit.
+4. Wait for /availability page → parse clientSideData.AVAI JSON.
+5. If prices needed, select first flight + Continue → FARE page.
 """
 
 from __future__ import annotations
@@ -171,7 +170,7 @@ class HainanConnectorClient:
     IATA = "HU"
     AIRLINE_NAME = "Hainan Airlines"
     SOURCE = "hainan_direct"
-    HOMEPAGE = "https://www.hainanairlines.com/en"
+    SEARCH_URL = "https://www.hainanairlines.com/CN/GB/Search"
     DEFAULT_CURRENCY = "CNY"
 
     def __init__(self, timeout: float = 55.0):
@@ -196,185 +195,232 @@ class HainanConnectorClient:
         page = await context.new_page()
         await auto_block_if_proxied(page)
 
-        search_data: dict = {}
-        api_event = asyncio.Event()
-
-        async def _on_response(response):
-            url = response.url.lower()
-            if response.status not in (200, 201):
-                return
-            try:
-                if any(k in url for k in ["/search", "/availability", "/flight",
-                                           "/offer", "/fare", "/lowprice", "/schedule"]):
-                    ct = response.headers.get("content-type", "")
-                    if "json" not in ct and "text" not in ct:
-                        return
-                    body = await response.text()
-                    if len(body) < 50:
-                        return
-                    data = json.loads(body)
-                    if not isinstance(data, dict):
-                        return
-                    keys_str = " ".join(str(k).lower() for k in data.keys())
-                    if any(k in keys_str for k in ["flight", "itiner", "offer", "fare",
-                                                     "bound", "trip", "result", "segment",
-                                                     "avail", "journey", "price"]):
-                        search_data.update(data)
-                        api_event.set()
-                        logger.info("Hainan: captured API → %s (%d keys)", url[:80], len(data))
-            except Exception:
-                pass
-
-        page.on("response", _on_response)
+        avai_data: dict = {}
 
         try:
-            logger.info("Hainan: loading homepage for %s→%s", req.origin, req.destination)
-            await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(5.0)
+            logger.info("Hainan: loading Search page for %s→%s", req.origin, req.destination)
+            await page.goto(self.SEARCH_URL, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(6.0)
             await _dismiss_overlays(page)
 
-            # One-way toggle
-            await page.evaluate("""() => {
-                const cssEls = document.querySelectorAll(
-                    '[class*="one-way"], [class*="oneway"], input[value="OW"], ' +
-                    'div[class*="trip-type"] label:nth-child(2), [data-value="OW"]'
-                );
-                for (const el of cssEls) {
-                    if (el.offsetHeight > 0) { el.click(); return; }
+            # Click One-way button + force TRIP_TYPE hidden field
+            await page.evaluate(r"""() => {
+                const form = document.querySelector('#formREVENUE');
+                if (form) {
+                    const ow = form.querySelector('button.oneWay');
+                    if (ow) ow.click();
                 }
-                const textEls = document.querySelectorAll('label, li, a, button, span, div[class*="trip"], mat-radio-button');
-                for (const el of textEls) {
-                    const t = (el.textContent || '').trim().toLowerCase();
-                    if ((t === 'one way' || t === 'one-way' || t === 'one way trip' || t.includes('one way')) && el.offsetHeight > 0) {
-                        el.click(); return;
-                    }
-                }
+                var tt = document.querySelector('input[name="TRIP_TYPE"]');
+                if (tt) tt.value = 'O';
             }""")
             await asyncio.sleep(1.0)
 
+            # Fill origin via autocomplete
             ok = await self._fill_airport(page, "origin", req.origin)
             if not ok:
                 return self._empty(req)
             await asyncio.sleep(1.0)
 
+            # Fill destination via autocomplete
             ok = await self._fill_airport(page, "destination", req.destination)
             if not ok:
                 return self._empty(req)
             await asyncio.sleep(1.0)
 
+            # Set date via huCalendar + hidden B_DATE_1 field
             ok = await self._fill_date(page, req)
             if not ok:
                 return self._empty(req)
 
-            # Click search
-            await page.evaluate("""() => {
-                const btns = document.querySelectorAll('button, input[type="submit"], a');
-                for (const b of btns) {
-                    const t = (b.textContent || b.value || '').trim().toLowerCase();
-                    if ((t.includes('search') || t.includes('find') || t.includes('查询') || t.includes('搜索'))
-                        && b.offsetHeight > 0) {
-                        b.click(); return;
-                    }
+            # Set adults to 1 via selectBoxIt API
+            await page.evaluate(r"""() => {
+                const sel = document.querySelector('#adult_selectbox_REVENUE');
+                if (sel) {
+                    try {
+                        var sbi = $(sel).data('selectBoxIt') || $(sel).data('selectboxitObj');
+                        if (sbi) { sbi.selectOption('1'); return; }
+                    } catch(e) {}
+                    sel.value = '1';
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             }""")
-            logger.info("Hainan: search clicked")
+            await asyncio.sleep(0.5)
 
-            remaining = max(self.timeout - (time.monotonic() - t0), 15)
-            deadline = time.monotonic() + remaining
-            while time.monotonic() < deadline:
-                if api_event.is_set():
-                    break
-                url = page.url
-                if any(k in url.lower() for k in ["result", "search", "flight", "availability"]):
-                    await asyncio.sleep(4.0)
-                    break
-                await asyncio.sleep(1.0)
+            # Force TRIP_TYPE again right before submit (oneWay click can be unreliable)
+            await page.evaluate(r"""() => {
+                var tt = document.querySelector('input[name="TRIP_TYPE"]');
+                if (tt) tt.value = 'O';
+            }""")
 
-            if not api_event.is_set():
-                try:
-                    await asyncio.wait_for(api_event.wait(), timeout=8.0)
-                except asyncio.TimeoutError:
-                    pass
+            # Click search submit button
+            await page.evaluate(r"""() => {
+                const form = document.querySelector('#formREVENUE');
+                const btn = form?.querySelector('button.submitFlightSearchButton');
+                if (btn) btn.click();
+            }""")
+            logger.info("Hainan: search submitted")
+
+            # Wait for availability page
+            try:
+                await page.wait_for_url("**/availability**", timeout=30000)
+            except Exception:
+                pass
+            await asyncio.sleep(10.0)
+
+            # Extract clientSideData.AVAI
+            avai_data = await page.evaluate(r"""() => {
+                return window.clientSideData?.AVAI || null;
+            }""")
+            logger.info("Hainan: AVAI data present=%s, url=%s", bool(avai_data), page.url)
 
             offers = []
-            if search_data:
-                offers = self._parse_api_response(search_data, req)
+            if avai_data:
+                offers = self._parse_avai_data(avai_data, req)
+                logger.info("Hainan: AVAI parsed %d flight offers", len(offers))
+
             if not offers:
                 offers = await self._scrape_dom(page, req)
 
-            offers.sort(key=lambda o: o.price)
+            # ---- FARE PAGE PRICING ----
+            # Select first direct flight on availability page, navigate to FARE page
+            # to get the actual ticket price. Apply price to matching offer.
+            if offers and "availability" in (page.url or ""):
+                fare_price = await self._get_fare_price(page)
+                if fare_price and fare_price > 0:
+                    # Apply price to first offer (the one we selected on availability page)
+                    offers[0].price = fare_price
+                    offers[0].price_formatted = f"CNY {fare_price:,.0f}"
+                    logger.info("Hainan: got fare price CNY %.0f for first flight", fare_price)
+
+            # Filter out price=0 offers (unpriced flights)
+            priced = [o for o in offers if o.price > 0]
+            unpriced = [o for o in offers if o.price <= 0]
+            # Keep priced offers first; include unpriced only if no priced results
+            final_offers = priced if priced else unpriced
+            final_offers.sort(key=lambda o: o.price)
+
             elapsed = time.monotonic() - t0
-            logger.info("Hainan %s→%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
+            logger.info("Hainan %s→%s: %d offers (%d priced) in %.1fs", req.origin, req.destination, len(final_offers), len(priced), elapsed)
 
             search_hash = hashlib.md5(
                 f"hainan{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
             ).hexdigest()[:12]
-            currency = offers[0].currency if offers else self.DEFAULT_CURRENCY
+            currency = final_offers[0].currency if final_offers else self.DEFAULT_CURRENCY
             return FlightSearchResponse(
                 search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
-                currency=currency, offers=offers, total_results=len(offers),
+                currency=currency, offers=final_offers, total_results=len(final_offers),
             )
         except Exception as e:
-            logger.error("AirChina error: %s", e)
+            logger.error("Hainan error: %s", e)
             return self._empty(req)
         finally:
-            try:
-                page.remove_listener("response", _on_response)
-            except Exception:
-                pass
             try:
                 await page.close()
             except Exception:
                 pass
 
-    async def _fill_airport(self, page, direction: str, iata: str) -> bool:
+    async def _get_fare_price(self, page) -> float:
+        """Select first flight radio on availability page, click Continue,
+        and extract total price from the FARE page."""
         try:
-            sel = await page.evaluate("""(args) => {
-                const [dir, iata] = args;
-                const selectors = dir === 'origin'
-                    ? ['#fromCity', '#departCity', '#origin', 'input[name*="from"]',
-                       'input[name*="origin"]', 'input[name*="depart"]',
-                       'input[placeholder*="From"]', 'input[placeholder*="Depart"]',
-                       'input[placeholder*="出发"]']
-                    : ['#toCity', '#arriveCity', '#destination', 'input[name*="to"]',
-                       'input[name*="dest"]', 'input[name*="arriv"]',
-                       'input[placeholder*="To"]', 'input[placeholder*="Arriv"]',
-                       'input[placeholder*="到达"]'];
-                for (const s of selectors) {
-                    const el = document.querySelector(s);
-                    if (el && el.offsetHeight > 0) return s;
+            # Click first flight radio (b0_0RadioEl / SchedDrivenAvailButton_1)
+            clicked = await page.evaluate(r"""() => {
+                var radios = document.querySelectorAll('input[name="SchedDrivenAvailButton_1"]');
+                if (radios.length > 0) {
+                    radios[0].click();
+                    radios[0].checked = true;
+                    radios[0].dispatchEvent(new Event('change', {bubbles: true}));
+                    return true;
                 }
-                return null;
-            }""", [direction, iata])
-            if not sel:
-                return False
-
-            field = page.locator(sel).first
-            await field.click(timeout=5000)
-            await asyncio.sleep(0.5)
-            await page.keyboard.press("Control+a")
-            await page.keyboard.press("Backspace")
-            await field.type(iata, delay=120)
-            await asyncio.sleep(2.0)
-
-            selected = await page.evaluate("""(iata) => {
-                const opts = document.querySelectorAll(
-                    '[role="option"], [class*="suggest"] li, [class*="dropdown"] li, ' +
-                    '[class*="autocomplete"] li, .search-result-item, [class*="city-item"]'
-                );
-                for (const o of opts) {
-                    if (o.textContent.includes(iata) && o.offsetHeight > 0) {
-                        o.click(); return true;
-                    }
+                // Fallback: any non-TRIP_TYPE radio
+                var all = document.querySelectorAll('input[type="radio"]');
+                for (var r of all) {
+                    if (r.name !== 'TRIP_TYPE') { r.click(); r.checked = true; return true; }
                 }
                 return false;
-            }""", iata)
-            if not selected:
-                await page.keyboard.press("ArrowDown")
-                await asyncio.sleep(0.2)
-                await page.keyboard.press("Enter")
+            }""")
+            if not clicked:
+                logger.debug("Hainan: no flight radio found")
+                return 0
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
+
+            # Click Continue / nextStep button
+            await page.evaluate(r"""() => {
+                var btn = document.querySelector('button.nextStep');
+                if (btn) btn.click();
+            }""")
+
+            # Wait for FARE page
+            try:
+                await page.wait_for_url("**/fare**", timeout=20000)
+            except Exception:
+                logger.debug("Hainan: FARE page not reached")
+                return 0
+
+            await asyncio.sleep(5.0)
+
+            # Extract total price from FARE page
+            price_data = await page.evaluate(r"""() => {
+                // Method 1: .currency-price element (most reliable)
+                var cp = document.querySelectorAll('.currency-price');
+                for (var el of cp) {
+                    var text = el.textContent.trim().replace(/[^0-9.]/g, '');
+                    var val = parseFloat(text);
+                    if (val > 0) return {price: val, source: 'currency-price'};
+                }
+                // Method 2: .group-total-price
+                var gtp = document.querySelector('.group-total-price');
+                if (gtp) {
+                    var m = gtp.textContent.match(/[\d,]+\.\d{2}/);
+                    if (m) return {price: parseFloat(m[0].replace(/,/g, '')), source: 'group-total-price'};
+                }
+                // Method 3: scan for CNY pattern in page text
+                var body = document.body.innerText;
+                var matches = body.match(/CNY\s*([\d,]+\.\d{2})/g) || [];
+                for (var mt of matches) {
+                    var num = mt.replace(/[^0-9.]/g, '');
+                    var val = parseFloat(num);
+                    if (val > 0) return {price: val, source: 'body-text'};
+                }
+                // Method 4: look for Total row
+                var totalMatch = body.match(/Total\s+([\d,]+\.\d{2})\s*CNY/);
+                if (totalMatch) return {price: parseFloat(totalMatch[1].replace(/,/g, '')), source: 'total-row'};
+                return null;
+            }""")
+
+            if price_data and price_data.get("price", 0) > 0:
+                logger.debug("Hainan: fare price %.2f from %s", price_data["price"], price_data["source"])
+                return price_data["price"]
+
+            return 0
+        except Exception as e:
+            logger.debug("Hainan: fare price extraction error: %s", e)
+            return 0
+
+    async def _fill_airport(self, page, direction: str, iata: str) -> bool:
+        try:
+            # Hainan uses #departureLocREVENUE and #ReturnLocREVENUE
+            sel = "#departureLocREVENUE" if direction == "origin" else "#ReturnLocREVENUE"
+
+            field = page.locator(sel)
+            await field.click(force=True, timeout=5000)
+            await field.fill("")
+            await asyncio.sleep(0.3)
+            await field.type(iata, delay=50)
+            await asyncio.sleep(2.0)
+
+            # Click first autocomplete item
+            try:
+                first_item = page.locator(".ui-autocomplete .ui-menu-item:visible").first
+                await first_item.click(timeout=3000)
+            except Exception:
+                # Fallback: ArrowDown + Enter
+                await field.press("ArrowDown")
+                await asyncio.sleep(0.3)
+                await field.press("Enter")
+
+            await asyncio.sleep(1.0)
             logger.info("Hainan: airport %s → %s", direction, iata)
             return True
         except Exception as e:
@@ -386,160 +432,125 @@ class HainanConnectorClient:
             dt = req.date_from if isinstance(req.date_from, (datetime, date)) else datetime.strptime(str(req.date_from), "%Y-%m-%d")
         except (ValueError, TypeError):
             return False
-        target_day = str(dt.day)
-        target_ym = dt.strftime("%Y-%m")
         try:
-            await page.evaluate("""() => {
-                const inputs = document.querySelectorAll(
-                    'input[name*="date"], input[name*="Date"], input[placeholder*="Date"], ' +
-                    'input[placeholder*="日期"], input[class*="date"], #departDate, #goDate, ' +
-                    '[class*="depart-date"], [class*="departure-date"]'
-                );
-                for (const i of inputs) { if (i.offsetHeight > 0) { i.click(); return; } }
-            }""")
-            await asyncio.sleep(1.5)
-
-            for _ in range(12):
-                month_text = await page.evaluate("""() => {
-                    const h = document.querySelectorAll(
-                        '[class*="calendar"] [class*="month"], [class*="calendar"] [class*="title"], ' +
-                        '.month-title, .calendar-title, th[colspan]'
-                    );
-                    return [...h].map(e => e.textContent.trim()).join('|');
-                }""")
-                if target_ym in month_text or dt.strftime("%B %Y").lower() in month_text.lower() or f"{dt.year}年{dt.month}月" in month_text:
-                    break
-                await page.evaluate("""() => {
-                    const n = document.querySelector(
-                        '[class*="next"], [aria-label*="next"], [class*="forward"], ' +
-                        'button[class*="arrow-right"], .next-month, [class*="right-arrow"]'
-                    );
-                    if (n && n.offsetHeight > 0) n.click();
-                }""")
-                await asyncio.sleep(0.5)
-
-            clicked = await page.evaluate("""(day) => {
-                const cells = document.querySelectorAll(
-                    'td[class*="day"], td[role="gridcell"], [class*="calendar-day"], ' +
-                    '[class*="date-cell"], .day, td.available'
-                );
-                for (const c of cells) {
-                    const text = c.textContent.trim();
-                    if (text === day && !c.classList.contains('disabled') &&
-                        c.getAttribute('aria-disabled') !== 'true' && c.offsetHeight > 0) {
-                        c.click(); return true;
-                    }
-                }
-                return false;
-            }""", target_day)
-            if clicked:
-                logger.info("Hainan: date selected %s", dt.strftime("%Y-%m-%d"))
+            # Use huCalendar API to set date (month is 0-indexed in JS)
+            year = dt.year
+            month = dt.month - 1  # JS months are 0-indexed
+            day = dt.day
+            # Also set hidden B_DATE_1 field (format YYYYMMDD0000) — required for form submit
+            b_date_str = dt.strftime("%Y%m%d") + "0000"
+            await page.evaluate(f"""() => {{
+                var d = new Date({year}, {month}, {day});
+                $('#formREVENUE .inputOnlineFrameFormDepartureDate').huCalendar('setDate', d);
+                var bd = document.querySelector('#B_DATE_1') || document.querySelector('input[name="B_DATE_1"]');
+                if (bd) bd.value = '{b_date_str}';
+            }}""")
             await asyncio.sleep(1.0)
+            logger.info("Hainan: date set to %s via huCalendar", dt.strftime("%Y-%m-%d"))
             return True
         except Exception as e:
             logger.warning("Hainan: date error: %s", e)
             return False
 
-    def _parse_api_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+
+
+    def _parse_avai_data(self, avai: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+        """Parse clientSideData.AVAI from the availability page."""
         offers = []
-        flights = (
-            data.get("flights") or data.get("results") or data.get("itineraries") or
-            data.get("flightInfos") or data.get("offers") or data.get("journeys") or
-            data.get("routeList") or data.get("flightList") or []
-        )
-        if isinstance(flights, dict):
-            for key in ("flights", "results", "itineraries", "options", "list"):
-                if key in flights:
-                    flights = flights[key]
-                    break
-            else:
-                flights = [flights]
-        if not isinstance(flights, list):
-            flights = self._find_flights(data)
-        for flight in flights:
-            offer = self._build_offer(flight, req)
-            if offer:
-                offers.append(offer)
+        try:
+            # AVAI structure: ORIGINAL_LIST_BOUND[0].LIST_FLIGHT[]
+            bounds = avai.get("ORIGINAL_LIST_BOUND") or []
+            for bound in bounds:
+                flights = bound.get("LIST_FLIGHT") or []
+                for flight in flights:
+                    offer = self._build_avai_offer(flight, req)
+                    if offer:
+                        offers.append(offer)
+        except Exception as e:
+            logger.debug("Hainan: AVAI parse error: %s", e)
         return offers
 
-    def _find_flights(self, data, depth=0) -> list:
-        if depth > 4 or not isinstance(data, dict):
-            return []
-        for key, val in data.items():
-            if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                sample_keys = {str(k).lower() for k in val[0].keys()}
-                if sample_keys & {"price", "fare", "flight", "departure", "segment", "leg"}:
-                    return val
-            elif isinstance(val, dict):
-                result = self._find_flights(val, depth + 1)
-                if result:
-                    return result
-        return []
-
-    def _build_offer(self, flight: dict, req: FlightSearchRequest) -> Optional[FlightOffer]:
+    def _build_avai_offer(self, flight: dict, req: FlightSearchRequest) -> Optional[FlightOffer]:
+        """Build offer from AVAI.ORIGINAL_LIST_BOUND[].LIST_FLIGHT[] item."""
         try:
-            price = (
-                flight.get("price") or flight.get("totalPrice") or
-                flight.get("fare") or flight.get("amount") or
-                flight.get("adultPrice") or 0
-            )
-            if isinstance(price, dict):
-                price = price.get("amount") or price.get("total") or price.get("value") or 0
-            price = float(price) if price else 0
-            if price <= 0:
+            # Availability page doesn't show prices - we'd need to select + continue
+            # For now, return 0 price to indicate flight exists (prices fetched separately)
+            segments_data = flight.get("LIST_SEGMENT") or []
+            if not segments_data:
                 return None
 
-            currency = self._extract_currency(flight)
-
-            segments_data = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
-            if not isinstance(segments_data, list):
-                segments_data = [flight]
-
             segments = []
+            total_duration_ms = 0
+
             for seg in segments_data:
-                dep_str = seg.get("departure") or seg.get("departureTime") or seg.get("depTime") or ""
-                arr_str = seg.get("arrival") or seg.get("arrivalTime") or seg.get("arrTime") or ""
-                dep_dt = self._parse_dt(dep_str, req.date_from)
-                arr_dt = self._parse_dt(arr_str, req.date_from)
-                airline_code = seg.get("airline") or seg.get("carrierCode") or seg.get("operatingCarrier") or self.IATA
-                flight_no = seg.get("flightNumber") or seg.get("flightNo") or ""
+                airline_info = seg.get("AIRLINE") or {}
+                airline_code = airline_info.get("CODE") or self.IATA
+                airline_name = airline_info.get("NAME") or self.AIRLINE_NAME
+                flight_no = seg.get("FLIGHT_NUMBER") or ""
                 if flight_no and not flight_no.startswith(airline_code):
                     flight_no = f"{airline_code}{flight_no}"
 
+                # B_DATE and E_DATE are epoch milliseconds
+                b_date_ms = seg.get("B_DATE") or 0
+                e_date_ms = seg.get("E_DATE") or 0
+                dep_dt = datetime.fromtimestamp(b_date_ms / 1000) if b_date_ms else datetime.now()
+                arr_dt = datetime.fromtimestamp(e_date_ms / 1000) if e_date_ms else datetime.now()
+
+                b_loc = seg.get("B_LOCATION") or {}
+                e_loc = seg.get("E_LOCATION") or {}
+                origin = b_loc.get("LOCATION_CODE") or req.origin
+                destination = e_loc.get("LOCATION_CODE") or req.destination
+
+                flight_time_ms = seg.get("FLIGHT_TIME") or 0
+                total_duration_ms += flight_time_ms
+
+                _hu_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
-                    airline=airline_code[:2], airline_name=self.AIRLINE_NAME if airline_code == self.IATA else airline_code,
-                    flight_no=flight_no or self.IATA, origin=seg.get("origin") or seg.get("departureAirport") or req.origin,
-                    destination=seg.get("destination") or seg.get("arrivalAirport") or req.destination,
-                    departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+                    airline=airline_code[:2],
+                    airline_name=airline_name,
+                    flight_no=flight_no or self.IATA,
+                    origin=origin,
+                    destination=destination,
+                    departure=dep_dt,
+                    arrival=arr_dt,
+                    cabin_class=_hu_cabin,
                 ))
 
             if not segments:
                 return None
 
-            route = FlightRoute(segments=segments, total_duration_seconds=0, stopovers=max(0, len(segments) - 1))
+            total_duration_sec = int(total_duration_ms / 1000) if total_duration_ms else 0
+            route = FlightRoute(
+                segments=segments,
+                total_duration_seconds=total_duration_sec,
+                stopovers=max(0, len(segments) - 1)
+            )
+
+            # Generate offer ID from flight info
+            first_flight_no = segments[0].flight_no if segments else "HU"
             offer_id = hashlib.md5(
-                f"{self.IATA.lower()}_{req.origin}_{req.destination}_{req.date_from}_{price}_{segments[0].flight_no}".encode()
+                f"{self.IATA.lower()}_{req.origin}_{req.destination}_{req.date_from}_{first_flight_no}".encode()
             ).hexdigest()[:12]
 
+            # Price is 0 from availability page - actual prices require FARE page
+            # We'll set a placeholder and note this is from availability
             return FlightOffer(
-                id=f"{self.IATA.lower()}_{offer_id}", price=round(price, 2), currency=currency,
-                price_formatted=f"{currency} {price:,.0f}", outbound=route, inbound=None,
-                airlines=list({s.airline for s in segments}), owner_airline=self.IATA,
-                booking_url=self._booking_url(req), is_locked=False,
-                source=self.SOURCE, source_tier="free",
+                id=f"{self.IATA.lower()}_{offer_id}",
+                price=0,  # Actual price requires FARE page navigation
+                currency=self.DEFAULT_CURRENCY,
+                price_formatted="Check airline",
+                outbound=route,
+                inbound=None,
+                airlines=list({s.airline for s in segments}),
+                owner_airline=self.IATA,
+                booking_url=self._booking_url(req),
+                is_locked=False,
+                source=self.SOURCE,
+                source_tier="free",
             )
         except Exception as e:
-            logger.debug("Hainan: offer parse error: %s", e)
+            logger.debug("Hainan: AVAI offer parse error: %s", e)
             return None
-
-    def _extract_currency(self, d: dict) -> str:
-        for key in ("currency", "currencyCode"):
-            val = d.get(key)
-            if isinstance(val, str) and len(val) == 3:
-                return val.upper()
-        if isinstance(d.get("price"), dict):
-            return d["price"].get("currency", self.DEFAULT_CURRENCY)
-        return self.DEFAULT_CURRENCY
 
     @staticmethod
     def _parse_dt(s, fallback_date) -> datetime:
@@ -633,9 +644,10 @@ class HainanConnectorClient:
         currency = f.get("currency", self.DEFAULT_CURRENCY)
         offer_id = hashlib.md5(f"{self.IATA.lower()}_{req.origin}_{req.destination}_{dep_date}_{flight_no}_{price}".encode()).hexdigest()[:12]
 
+        _hu_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segment = FlightSegment(
             airline=self.IATA, airline_name=self.AIRLINE_NAME, flight_no=flight_no,
-            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class=_hu_cabin,
         )
         route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
         return FlightOffer(
@@ -678,3 +690,12 @@ class HainanConnectorClient:
             search_id=f"fs_{search_hash}", origin=req.origin, destination=req.destination,
             currency=self.DEFAULT_CURRENCY, offers=[], total_results=0,
         )
+
+
+# Module-level client instance and search function (required by engine.py)
+_client = HainanConnectorClient()
+
+
+async def search(req: FlightSearchRequest) -> FlightSearchResponse:
+    """Search Hainan Airlines for flights."""
+    return await _client.search_flights(req)

@@ -783,15 +783,22 @@ async def _search_local(
     # Skip temporarily disabled connectors (100% fail rate, wasting resources)
     _TEMPORARILY_DISABLED = {
         "auntbetty_ota", "flightcatchers_ota", "akbartravels_ota", "byojet_ota",
-        "travelup_ota", "yatra_ota", "musafir_ota", "webjet_ota", "wego_meta",
+        "travelup_ota", "musafir_ota", "webjet_ota", "wego_meta",
         "aerlingus_direct", "westjet_direct", "saudia_direct", "airtransat_direct",
-        "airchina_direct", "cathay_direct", "singapore_direct", "royaljordanian_direct",
-        "latam_direct", "norwegian_direct", "hainan_direct", "korean_direct",
+        "cathay_direct", "singapore_direct", "royaljordanian_direct",
+        "latam_direct", "norwegian_direct", "korean_direct",
         "play_direct", "chinaeastern_direct", "vietnamairlines_direct", "aircanada_direct",
-        "mea_direct", "delta_direct", "ethiopian_direct", "kenyaairways_direct",
-        "etihad_direct", "airserbia_direct", "finnair_direct", "nh_direct",
+        "ethiopian_direct", "kenyaairways_direct",
+        "etihad_direct", "finnair_direct",
         "evaair_direct", "aireuropa_direct", "saa_direct", "kuwaitairways_direct",
-        "elal_direct", "emirates_direct", "asiana_direct", "royalairmaroc_direct",
+        "elal_direct", "emirates_direct", "royalairmaroc_direct",
+        # FIXED and re-enabled:
+        # nh_direct, asiana_direct, hainan_direct — 2026-04-14
+        # airserbia_direct — GraphQL capture fixed, 2026-04-14
+        # yatra_ota — 80 offers, 2026-04-18
+        # delta_direct — Akamai warm-up fix, 2026-04-18
+        # mea_direct — 9 offers with proxy, 2026-04-17
+        # airchina_direct — interceptor + SPA fix, 15 offers, 2026-04-18
     }
     before_disabled = len(filtered)
     filtered = [

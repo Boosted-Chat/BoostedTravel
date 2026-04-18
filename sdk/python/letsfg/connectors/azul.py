@@ -1,22 +1,23 @@
 """
-Azul Brazilian Airlines scraper — headed Chrome + route interception + API capture.
+Azul Brazilian Airlines scraper — headed Chrome + form fill + API capture.
 
 Azul (IATA: AD) is Brazil's third-largest airline with the widest domestic network.
-Website: www.voeazul.com.br — English version at /us/en/home.
+Website: passagens.voeazul.com.br — booking portal with form-based search.
 
 Architecture:
-- React SPA frontend with Navitaire/New Skies backend
+- React SPA frontend (Next.js) on passagens.voeazul.com.br
 - Akamai Bot Manager blocks headless Chrome and non-browser HTTP
-- SPA sends empty criteria to availability API regardless of URL params
-- Route interception rewrites the empty payload with correct NSK-format criteria
+- Form fill triggers availability API automatically
+- Capture availability response → parse Navitaire format → FlightOffer objects
 
 Strategy:
 1. Launch persistent headed Chrome (Akamai blocks headless)
-2. Per search: set up route interception → navigate to booking URL
-3. Route handler rewrites SPA's empty criteria with correct payload
-4. Capture availability response → parse Navitaire format → FlightOffer objects
+2. Navigate to passagens.voeazul.com.br/en → accept cookies
+3. Fill origin/destination comboboxes, set one-way, adjust date
+4. Click Search → capture availability API response
+5. Parse Navitaire format → FlightOffer objects
 
-Performance: ~5-8s first search (Chrome launch), ~3-5s subsequent searches.
+Performance: ~8-15s per search (form fill is slower than deep link).
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, Optional
 
 from ..models.flights import (
@@ -43,9 +44,9 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────
 
-_AVAIL_API = "reservationavailability/api/reservation/availability"
-_MAX_ATTEMPTS = 3
-_API_WAIT = 30  # seconds to wait for availability API per attempt
+_MAX_ATTEMPTS = 2
+_API_WAIT = 45  # seconds to wait for availability API per attempt
+_BOOKING_URL = "https://passagens.voeazul.com.br/en"
 
 _USER_DATA_DIR = os.path.join(
     os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")), "..", ".azul_chrome_data"
@@ -66,10 +67,7 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_context():
-    """
-    Persistent headed Chrome context — cookies survive across searches
-    so the Akamai challenge only needs to pass once.
-    """
+    """Persistent headed Chrome context — cookies survive across searches."""
     global _pw_instance, _pw_context
     lock = _get_lock()
     async with lock:
@@ -104,12 +102,7 @@ async def _get_context():
 
 
 class AzulConnectorClient:
-    """Azul scraper — headed Chrome + route interception + API capture.
-
-    Uses persistent headed Chrome (Akamai blocks headless). Browser launched once,
-    reused across searches. SPA sends empty criteria which route interception
-    rewrites with the correct NSK-format payload. ~3-5s per search after launch.
-    """
+    """Azul scraper — headed Chrome + form fill + API capture."""
 
     def __init__(self, timeout: float = 60.0):
         self.timeout = timeout
@@ -133,7 +126,12 @@ class AzulConnectorClient:
             return self._empty(req)
 
         if req.return_from and ob_result.total_results > 0:
-            ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
+            ib_req = req.model_copy(update={
+                "origin": req.destination, 
+                "destination": req.origin, 
+                "date_from": req.return_from, 
+                "return_from": None
+            })
             ib_result = None
             for attempt in range(1, _MAX_ATTEMPTS + 1):
                 try:
@@ -151,46 +149,10 @@ class AzulConnectorClient:
     async def _attempt_search(
         self, req: FlightSearchRequest, t0: float
     ) -> Optional[FlightSearchResponse]:
-        """Single attempt: fresh page + route interception → navigate → capture API."""
+        """Single attempt: form fill → capture API response."""
         ctx = await _get_context()
-
-        booking_url = self._build_booking_url(req)
-        dep = req.date_from.strftime("%Y-%m-%d")
-
-        # Build correct NSK criteria payload (SPA sends empty criteria)
-        correct_payload = json.dumps({
-            "criteria": [{
-                "DepartureStation": req.origin,
-                "ArrivalStation": req.destination,
-                "Std": dep + "T00:00:00",
-            }],
-            "passengers": [{"type": "ADT", "count": req.adults}],
-            "flexibleDays": {"daysToLeft": 0, "daysToRight": 0},
-            "currencyCode": "BRL",
-        })
-
-        # Fresh page per search
         page = await ctx.new_page()
         await auto_block_if_proxied(page)
-
-        # Route interception: rewrite empty criteria with correct payload
-        async def intercept_avail(route):
-            request = route.request
-            if request.method == "POST" and "v5/availability" in request.url:
-                post_data = request.post_data
-                if post_data:
-                    try:
-                        pd = json.loads(post_data)
-                        if not pd.get("criteria"):
-                            await route.continue_(post_data=correct_payload)
-                            return
-                    except Exception:
-                        pass
-                await route.continue_()
-            else:
-                await route.continue_()
-
-        await page.route("**/b2c-api.voeazul.com.br/**/availability**", intercept_avail)
 
         # Capture API response
         captured: dict = {}
@@ -198,47 +160,65 @@ class AzulConnectorClient:
 
         async def on_response(response):
             try:
-                if "v5/availability" not in response.url:
+                url = response.url
+                # Capture availability API responses (v5 or v6 format)
+                if "availability" not in url.lower():
                     return
                 if response.status != 200:
+                    logger.debug("Azul: availability API returned %d", response.status)
                     return
                 ct = response.headers.get("content-type", "")
                 if "json" not in ct:
                     return
                 body = await response.json()
-                if isinstance(body, dict) and body:
+                if isinstance(body, dict) and (body.get("data") or body.get("trips")):
                     captured["avail"] = body
                     api_event.set()
-            except Exception:
-                pass
+                    logger.debug("Azul: captured availability response")
+            except Exception as e:
+                logger.debug("Azul: response capture error: %s", e)
 
         page.on("response", on_response)
 
+        dep = req.date_from
         logger.info("Azul: searching %s→%s on %s", req.origin, req.destination, dep)
 
         try:
-            await page.goto(
-                booking_url,
-                wait_until="commit",
-                timeout=60000,
-            )
+            # 1. Navigate to booking portal
+            await page.goto(_BOOKING_URL, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)
 
-            # Wait for availability API response
+            # 2. Accept cookie consent
+            await self._accept_cookies(page)
+
+            # 3. Set one-way trip
+            await self._set_one_way(page)
+
+            # 4. Fill origin
+            await self._fill_airport(page, "origin", req.origin)
+
+            # 5. Fill destination
+            await self._fill_airport(page, "destination", req.destination)
+
+            # 6. Set departure date
+            await self._set_date(page, dep)
+
+            # 7. Click search
+            search_btn = page.locator('button:has-text("Search")')
+            await search_btn.click(timeout=5000)
+
+            # 8. Wait for availability API response
             await asyncio.wait_for(api_event.wait(), timeout=_API_WAIT)
 
         except asyncio.TimeoutError:
             logger.warning("Azul: availability API timed out")
             return None
         except Exception as e:
-            logger.warning("Azul: navigation error: %s", e)
+            logger.warning("Azul: search error: %s", e)
             return None
         finally:
             try:
                 page.remove_listener("response", on_response)
-            except Exception:
-                pass
-            try:
-                await page.unroute("**/b2c-api.voeazul.com.br/**/availability**")
             except Exception:
                 pass
             try:
@@ -253,6 +233,80 @@ class AzulConnectorClient:
         elapsed = time.monotonic() - t0
         offers = self._parse_availability(data, req)
         return self._build_response(offers, req, elapsed)
+
+    async def _accept_cookies(self, page) -> None:
+        """Click cookie consent button if present."""
+        try:
+            btn = page.locator('button:has-text("Accept"), button:has-text("Aceitar")')
+            if await btn.count() > 0:
+                await btn.first.click(timeout=3000)
+                await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
+    async def _set_one_way(self, page) -> None:
+        """Switch to one-way trip mode."""
+        try:
+            # Click journey type dropdown
+            jt_btn = page.locator('button[aria-label*="journey-type"]')
+            if await jt_btn.count() > 0:
+                await jt_btn.first.click(timeout=3000)
+                await asyncio.sleep(0.3)
+                # Select one-way
+                ow = page.locator('*[role="radio"]:has-text("One-way")')
+                if await ow.count() > 0:
+                    await ow.first.click(timeout=2000)
+                    await asyncio.sleep(0.3)
+                else:
+                    # Close dropdown
+                    await page.keyboard.press("Escape")
+        except Exception as e:
+            logger.debug("Azul: one-way toggle error: %s", e)
+
+    async def _fill_airport(self, page, field_type: str, iata: str) -> None:
+        """Fill origin or destination airport combobox."""
+        aria = "origin" if field_type == "origin" else "destination"
+        try:
+            # Click the airport button to open the combobox
+            btn = page.locator(f'button[aria-label*="{aria}"]')
+            await btn.first.click(timeout=5000)
+            await asyncio.sleep(0.5)
+
+            # Type into the combobox
+            cb = page.locator(f'*[role="combobox"][aria-label*="{aria}"]')
+            await cb.fill(iata, timeout=3000)
+            await asyncio.sleep(0.8)
+
+            # Click the first option
+            opt = page.locator('*[role="option"]').first
+            await opt.click(timeout=3000)
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.debug("Azul: airport fill error (%s): %s", field_type, e)
+            # Press escape to close any open dropdown
+            await page.keyboard.press("Escape")
+
+    async def _set_date(self, page, dep_date: date) -> None:
+        """Set departure date using the date picker."""
+        try:
+            # Click departure date button
+            date_btn = page.locator('button[aria-label*="departure-date"]')
+            await date_btn.first.click(timeout=5000)
+            await asyncio.sleep(0.5)
+
+            # The date picker should be open - type the date in MM/DD/YYYY format
+            date_str = dep_date.strftime("%m/%d/%Y")
+            date_input = page.locator('input[type="text"]').first
+            if await date_input.count() > 0:
+                await date_input.fill(date_str, timeout=3000)
+                await asyncio.sleep(0.3)
+                await page.keyboard.press("Enter")
+            else:
+                # Fallback: close the picker (use default date)
+                await page.keyboard.press("Escape")
+        except Exception as e:
+            logger.debug("Azul: date set error: %s", e)
+            await page.keyboard.press("Escape")
 
     # ── Navitaire availability parsing ───────────────────────────────────
 
@@ -282,7 +336,6 @@ class AzulConnectorClient:
 
         currency = self._extract_currency(journey) or "BRL"
 
-        # Azul v5 uses "identifier" instead of "designator"
         identifier = journey.get("identifier") or journey.get("designator") or {}
         segments_raw = journey.get("segments", [])
         segments: list[FlightSegment] = []
@@ -291,22 +344,10 @@ class AzulConnectorClient:
             for seg in segments_raw:
                 segments.append(self._parse_segment(seg, req))
         else:
-            dep_str = (
-                identifier.get("std") or identifier.get("departure")
-                or journey.get("departureDateTime") or ""
-            )
-            arr_str = (
-                identifier.get("sta") or identifier.get("arrival")
-                or journey.get("arrivalDateTime") or ""
-            )
-            origin = (
-                identifier.get("departureStation") or identifier.get("origin")
-                or req.origin
-            )
-            dest = (
-                identifier.get("arrivalStation") or identifier.get("destination")
-                or req.destination
-            )
+            dep_str = identifier.get("std") or journey.get("departureDateTime") or ""
+            arr_str = identifier.get("sta") or journey.get("arrivalDateTime") or ""
+            origin = identifier.get("departureStation") or req.origin
+            dest = identifier.get("arrivalStation") or req.destination
             carrier = identifier.get("carrierCode") or "AD"
             flight_num = str(identifier.get("flightNumber") or "")
             segments.append(FlightSegment(
@@ -314,7 +355,7 @@ class AzulConnectorClient:
                 flight_no=f"{carrier}{flight_num}" if flight_num else "",
                 origin=origin, destination=dest,
                 departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-                cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
+                cabin_class="economy",
             ))
 
         if not segments:
@@ -325,8 +366,7 @@ class AzulConnectorClient:
             diff = (segments[-1].arrival - segments[0].departure).total_seconds()
             total_dur = int(diff) if diff > 0 else 0
 
-        connections = identifier.get("connections")
-        stops = len(connections) if isinstance(connections, list) else max(len(segments) - 1, 0)
+        stops = max(len(segments) - 1, 0)
         route = FlightRoute(segments=segments, total_duration_seconds=total_dur, stopovers=stops)
 
         journey_key = journey.get("journeyKey") or ""
@@ -344,57 +384,30 @@ class AzulConnectorClient:
         )
 
     def _parse_segment(self, seg: dict, req: FlightSearchRequest) -> FlightSegment:
-        """Parse a Navitaire segment."""
-        # Azul v5 uses "identifier" for segment-level info
         identifier = seg.get("identifier") or seg.get("designator") or {}
         flight_des = seg.get("flightDesignator") or {}
 
-        dep_str = (
-            identifier.get("std") or identifier.get("departure")
-            or seg.get("departureDateTime") or seg.get("std") or ""
-        )
-        arr_str = (
-            identifier.get("sta") or identifier.get("arrival")
-            or seg.get("arrivalDateTime") or seg.get("sta") or ""
-        )
-        origin = (
-            identifier.get("departureStation") or identifier.get("origin")
-            or seg.get("departureStation") or req.origin
-        )
-        dest = (
-            identifier.get("arrivalStation") or identifier.get("destination")
-            or seg.get("arrivalStation") or req.destination
-        )
-        carrier = (
-            identifier.get("carrierCode") or flight_des.get("carrierCode")
-            or seg.get("carrierCode") or "AD"
-        )
-        flight_num = str(
-            identifier.get("flightNumber") or flight_des.get("flightNumber")
-            or seg.get("flightNumber") or ""
-        )
-
-        dep = self._parse_dt(dep_str)
-        arr = self._parse_dt(arr_str)
-        _ad_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
+        dep_str = identifier.get("std") or seg.get("departureDateTime") or ""
+        arr_str = identifier.get("sta") or seg.get("arrivalDateTime") or ""
+        origin = identifier.get("departureStation") or seg.get("departureStation") or req.origin
+        dest = identifier.get("arrivalStation") or seg.get("arrivalStation") or req.destination
+        carrier = identifier.get("carrierCode") or flight_des.get("carrierCode") or "AD"
+        flight_num = str(identifier.get("flightNumber") or flight_des.get("flightNumber") or "")
 
         return FlightSegment(
             airline=carrier, airline_name="Azul",
             flight_no=f"{carrier}{flight_num}" if flight_num else "",
             origin=origin, destination=dest,
-            departure=dep, arrival=arr,
-            cabin_class=_ad_cabin,
+            departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
+            cabin_class="economy",
         )
 
     @staticmethod
     def _extract_journey_price(journey: dict) -> Optional[float]:
-        """Extract the cheapest fare price from a Navitaire journey."""
         best = float("inf")
-
         for fare in journey.get("fares", []):
             if not isinstance(fare, dict):
                 continue
-            # Azul v5 uses "paxFares" with "totalAmount"
             pax_fares = fare.get("paxFares") or fare.get("passengerFares") or []
             for pf in pax_fares:
                 for key in ("totalAmount", "originalAmount", "fareAmount"):
@@ -406,7 +419,6 @@ class AzulConnectorClient:
                                 best = v
                         except (TypeError, ValueError):
                             pass
-                # serviceCharges fallback
                 total_charge = 0.0
                 for charge in pf.get("serviceCharges", []):
                     try:
@@ -415,7 +427,6 @@ class AzulConnectorClient:
                         pass
                 if total_charge > 0 and total_charge < best:
                     best = total_charge
-
         return best if best < float("inf") else None
 
     @staticmethod
@@ -427,13 +438,7 @@ class AzulConnectorClient:
                 cc = pf.get("currencyCode")
                 if cc:
                     return cc
-                for charge in pf.get("serviceCharges", []):
-                    cc = charge.get("currencyCode")
-                    if cc:
-                        return cc
         return None
-
-    # ── Helpers ──────────────────────────────────────────────────────────
 
     @staticmethod
     def _parse_dt(s: Any) -> datetime:
@@ -444,7 +449,7 @@ class AzulConnectorClient:
             return datetime.fromisoformat(s.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
             pass
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M"):
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S"):
             try:
                 return datetime.strptime(s[:len(fmt) + 2], fmt)
             except (ValueError, IndexError):
@@ -453,11 +458,14 @@ class AzulConnectorClient:
 
     @staticmethod
     def _build_booking_url(req: FlightSearchRequest) -> str:
-        dep = req.date_from.strftime("%Y-%m-%d")
+        dep = req.date_from.strftime("%m/%d/%Y")
+        from urllib.parse import quote
         return (
             f"https://www.voeazul.com.br/us/en/home/selecao-voo"
-            f"?c0={req.origin}&c1={req.destination}&d1={dep}"
-            f"&dt=ow&p1=ADT{req.adults}&px={req.adults}"
+            f"?c%5B0%5D.ds={req.origin}&c%5B0%5D.as={req.destination}"
+            f"&c%5B0%5D.std={quote(dep, safe='')}"
+            f"&p%5B0%5D.t=ADT&p%5B0%5D.c={req.adults}"
+            f"&p%5B0%5D.cp=false&cc=BRL"
         )
 
     @staticmethod

@@ -118,18 +118,24 @@ class OpodoConnectorClient:
 
         pw = await async_playwright().start()
         try:
-            from .browser import get_proxy
-            proxy = get_proxy("OPODO_PROXY") or get_proxy("ODIGEO_PROXY")
+            import os
+            # Strip proxy env vars from browser subprocess — Chromium reads HTTP_PROXY/HTTPS_PROXY
+            # and get_proxy() falls back to LETSFG_PROXY which causes ERR_TUNNEL_CONNECTION_FAILED
+            # for opodo.co.uk. Engine.py handles proxy retry externally; the patch just goes direct.
+            _PROXY_ENV_KEYS = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
+                               "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+                               "LETSFG_PROXY", "ODIGEO_PROXY", "OPODO_PROXY"}
+            clean_env = {k: v for k, v in os.environ.items() if k not in _PROXY_ENV_KEYS}
             launch_kw: dict = {
                 "headless": False,
+                "env": clean_env,
                 "args": [
                     "--window-position=-2400,-2400",
                     "--window-size=1366,768",
                     "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
                 ],
             }
-            if proxy:
-                launch_kw["proxy"] = proxy
             browser = await pw.chromium.launch(**launch_kw)
             ctx = await browser.new_context(
                 viewport={"width": 1366, "height": 768},

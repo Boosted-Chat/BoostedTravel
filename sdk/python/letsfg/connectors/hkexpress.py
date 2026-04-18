@@ -35,7 +35,7 @@ from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://flights.hkexpress.com"
+_BASE = "https://www.hkexpress.com"
 _SITE_EDITION = "en-hk"
 _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -108,7 +108,8 @@ class HKExpressConnectorClient:
             logger.warning("HK Express: unmapped IATA %s or %s", req.origin, req.destination)
             return self._empty(req)
 
-        url = f"{_BASE}/{_SITE_EDITION}/flights-from-{origin_slug}-to-{dest_slug}"
+        # URL pattern changed to /flights/{origin}-to-{dest}
+        url = f"{_BASE}/{_SITE_EDITION}/flights/{origin_slug}-to-{dest_slug}"
         logger.info("HK Express: fetching %s", url)
 
         try:
@@ -174,13 +175,25 @@ class HKExpressConnectorClient:
             return []
 
         props = nd.get("props", {}).get("pageProps", {})
+        
+        # Data now lives in apolloState.data (EveryMundo update)
+        apollo = props.get("apolloState", {})
+        if isinstance(apollo, dict) and "data" in apollo:
+            apollo = apollo["data"]
 
         offers: list[FlightOffer] = []
         seen: set[str] = set()
 
         def _collect_fares(obj: object) -> None:
             if isinstance(obj, dict):
-                if obj.get("__typename") == "Fare" and (obj.get("usdTotalPrice") or obj.get("totalPrice")):
+                # Look for StandardFareModule fares or individual Fare objects
+                if "fares" in obj and isinstance(obj["fares"], list):
+                    for fare in obj["fares"]:
+                        if isinstance(fare, dict):
+                            offer = self._build_offer_from_fare(fare, req, seen)
+                            if offer:
+                                offers.append(offer)
+                elif obj.get("__typename") == "Fare" and (obj.get("usdTotalPrice") or obj.get("totalPrice")):
                     offer = self._build_offer_from_fare(obj, req, seen)
                     if offer:
                         offers.append(offer)
@@ -190,7 +203,6 @@ class HKExpressConnectorClient:
                 for item in obj:
                     _collect_fares(item)
 
-        apollo = props.get("apolloState", {})
         _collect_fares(apollo)
 
         return offers

@@ -14,7 +14,7 @@ import hashlib
 import logging
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 import httpx
 
@@ -62,14 +62,7 @@ class RyanairConnectorClient:
             await self._http.aclose()
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        ob_result = await self._search_ow(req)
-        if req.return_from and ob_result.total_results > 0:
-            ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
-            ib_result = await self._search_ow(ib_req)
-            if ib_result.total_results > 0:
-                ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
-                ob_result.total_results = len(ob_result.offers)
-        return ob_result
+        return await self._search_ow(req)
 
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
@@ -127,50 +120,55 @@ class RyanairConnectorClient:
         return await self._search_single(req)
 
     async def _search_single(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        """Search a single origin→destination pair (airport-level codes)."""
+        """Search a single origin→destination pair via farfnd (fare finder) API.
+
+        The booking/v4/availability endpoint now returns 409, so we use
+        the publicly-accessible farfnd/v4 endpoints instead. These return
+        one fare per origin-destination-date combination with the cheapest
+        available price and flight details.
+        """
         client = await self._client()
-
-        params: dict[str, Any] = {
-            "ADT": req.adults,
-            "CHD": req.children,
-            "INF": req.infants,
-            "DateOut": req.date_from.isoformat(),
-            "Origin": req.origin,
-            "Destination": req.destination,
-            "RoundTrip": "true" if req.return_from else "false",
-            "ToUs": "AGREED",
-            "IncludeConnectingFlights": "true",
-            "FlexDaysBeforeOut": 0,
-            "FlexDaysOut": 0,
-            "FlexDaysBeforeIn": 0,
-            "FlexDaysIn": 0,
-            "promoCode": "",
-        }
-
-        if req.return_from:
-            params["DateIn"] = req.return_from.isoformat()
-        else:
-            params["DateIn"] = ""
+        date_str = req.date_from.isoformat()
 
         t0 = time.monotonic()
 
+        if req.return_from:
+            params = {
+                "departureAirportIataCode": req.origin,
+                "arrivalAirportIataCode": req.destination,
+                "outboundDepartureDateFrom": date_str,
+                "outboundDepartureDateTo": date_str,
+                "inboundDepartureDateFrom": req.return_from.isoformat(),
+                "inboundDepartureDateTo": req.return_from.isoformat(),
+                "currency": req.currency,
+                "adultPaxCount": req.adults,
+            }
+            url = f"{RYANAIR_API}/farfnd/v4/roundTripFares"
+        else:
+            params = {
+                "departureAirportIataCode": req.origin,
+                "arrivalAirportIataCode": req.destination,
+                "outboundDepartureDateFrom": date_str,
+                "outboundDepartureDateTo": date_str,
+                "currency": req.currency,
+                "adultPaxCount": req.adults,
+            }
+            url = f"{RYANAIR_API}/farfnd/v4/oneWayFares"
+
         try:
-            resp = await client.get(
-                f"{RYANAIR_API}/booking/v4/en-gb/availability",
-                params=params,
-            )
+            resp = await client.get(url, params=params)
         except httpx.TimeoutException:
-            logger.warning("Ryanair API timed out (%s→%s)", req.origin, req.destination)
+            logger.warning("Ryanair farfnd timed out (%s→%s)", req.origin, req.destination)
             return self._empty(req)
         except Exception as e:
-            logger.error("Ryanair API error (%s→%s): %s", req.origin, req.destination, e)
+            logger.error("Ryanair farfnd error (%s→%s): %s", req.origin, req.destination, e)
             return self._empty(req)
 
         elapsed = time.monotonic() - t0
 
         if resp.status_code != 200:
             logger.warning(
-                "Ryanair API %s→%s returned %d: %s",
+                "Ryanair farfnd %s→%s returned %d: %s",
                 req.origin, req.destination,
                 resp.status_code,
                 resp.text[:300],
@@ -180,64 +178,64 @@ class RyanairConnectorClient:
         try:
             data = resp.json()
         except Exception:
-            logger.warning("Ryanair returned non-JSON response")
+            logger.warning("Ryanair farfnd returned non-JSON response")
             return self._empty(req)
 
-        currency = data.get("currency", req.currency)
-        trips = data.get("trips", [])
-
-        # Parse outbound and return trip data
-        outbound_flights = []
-        return_flights = []
-
-        for trip in trips:
-            for date_entry in trip.get("dates", []):
-                for flight in date_entry.get("flights", []):
-                    if not flight.get("regularFare"):
-                        continue  # Skip sold-out flights
-                    parsed = self._parse_flight(flight, currency, trip)
-                    if parsed:
-                        # Determine if outbound or return based on trip index
-                        if trip == trips[0]:
-                            outbound_flights.append(parsed)
-                        else:
-                            return_flights.append(parsed)
-
-        # Build offers: if round trip, combine outbound × return (cheapest combos)
         offers = []
-        if req.return_from and return_flights:
-            # Combine best outbound with best return
-            outbound_flights.sort(key=lambda x: x["price"])
-            return_flights.sort(key=lambda x: x["price"])
+        currency = req.currency
 
-            # Take top outbound and return (limit combos to avoid explosion)
-            for ob in outbound_flights[:15]:
-                for rt in return_flights[:10]:
-                    total = ob["price"] + rt["price"]
-                    offer = FlightOffer(
-                        id=f"ry_{hashlib.md5((ob['key'] + rt['key']).encode()).hexdigest()[:12]}",
-                        price=round(total, 2),
-                        currency=currency,
-                        price_formatted=f"{total:.2f} {currency}",
-                        outbound=ob["route"],
-                        inbound=rt["route"],
-                        airlines=["Ryanair"],
-                        owner_airline="FR",
-                        booking_url=self._build_booking_url(req),
-                        is_locked=False,
-                        source="ryanair_direct",
-                        source_tier="free",
-                    )
-                    offers.append(offer)
-        else:
-            # One-way: each outbound is an offer
-            for ob in outbound_flights:
-                offer = FlightOffer(
-                    id=f"ry_{hashlib.md5(ob['key'].encode()).hexdigest()[:12]}",
-                    price=round(ob["price"], 2),
+        for fare_entry in data.get("fares", []):
+            ob_leg = fare_entry.get("outbound")
+            if not ob_leg:
+                continue
+
+            ob_price_obj = ob_leg.get("price", {})
+            ob_price = float(ob_price_obj.get("value", 0))
+            currency = ob_price_obj.get("currencyCode", currency)
+
+            ob_route = self._parse_farfnd_leg(ob_leg)
+            if not ob_route:
+                continue
+
+            if req.return_from:
+                ib_leg = fare_entry.get("inbound")
+                if not ib_leg:
+                    continue
+                ib_price_obj = ib_leg.get("price", {})
+                ib_price = float(ib_price_obj.get("value", 0))
+                ib_route = self._parse_farfnd_leg(ib_leg)
+                if not ib_route:
+                    continue
+
+                total_price = round(ob_price + ib_price, 2)
+                ob_key = ob_leg.get("flightKey", "")
+                ib_key = ib_leg.get("flightKey", "")
+                offer_id = f"ry_{hashlib.md5((ob_key + ib_key).encode()).hexdigest()[:12]}"
+
+                offers.append(FlightOffer(
+                    id=offer_id,
+                    price=total_price,
                     currency=currency,
-                    price_formatted=f"{ob['price']:.2f} {currency}",
-                    outbound=ob["route"],
+                    price_formatted=f"{total_price:.2f} {currency}",
+                    outbound=ob_route,
+                    inbound=ib_route,
+                    airlines=["Ryanair"],
+                    owner_airline="FR",
+                    booking_url=self._build_booking_url(req),
+                    is_locked=False,
+                    source="ryanair_direct",
+                    source_tier="free",
+                ))
+            else:
+                ob_key = ob_leg.get("flightKey", "")
+                offer_id = f"ry_{hashlib.md5(ob_key.encode()).hexdigest()[:12]}"
+
+                offers.append(FlightOffer(
+                    id=offer_id,
+                    price=round(ob_price, 2),
+                    currency=currency,
+                    price_formatted=f"{ob_price:.2f} {currency}",
+                    outbound=ob_route,
                     inbound=None,
                     airlines=["Ryanair"],
                     owner_airline="FR",
@@ -245,14 +243,12 @@ class RyanairConnectorClient:
                     is_locked=False,
                     source="ryanair_direct",
                     source_tier="free",
-                )
-                offers.append(offer)
+                ))
 
-        # Sort by price
         offers.sort(key=lambda o: o.price)
 
         logger.info(
-            "Ryanair direct %s→%s returned %d offers in %.1fs",
+            "Ryanair farfnd %s→%s returned %d offers in %.1fs",
             req.origin, req.destination, len(offers), elapsed,
         )
 
@@ -269,83 +265,38 @@ class RyanairConnectorClient:
             total_results=len(offers),
         )
 
-    def _parse_flight(
-        self, flight: dict, currency: str, trip: dict
-    ) -> Optional[dict]:
-        """Parse a single Ryanair flight entry."""
-        regular_fare = flight.get("regularFare")
-        if not regular_fare:
+    def _parse_farfnd_leg(self, leg: dict) -> Optional[FlightRoute]:
+        """Parse a farfnd leg (outbound or inbound) into a FlightRoute."""
+        dep_airport = leg.get("departureAirport", {})
+        arr_airport = leg.get("arrivalAirport", {})
+        dep_str = leg.get("departureDate", "")
+        arr_str = leg.get("arrivalDate", "")
+        flight_no = leg.get("flightNumber", "")
+
+        dep_dt = self._parse_dt(dep_str)
+        arr_dt = self._parse_dt(arr_str)
+
+        if dep_dt.year == 2000 and arr_dt.year == 2000:
             return None
 
-        # Get total adult fare
-        fares = regular_fare.get("fares", [])
-        total_price = 0.0
-        for fare in fares:
-            total_price += float(fare.get("amount", 0)) * int(fare.get("count", 1))
-
-        if total_price <= 0:
-            return None
-
-        # Parse segments
-        segments_data = flight.get("segments", [])
-        time_arr = flight.get("timeUTC", flight.get("time", []))
-
-        segments = []
-        for seg in segments_data:
-            seg_time = seg.get("time", [])
-            dep_str = seg_time[0] if len(seg_time) > 0 else ""
-            arr_str = seg_time[1] if len(seg_time) > 1 else ""
-
-            dep_dt = self._parse_dt(dep_str)
-            arr_dt = self._parse_dt(arr_str)
-
-            flight_no = seg.get("flightNumber", "").replace(" ", "")
-
-            segments.append(FlightSegment(
-                airline="FR",
-                airline_name="Ryanair",
-                flight_no=flight_no,
-                origin=seg.get("origin", trip.get("origin", "")),
-                destination=seg.get("destination", trip.get("destination", "")),
-                departure=dep_dt,
-                arrival=arr_dt,
-                cabin_class="M",
-            ))
-
-        if not segments:
-            # Fallback: build from trip-level time
-            dep_str = time_arr[0] if len(time_arr) > 0 else ""
-            arr_str = time_arr[1] if len(time_arr) > 1 else ""
-
-            segments.append(FlightSegment(
-                airline="FR",
-                airline_name="Ryanair",
-                flight_no=flight.get("flightNumber", ""),
-                origin=trip.get("origin", ""),
-                destination=trip.get("destination", ""),
-                departure=self._parse_dt(dep_str),
-                arrival=self._parse_dt(arr_str),
-                cabin_class="M",
-            ))
-
-        total_dur = 0
-        if len(segments) >= 1:
-            total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
-
-        route = FlightRoute(
-            segments=segments,
-            total_duration_seconds=max(total_dur, 0),
-            stopovers=max(len(segments) - 1, 0),
+        segment = FlightSegment(
+            airline="FR",
+            airline_name="Ryanair",
+            flight_no=flight_no,
+            origin=dep_airport.get("iataCode", ""),
+            destination=arr_airport.get("iataCode", ""),
+            departure=dep_dt,
+            arrival=arr_dt,
+            cabin_class="M",
         )
 
-        flight_key = flight.get("flightKey", f"{segments[0].flight_no}_{segments[0].departure.isoformat()}")
+        total_dur = max(int((arr_dt - dep_dt).total_seconds()), 0)
 
-        return {
-            "price": total_price,
-            "key": flight_key,
-            "route": route,
-            "seats_left": flight.get("faresLeft", -1),
-        }
+        return FlightRoute(
+            segments=[segment],
+            total_duration_seconds=total_dur,
+            stopovers=0,
+        )
 
     def _parse_dt(self, s: str) -> datetime:
         """Parse Ryanair datetime string."""
@@ -398,7 +349,7 @@ class RyanairBookableConnector:
 
     Uses Playwright. Never submits payment. Safe for testing.
     """
-    from connectors.booking_base import BookableConnector, CheckoutProgress
+    from .booking_base import BookableConnector, CheckoutProgress
 
     AIRLINE_NAME = "Ryanair"
     SOURCE_TAG = "ryanair_direct"
@@ -412,7 +363,7 @@ class RyanairBookableConnector:
         *,
         base_url: str | None = None,
     ):
-        from connectors.booking_base import (
+        from .booking_base import (
             BookableConnector,
             CheckoutProgress,
             dismiss_overlays,

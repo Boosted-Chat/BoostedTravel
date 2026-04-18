@@ -1,15 +1,16 @@
 """
-Air Vanuatu connector — EveryMundo airTRFX fare pages via curl_cffi.
+Air Vanuatu connector — www.airvanuatu.com.
 
 Air Vanuatu (IATA: NF) is the flag carrier of Vanuatu.
 Hub at Port Vila (VLI) with routes to Australia, New Zealand,
 Fiji, New Caledonia, and domestic Vanuatu destinations.
 
-Strategy (curl_cffi required — WAF protections):
-  1. Resolve IATA codes to city slugs via static mapping
-  2. Fetch route page: flights.airvanuatu.com/en-us/flights-from-{origin}-to-{dest}
-  3. Extract __NEXT_DATA__ JSON from <script> tag
-  4. Parse DpaHeadline + StandardFareModule → fares for route pricing data
+Status: fare data source unavailable as of 2026.
+  - flights.airvanuatu.com: DNS dead
+  - fo-syd.ttinteractive.com/Zenith/FrontOffice/AirVanuatu/: Cloudflare WAF blocks
+    all requests (403) even with curl_cffi impersonation
+  - www.airvanuatu.com: works but has no structured fare data
+  Connector returns empty gracefully until a new data source is found.
 """
 
 from __future__ import annotations
@@ -35,8 +36,7 @@ from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://flights.airvanuatu.com"
-_SITE_EDITION = "en-us"
+_BASE = "https://www.airvanuatu.com"
 _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -56,7 +56,7 @@ _IATA_TO_SLUG: dict[str, str] = {
 
 
 class AirVanuatuConnectorClient:
-    """Air Vanuatu (NF) — EveryMundo airTRFX route pages via curl_cffi."""
+    """Air Vanuatu (NF) — data source unavailable; returns empty."""
 
     def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
@@ -65,273 +65,13 @@ class AirVanuatuConnectorClient:
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        ob_result = await self._search_ow(req)
-        if req.return_from and ob_result.total_results > 0:
-            ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
-            ib_result = await self._search_ow(ib_req)
-            if ib_result.total_results > 0:
-                ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
-                ob_result.total_results = len(ob_result.offers)
-        return ob_result
+        return await self._search_ow(req)
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        t0 = time.monotonic()
-
-        origin_slug = _IATA_TO_SLUG.get(req.origin)
-        dest_slug = _IATA_TO_SLUG.get(req.destination)
-        if not origin_slug or not dest_slug:
-            logger.warning("Air Vanuatu: unmapped IATA %s or %s", req.origin, req.destination)
-            return self._empty(req)
-
-        url = f"{_BASE}/{_SITE_EDITION}/flights-from-{origin_slug}-to-{dest_slug}"
-        logger.info("Air Vanuatu: fetching %s", url)
-
-        try:
-            html = await asyncio.get_event_loop().run_in_executor(
-                None, self._fetch_sync, url
-            )
-        except Exception as e:
-            logger.error("Air Vanuatu fetch error: %s", e)
-            return self._empty(req)
-
-        if not html:
-            return self._empty(req)
-
-        offers = self._extract_offers(html, req)
-
-        # RT: fetch reverse route for inbound fares
-        if req.return_from and offers:
-            _rev_url = f"{_BASE}/{_SITE_EDITION}/flights-from-{dest_slug}-to-{origin_slug}"
-            try:
-                _rev_html = await asyncio.get_event_loop().run_in_executor(
-                    None, self._fetch_sync, _rev_url
-                )
-                if _rev_html:
-                    _ib_offers = self._extract_offers(_rev_html, req)
-                    _ib_valid = [o for o in _ib_offers if o.price > 0]
-                    if _ib_valid:
-                        _ib_best = min(_ib_valid, key=lambda o: o.price)
-                        _ret = req.return_from
-                        _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
-                        _nf_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
-                        _ib_seg = FlightSegment(
-                            airline="NF",
-                            airline_name="Air Vanuatu",
-                            flight_no="",
-                            origin=req.destination,
-                            destination=req.origin,
-                            departure=_ret_dt,
-                            arrival=_ret_dt,
-                            duration_seconds=0,
-                            cabin_class=_nf_cabin,
-                        )
-                        _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
-                        for _i, _o in enumerate(offers):
-                            offers[_i] = FlightOffer(
-                                id=f"rt_{_o.id}",
-                                price=round(_o.price + _ib_best.price, 2),
-                                currency=_o.currency,
-                                price_formatted=f"{round(_o.price + _ib_best.price, 2):.2f} {_o.currency}",
-                                outbound=_o.outbound,
-                                inbound=_ib_route,
-                                airlines=_o.airlines,
-                                owner_airline=_o.owner_airline,
-                                booking_url=_o.booking_url,
-                                is_locked=False,
-                                source=_o.source,
-                                source_tier=_o.source_tier,
-                            )
-            except Exception:
-                pass
-        offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
-
-        elapsed = time.monotonic() - t0
-        logger.info(
-            "Air Vanuatu %s→%s: %d offers in %.1fs",
-            req.origin, req.destination, len(offers), elapsed,
-        )
-
-        h = hashlib.md5(
-            f"airvanuatu{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()
-        ).hexdigest()[:12]
-        return FlightSearchResponse(
-            search_id=f"fs_{h}",
-            origin=req.origin,
-            destination=req.destination,
-            currency=offers[0].currency if offers else "USD",
-            offers=offers,
-            total_results=len(offers),
-        )
-
-    def _fetch_sync(self, url: str) -> str | None:
-        sess = creq.Session(impersonate="chrome131", proxies=get_curl_cffi_proxies())
-        try:
-            r = sess.get(url, headers=_HEADERS, timeout=int(self.timeout))
-            if r.status_code != 200:
-                logger.warning("Air Vanuatu: %s returned %d", url, r.status_code)
-                return None
-            return r.text
-        except Exception as e:
-            logger.warning("Air Vanuatu curl_cffi error: %s", e)
-            return None
-
-    def _extract_offers(
-        self, html: str, req: FlightSearchRequest
-    ) -> list[FlightOffer]:
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            html,
-            re.S,
-        )
-        if not m:
-            logger.info("Air Vanuatu: no __NEXT_DATA__ found")
-            return []
-
-        try:
-            nd = json.loads(m.group(1))
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("Air Vanuatu: __NEXT_DATA__ JSON parse failed")
-            return []
-
-        props = nd.get("props", {}).get("pageProps", {})
-        apollo = props.get("apolloState", {}).get("data", {})
-
-        offers: list[FlightOffer] = []
-        seen: set[str] = set()
-
-        # 1) DpaHeadline → lowestFare
-        for key, val in apollo.items():
-            if not isinstance(val, dict) or val.get("__typename") != "DpaHeadline":
-                continue
-            meta = val.get("metaData", {})
-            if not isinstance(meta, dict):
-                continue
-            headline = meta.get("headline", {})
-            if not isinstance(headline, dict):
-                continue
-            lf = headline.get("lowestFare", {})
-            if isinstance(lf, dict) and "__ref" in lf:
-                lf = apollo.get(lf["__ref"], {})
-            if isinstance(lf, dict):
-                offer = self._build_offer_from_fare(lf, req, seen)
-                if offer:
-                    offers.append(offer)
-
-        # 2) StandardFareModule → fares
-        for key, val in apollo.items():
-            if not isinstance(val, dict) or val.get("__typename") != "StandardFareModule":
-                continue
-            fares = val.get("fares", [])
-            for fare_ref in fares:
-                fare = fare_ref
-                if isinstance(fare_ref, dict) and "__ref" in fare_ref:
-                    fare = apollo.get(fare_ref["__ref"], {})
-                if isinstance(fare, dict):
-                    offer = self._build_offer_from_fare(fare, req, seen)
-                    if offer:
-                        offers.append(offer)
-
-        return offers
-
-    def _build_offer_from_fare(
-        self,
-        fare: dict,
-        req: FlightSearchRequest,
-        seen: set[str],
-    ) -> FlightOffer | None:
-        price = fare.get("usdTotalPrice") or fare.get("totalPrice")
-        if not price:
-            return None
-        try:
-            price_f = round(float(price), 2)
-        except (ValueError, TypeError):
-            return None
-        if price_f <= 0:
-            return None
-
-        dep_date_str = fare.get("departureDate", "")[:10]
-        if not dep_date_str:
-            return None
-
-        if fare.get("usdTotalPrice"):
-            currency = "USD"
-        else:
-            currency = fare.get("currencyCode") or "USD"
-
-        origin_code = fare.get("originAirportCode") or req.origin
-        dest_code = fare.get("destinationAirportCode") or req.destination
-        cabin = (fare.get("formattedTravelClass") or "Economy").strip()
-
-        dedup_key = f"{origin_code}_{dest_code}_{dep_date_str}_{price_f}_{cabin}"
-        if dedup_key in seen:
-            return None
-        seen.add(dedup_key)
-
-        try:
-            dep_dt = datetime.strptime(dep_date_str, "%Y-%m-%d")
-        except ValueError:
-            dep_dt = datetime(2000, 1, 1)
-
-        seg = FlightSegment(
-            airline="NF",
-            airline_name="Air Vanuatu",
-            flight_no="",
-            origin=origin_code,
-            destination=dest_code,
-            origin_city=fare.get("originCity", ""),
-            destination_city=fare.get("destinationCity", ""),
-            departure=dep_dt,
-            arrival=dep_dt,
-            duration_seconds=0,
-            cabin_class=cabin.lower(),
-        )
-        route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
-
-        fid = hashlib.md5(
-            f"nf_{origin_code}{dest_code}{dep_date_str}{price_f}{cabin}".encode()
-        ).hexdigest()[:12]
-
-        return FlightOffer(
-            id=f"nf_{fid}",
-            price=price_f,
-            currency=currency,
-            price_formatted=f"{price_f:.2f} {currency}",
-            outbound=route,
-            inbound=None,
-            airlines=["Air Vanuatu"],
-            owner_airline="NF",
-            booking_url=(
-                f"https://book.airvanuatu.com/"
-                f"?from={req.origin}&to={req.destination}"
-                f"&outboundDate={dep_date_str}"
-                f"&adultCount={req.adults or 1}&tripType={'ROUND_TRIP' if req.return_from else 'ONE_WAY'}"
-                + (f"&inboundDate={req.return_from.strftime('%Y-%m-%d')}" if req.return_from else "")
-            ),
-            is_locked=False,
-            source="airvanuatu_direct",
-            source_tier="free",
-        )
-
-
-    @staticmethod
-    def _combine_rt(
-        ob: list[FlightOffer], ib: list[FlightOffer], req,
-    ) -> list[FlightOffer]:
-        combos: list[FlightOffer] = []
-        for o in ob[:15]:
-            for i in ib[:10]:
-                price = round(o.price + i.price, 2)
-                cid = hashlib.md5(f"{o.id}_{i.id}".encode()).hexdigest()[:12]
-                combos.append(FlightOffer(
-                    id=f"rt_airv_{cid}", price=price, currency=o.currency,
-                    outbound=o.outbound, inbound=i.outbound,
-                    airlines=list(dict.fromkeys(o.airlines + i.airlines)),
-                    owner_airline=o.owner_airline,
-                    booking_url=o.booking_url, is_locked=False,
-                    source=o.source, source_tier=o.source_tier,
-                ))
-        combos.sort(key=lambda c: c.price)
-        return combos[:20]
+        # flights.airvanuatu.com DNS dead; fo-syd.ttinteractive.com Zenith is
+        # Cloudflare WAF-blocked (403). No accessible fare source.
+        logger.debug("AirVanuatu: data source unavailable, returning empty")
+        return self._empty(req)
 
     @staticmethod
     def _empty(req: FlightSearchRequest) -> FlightSearchResponse:
@@ -342,7 +82,7 @@ class AirVanuatuConnectorClient:
             search_id=f"fs_{h}",
             origin=req.origin,
             destination=req.destination,
-            currency="USD",
+            currency="AUD",
             offers=[],
             total_results=0,
         )
