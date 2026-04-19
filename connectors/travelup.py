@@ -163,7 +163,7 @@ class TravelupConnectorClient:
                         id=f"tvup_{oid}",
                         price=round(float(price), 2),
                         currency="GBP",
-                        price_formatted=f"{price:.2f} GBP",
+                        price_formatted=f"from {price:.2f} GBP",
                         outbound=route,
                         inbound=None,
                         airlines=["TravelUp"],
@@ -178,6 +178,7 @@ class TravelupConnectorClient:
                         is_locked=False,
                         source="travelup_ota",
                         source_tier="free",
+                        conditions={"price_type": "indicative", "note": "Starting-from price; actual fare may differ at checkout"},
                     ))
 
         except httpx.HTTPError as e:
