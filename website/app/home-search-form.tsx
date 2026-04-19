@@ -490,46 +490,40 @@ export default function HomeSearchForm() {
     query: td(`${d.key}_query`),
   }))
 
-  // Drag-to-scroll
+  // Drag-to-scroll (no pointer capture so child button clicks still fire)
   useEffect(() => {
     const el = rowRef.current
     if (!el) return
-    let isDown = false, startX = 0, scrollLeft = 0, hasDragged = false
-    const onDown = (e: PointerEvent) => {
+    let isDown = false, startX = 0, scrollLeft = 0, totalDrag = 0
+    const onMouseDown = (e: MouseEvent) => {
       isDown = true
-      hasDragged = false
-      startX = e.pageX - el.offsetLeft
+      totalDrag = 0
+      startX = e.pageX
       scrollLeft = el.scrollLeft
-      el.setPointerCapture(e.pointerId)
+      el.style.cursor = 'grabbing'
     }
-    const onUp = (e: PointerEvent) => {
+    const onMouseUp = () => {
       isDown = false
-      el.releasePointerCapture(e.pointerId)
+      el.style.cursor = ''
     }
-    const onMove = (e: PointerEvent) => {
+    const onMouseMove = (e: MouseEvent) => {
       if (!isDown) return
-      const dx = e.pageX - el.offsetLeft - startX
-      if (Math.abs(dx) > 4) {
-        hasDragged = true
-        e.preventDefault()
-        el.scrollLeft = scrollLeft - dx
-      }
+      const dx = e.pageX - startX
+      totalDrag += Math.abs(dx)
+      el.scrollLeft = scrollLeft - dx
     }
     const onClick = (e: MouseEvent) => {
-      if (hasDragged) {
-        e.stopPropagation()
-        e.preventDefault()
-        hasDragged = false
-      }
+      // Block click if user dragged more than 5px total
+      if (totalDrag > 5) e.stopPropagation()
     }
-    el.addEventListener('pointerdown', onDown)
-    el.addEventListener('pointerup', onUp)
-    el.addEventListener('pointermove', onMove)
+    el.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mousemove', onMouseMove)
     el.addEventListener('click', onClick, true)
     return () => {
-      el.removeEventListener('pointerdown', onDown)
-      el.removeEventListener('pointerup', onUp)
-      el.removeEventListener('pointermove', onMove)
+      el.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onMouseMove)
       el.removeEventListener('click', onClick, true)
     }
   }, [])
