@@ -287,17 +287,6 @@ function parseQuery(query: string, locale: string): ParsedQuery {
     remainder: query,
   }
 }
-  
-  return {
-    origin,
-    originMatch,
-    toKeyword,
-    destination,
-    destMatch,
-    hasDate,
-    remainder: query,
-  }
-}
 
 function getSuggestion(query: string, locale: string): string {
   if (!query || query.length < 2) return ''
