@@ -345,8 +345,8 @@ class NorwegianConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
-            # Incapsula JS challenge needs ~5-6s to generate reese84 + visid cookies
-            await asyncio.sleep(6)
+            # Incapsula JS challenge needs ~4-5s to generate reese84 + visid cookies
+            await asyncio.sleep(5)
 
             cookies = await context.cookies()
             if cookies:
@@ -765,6 +765,7 @@ class NorwegianConnectorClient:
                 f"{date_str} {time_str[:2]}:{time_str[2:]}", "%Y-%m-%d %H:%M"
             )
 
+            _dy_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments.append(FlightSegment(
                 airline=carrier,
                 airline_name="Norwegian",
@@ -773,7 +774,7 @@ class NorwegianConnectorClient:
                 destination=dest,
                 departure=dep_dt,
                 arrival=dep_dt,  # Placeholder — fixed by _fix_arrival_times
-                cabin_class="M",
+                cabin_class=_dy_cabin,
             ))
 
         return segments

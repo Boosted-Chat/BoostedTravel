@@ -403,8 +403,8 @@ class AerLingusConnectorClient:
             else:
                 nearby_fares.append(fare)
 
-        # Prefer exact-date fares; fall back to all route fares
-        use_fares = exact_fares if exact_fares else nearby_fares
+        # Only use exact-date fares — never fall back to wrong-date fares
+        use_fares = exact_fares
 
         for fare in use_fares:
             orig = fare.get("originAirportCode", "")

@@ -211,8 +211,7 @@ class SkyExpressConnectorClient:
         search_date = _as_date(travel_date)
         route_key = f"{origin}_{destination}"
         route_data = calendar_payload.get(route_key, {})
-        # Try exact date first, then fall back to cheapest in same month
-        month_best: float | None = None
+        # Only return exact-date match — never fall back to other dates
         for item in route_data.get("data") or []:
             y = int(item.get("year", 0))
             m = int(item.get("month", 0))
@@ -220,13 +219,9 @@ class SkyExpressConnectorClient:
             price = item.get("price")
             if price is None or float(price) <= 0:
                 continue
-            price_value = round(float(price), 2)
             if y == search_date.year and m == search_date.month and d == search_date.day:
-                return price_value
-            if y == search_date.year and m == search_date.month:
-                if month_best is None or price_value < month_best:
-                    month_best = price_value
-        return month_best
+                return round(float(price), 2)
+        return None
 
     @staticmethod
     def _best_departure_time(

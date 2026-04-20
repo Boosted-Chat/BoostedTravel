@@ -101,6 +101,8 @@ class OmanairConnectorClient:
         offers = [
             o for o in (self._build_offer(f, req) for f in fares) if o is not None
         ]
+        _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+        offers = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
         offers.sort(key=lambda o: o.price)
 
         elapsed = time.monotonic() - t0
@@ -124,7 +126,7 @@ class OmanairConnectorClient:
     async def _call_sputnik(self, payload: dict) -> list[dict]:
         try:
             from curl_cffi.requests import AsyncSession
-            async with AsyncSession(impersonate="chrome") as s:
+            async with AsyncSession(impersonate="chrome131") as s:
                 r = await s.post(_SPUTNIK_URL, json=payload, headers=_HEADERS, timeout=self.timeout)
             if r.status_code != 200:
                 logger.warning("OmanAir sputnik: %d %s", r.status_code, r.text[:200])

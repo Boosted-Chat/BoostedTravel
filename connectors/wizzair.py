@@ -231,12 +231,14 @@ class WizzairConnectorClient:
                     ),
                 )
                 if data is not None:
+                    _w6_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                     outbound = self._parse_timetable(
-                        data.get("outboundFlights") or [], req.date_from
+                        data.get("outboundFlights") or [], req.date_from, _w6_cabin
                     )
                     inbound = self._parse_timetable(
                         data.get("returnFlights") or [],
                         req.return_from if req.return_from else req.date_from,
+                        _w6_cabin,
                     )
                     offers = self._build_offers(req, outbound, inbound)
                     elapsed = time.monotonic() - t0
@@ -266,7 +268,7 @@ class WizzairConnectorClient:
     # ------------------------------------------------------------------
 
     def _parse_timetable(
-        self, flights: list[dict], target_date: datetime | object
+        self, flights: list[dict], target_date: datetime | object, cabin_class: str = "economy"
     ) -> list[dict]:
         """Parse timetableV2 flight entries into intermediate format.
 
@@ -313,7 +315,7 @@ class WizzairConnectorClient:
                             destination=arr_station,
                             departure=dep_dt,
                             arrival=dep_dt,  # timetableV2 has no arrival time
-                            cabin_class="M",
+                            cabin_class=cabin_class,
                         )
                     ],
                     total_duration_seconds=0,
@@ -415,6 +417,26 @@ class WizzairConnectorClient:
             total_results=0,
         )
 
+    @staticmethod
+    def _combine_rt(
+        ob: list[FlightOffer], ib: list[FlightOffer], req,
+    ) -> list[FlightOffer]:
+        combos: list[FlightOffer] = []
+        for o in ob[:15]:
+            for i in ib[:10]:
+                price = round(o.price + i.price, 2)
+                cid = hashlib.md5(f"{o.id}_{i.id}".encode()).hexdigest()[:12]
+                combos.append(FlightOffer(
+                    id=f"rt_wizz_{cid}", price=price, currency=o.currency,
+                    outbound=o.outbound, inbound=i.outbound,
+                    airlines=list(dict.fromkeys(o.airlines + i.airlines)),
+                    owner_airline=o.owner_airline,
+                    booking_url=o.booking_url, is_locked=False,
+                    source=o.source, source_tier=o.source_tier,
+                ))
+        combos.sort(key=lambda c: c.price)
+        return combos[:20]
+
 
 # ── Bookable connector (checkout automation) ─────────────────────────────
 
@@ -441,7 +463,7 @@ class WizzairBookableConnector:
         *,
         base_url: str | None = None,
     ):
-        from connectors.booking_base import (
+        from .booking_base import (
             CheckoutProgress,
             dismiss_overlays,
             safe_click,

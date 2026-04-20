@@ -168,6 +168,8 @@ class SASConnectorClient:
                 continue
 
             dep_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(hour=8)
+            # Map cabin code to cabin name for segment
+            _sk_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline="SK",
                 airline_name="SAS",
@@ -176,6 +178,7 @@ class SASConnectorClient:
                 destination=req.destination,
                 departure=dep_dt,
                 arrival=dep_dt,
+                cabin_class=_sk_cabin,
             )
             route = FlightRoute(
                 segments=[seg], total_duration_seconds=0, stopovers=0
@@ -196,6 +199,7 @@ class SASConnectorClient:
                         airline="SK", airline_name="SAS", flight_no="SK",
                         origin=req.destination, destination=req.origin,
                         departure=ib_dt, arrival=ib_dt,
+                        cabin_class=_sk_cabin,
                     )
                     _ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
 

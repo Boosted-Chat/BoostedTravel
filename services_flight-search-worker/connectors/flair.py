@@ -173,7 +173,7 @@ class FlairConnectorClient:
 
             _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
             exact = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
-            offers = exact if exact else offers
+            offers = exact  # Never fall back to wrong-date offers
             elapsed = time.monotonic() - t0
 
             offers.sort(key=lambda o: o.price)

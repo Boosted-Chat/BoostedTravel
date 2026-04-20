@@ -223,6 +223,7 @@ class AirIndiaExpressConnectorClient:
                 f"ix_{req.origin}{req.destination}{date_str}{price}".encode()
             ).hexdigest()[:12]
 
+            _ix_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline="IX",
                 airline_name="Air India Express",
@@ -231,7 +232,7 @@ class AirIndiaExpressConnectorClient:
                 destination=req.destination,
                 departure=dep_dt,
                 arrival=dep_dt,
-                cabin_class="M",
+                cabin_class=_ix_cabin,
             )
             route = FlightRoute(
                 segments=[seg],

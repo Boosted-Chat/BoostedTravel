@@ -30,7 +30,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import acquire_browser_slot, release_browser_slot
+from .browser import acquire_browser_slot, release_browser_slot, patchright_bandwidth_args
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class SamoaAirwaysConnectorClient:
 
         pw = await async_playwright().start()
         try:
-            browser = await pw.chromium.launch(headless=True)
+            browser = await pw.chromium.launch(headless=True, args=patchright_bandwidth_args())
             context = await browser.new_context(
                 viewport={"width": 1366, "height": 768},
                 locale="en-US",

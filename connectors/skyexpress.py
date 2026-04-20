@@ -146,8 +146,9 @@ class SkyExpressConnectorClient:
         outbound_fare = self._match_fare(calendar_payload, req.origin, req.destination, req.date_from)
         if outbound_fare is None:
             return []
+        _gq_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
-        outbound = self._build_route(req.origin, req.destination, req.date_from, routes_payload)
+        outbound = self._build_route(req.origin, req.destination, req.date_from, routes_payload, _gq_cabin)
         inbound = None
         total_price = outbound_fare
 
@@ -155,7 +156,7 @@ class SkyExpressConnectorClient:
             inbound_fare = self._match_fare(calendar_payload, req.destination, req.origin, req.return_from)
             if inbound_fare is None:
                 return []
-            inbound = self._build_route(req.destination, req.origin, req.return_from, routes_payload)
+            inbound = self._build_route(req.destination, req.origin, req.return_from, routes_payload, _gq_cabin)
             total_price += inbound_fare
 
         booking_url = f"{_BASE}/en#sky-search-widget"
@@ -186,6 +187,7 @@ class SkyExpressConnectorClient:
         destination: str,
         travel_date: date | datetime,
         routes_payload: list[dict],
+        cabin_class: str = "economy",
     ) -> FlightRoute:
         search_date = _as_date(travel_date)
         departure = self._best_departure_time(routes_payload, origin, destination, search_date)
@@ -200,7 +202,7 @@ class SkyExpressConnectorClient:
             departure=departure,
             arrival=departure,
             duration_seconds=0,
-            cabin_class="economy",
+            cabin_class=cabin_class,
         )
         return FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
 
@@ -209,8 +211,7 @@ class SkyExpressConnectorClient:
         search_date = _as_date(travel_date)
         route_key = f"{origin}_{destination}"
         route_data = calendar_payload.get(route_key, {})
-        # Try exact date first, then fall back to cheapest in same month
-        month_best: float | None = None
+        # Only return exact-date match — never fall back to other dates
         for item in route_data.get("data") or []:
             y = int(item.get("year", 0))
             m = int(item.get("month", 0))
@@ -218,13 +219,9 @@ class SkyExpressConnectorClient:
             price = item.get("price")
             if price is None or float(price) <= 0:
                 continue
-            price_value = round(float(price), 2)
             if y == search_date.year and m == search_date.month and d == search_date.day:
-                return price_value
-            if y == search_date.year and m == search_date.month:
-                if month_best is None or price_value < month_best:
-                    month_best = price_value
-        return month_best
+                return round(float(price), 2)
+        return None
 
     @staticmethod
     def _best_departure_time(

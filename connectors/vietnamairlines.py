@@ -52,7 +52,7 @@ def _as_date(value):
     return value
 
 
-def _build_route(origin, destination, travel_date):
+def _build_route(origin, destination, travel_date, cabin_class="economy"):
     departure_dt = datetime.combine(travel_date, dt_time(0, 0))
     segment = FlightSegment(
         airline="VN",
@@ -65,7 +65,7 @@ def _build_route(origin, destination, travel_date):
         departure=departure_dt,
         arrival=departure_dt,
         duration_seconds=0,
-        cabin_class="economy",
+        cabin_class=cabin_class,
     )
     return FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
 
@@ -110,6 +110,8 @@ class VietnamAirlinesConnectorClient:
         except Exception as exc:
             logger.warning("Vietnam Airlines search failed for %s->%s: %s", req.origin, req.destination, exc)
 
+        _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+        offers = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
         logger.info(
             "Vietnam Airlines %s->%s: %d offers in %.1fs",
@@ -198,11 +200,12 @@ class VietnamAirlinesConnectorClient:
                 continue
             if card["price"] <= 0:
                 continue
+            _vn_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
-            outbound = _build_route(req.origin, req.destination, card["departure_date"])
+            outbound = _build_route(req.origin, req.destination, card["departure_date"], _vn_cabin)
             inbound = None
             if card.get("return_date"):
-                inbound = _build_route(req.destination, req.origin, card["return_date"])
+                inbound = _build_route(req.destination, req.origin, card["return_date"], _vn_cabin)
 
             price = round(card["price"], 2)
             currency = card.get("currency") or "USD"

@@ -395,8 +395,8 @@ class TapConnectorClient:
             else:
                 fallback_fares.append(fare)
 
-        # Use exact-date fares if available, otherwise use all route fares
-        use_fares = matched_fares if matched_fares else fallback_fares
+        # Only use exact-date fares — never fall back to wrong-date fares
+        use_fares = matched_fares
 
         for fare in use_fares:
             dep_date = fare.get("departureDate", "")

@@ -108,7 +108,7 @@ class AirmauritiusConnectorClient:
             for o in offers
             if o.outbound
             and o.outbound.segments
-            and abs((o.outbound.segments[0].departure.date() - dt).days) <= 60
+            and o.outbound.segments[0].departure.date() == dt
         ]
         offers.sort(key=lambda o: o.price)
 

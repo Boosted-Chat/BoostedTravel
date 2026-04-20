@@ -364,6 +364,7 @@ class FinnairConnectorClient:
                 trip_type = tp.get("tripType", "return")
 
                 # Build a representative segment
+                _ay_cabin = {"Economy": "economy", "PremiumEconomy": "premium_economy", "Business": "business", "First": "first"}.get(travel_class, "economy")
                 dep_dt = datetime.combine(
                     req.date_from, datetime.min.time().replace(hour=8)
                 )
@@ -375,6 +376,7 @@ class FinnairConnectorClient:
                     destination=req.destination,
                     departure=dep_dt,
                     arrival=dep_dt,
+                    cabin_class=_ay_cabin,
                 )
                 route = FlightRoute(
                     segments=[seg], total_duration_seconds=0, stopovers=0
@@ -390,6 +392,7 @@ class FinnairConnectorClient:
                         airline="AY", airline_name="Finnair", flight_no="AY",
                         origin=req.destination, destination=req.origin,
                         departure=ret_dt, arrival=ret_dt,
+                        cabin_class=_ay_cabin,
                     )
                     ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
 

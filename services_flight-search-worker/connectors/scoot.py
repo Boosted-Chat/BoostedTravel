@@ -178,6 +178,8 @@ class ScootConnectorClient:
         # Fast path: Sputnik API (~1s, no browser)
         sputnik_offers = await self._try_sputnik(req)
         if sputnik_offers:
+            _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+            sputnik_offers = [o for o in sputnik_offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
             sputnik_offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
             h = hashlib.md5(f"tr{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
             return FlightSearchResponse(

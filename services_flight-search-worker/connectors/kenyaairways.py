@@ -114,6 +114,8 @@ class KenyaAirwaysConnectorClient:
         except Exception as exc:
             logger.warning("Kenya Airways search failed for %s->%s: %s", req.origin, req.destination, exc)
 
+        _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+        offers = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
         logger.info(
             "KenyaAirways %s->%s: %d offers in %.1fs",

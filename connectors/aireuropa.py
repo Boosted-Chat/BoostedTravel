@@ -149,50 +149,73 @@ async def _reset_profile():
 
 
 async def _dismiss_overlays(page) -> None:
+    """Dismiss cookie consent and language selection dialogs on Air Europa."""
     try:
-        # Handle Air Europa language/country modal — must be dismissed first
-        await page.evaluate("""() => {
-            // Try to close the language modal by clicking the X button or confirm button
-            const langModal = document.querySelector('#dxa-language-modal, common-select-language');
-            if (langModal && langModal.offsetHeight > 0) {
-                // Look for a "Continue" or "Confirm" or close button inside the modal
-                const btns = langModal.querySelectorAll('button');
-                for (const b of btns) {
-                    const t = (b.textContent || '').trim().toLowerCase();
-                    if (t.includes('confirm') || t.includes('continue') || t.includes('accept') || t.includes('save')) {
-                        b.click(); return;
+        # Step 1: Cookie consent dialog — click "Accept all"
+        for _ in range(2):
+            try:
+                accept_btn = page.get_by_role("button", name="Accept all")
+                if await accept_btn.count() > 0:
+                    await accept_btn.click(timeout=3000)
+                    logger.info("AirEuropa: dismissed cookie consent")
+                    await asyncio.sleep(1.0)
+                    break
+            except Exception:
+                pass
+            # Fallback: JS click
+            try:
+                await page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button');
+                    for (const b of btns) {
+                        const t = (b.textContent || '').trim().toLowerCase();
+                        if (t.includes('accept all') && b.offsetHeight > 0) {
+                            b.click(); return true;
+                        }
                     }
-                }
-                // Fallback: click any close/X button
-                const closeBtn = langModal.querySelector('button.close, button[mat-dialog-close], .mat-mdc-dialog-actions button');
-                if (closeBtn) { closeBtn.click(); return; }
-                // Last resort: remove the modal overlay entirely
-                const overlay = document.querySelector('.cdk-overlay-container');
-                if (overlay) overlay.innerHTML = '';
-            }
-        }""")
-        await asyncio.sleep(1.0)
+                    return false;
+                }""")
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
 
-        await page.evaluate("""() => {
-            const accept = document.querySelector('#onetrust-accept-btn-handler');
-            if (accept && accept.offsetHeight > 0) { accept.click(); return; }
-            const btns = document.querySelectorAll('button');
-            for (const b of btns) {
-                const t = b.textContent.trim().toLowerCase();
-                if ((t.includes('accept') || t.includes('agree') || t.includes('got it'))
-                    && b.offsetHeight > 0) { b.click(); return; }
-            }
-        }""")
-        await asyncio.sleep(1.0)
+        # Step 2: Language/country selection dialog — click "Apply"
+        for _ in range(2):
+            try:
+                apply_btn = page.get_by_role("button", name="Apply")
+                if await apply_btn.count() > 0:
+                    await apply_btn.click(timeout=3000)
+                    logger.info("AirEuropa: dismissed language selection")
+                    await asyncio.sleep(1.0)
+                    break
+            except Exception:
+                pass
+            # Fallback: JS click
+            try:
+                await page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button');
+                    for (const b of btns) {
+                        const t = (b.textContent || '').trim().toLowerCase();
+                        if (t === 'apply' && b.offsetHeight > 0) {
+                            b.click(); return true;
+                        }
+                    }
+                    return false;
+                }""")
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        # Step 3: Remove any lingering overlays
         await page.evaluate("""() => {
             document.querySelectorAll(
                 '#onetrust-consent-sdk, .onetrust-pc-dark-filter, ' +
                 '[class*="cookie"], [class*="consent"], ' +
                 '.cdk-overlay-backdrop, .cdk-overlay-dark-backdrop'
             ).forEach(el => el.remove());
+            document.body.style.overflow = 'auto';
         }""")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("AirEuropa: overlay dismiss error: %s", e)
 
 
 class AirEuropaConnectorClient:
@@ -401,8 +424,38 @@ class AirEuropaConnectorClient:
                 pass
 
     async def _fill_airport(self, page, selector: str, iata: str) -> bool:
+        """Fill origin or destination airport field.
+        
+        The Air Europa Angular app has buttons that open dialogs with input fields.
+        selector examples: "input#departure", "input#arrival"
+        """
         try:
+            # First check if there's a button to click (Origin/Destination buttons)
+            is_departure = "departure" in selector
+            button_name = "Origin" if is_departure else "Destination"
+            
+            # Try clicking the button to open the dialog (2026 Angular UI)
+            try:
+                btn = page.get_by_role("button", name=re.compile(f"{button_name}", re.IGNORECASE)).first
+                if await btn.count() > 0:
+                    await btn.click(timeout=3000)
+                    await asyncio.sleep(0.5)
+            except Exception:
+                pass
+            
+            # Now find the input field in the dialog/overlay
             field = page.locator(selector).first
+            if await field.count() == 0:
+                # Try broader selectors
+                for alt_sel in [
+                    f"input#{selector.split('#')[-1]}" if "#" in selector else selector,
+                    "input[placeholder*='Search for city']",
+                    ".cdk-overlay-pane input[type='text']",
+                ]:
+                    field = page.locator(alt_sel).first
+                    if await field.count() > 0:
+                        break
+            
             await field.click(timeout=5000, force=True)
             await asyncio.sleep(0.5)
             await page.keyboard.press("Control+a")
@@ -553,13 +606,14 @@ class AirEuropaConnectorClient:
                 dep_dt = self._parse_dt(dep_info.get("dateTime", ""), req.date_from)
                 arr_dt = self._parse_dt(arr_info.get("dateTime", ""), req.date_from)
 
+                _ux_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
                     airline=airline_code[:2],
                     airline_name=self.AIRLINE_NAME if airline_code == self.IATA else airline_code,
                     flight_no=flight_no,
                     origin=dep_info.get("locationCode", req.origin),
                     destination=arr_info.get("locationCode", req.destination),
-                    departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+                    departure=dep_dt, arrival=arr_dt, cabin_class=_ux_cabin,
                 ))
 
             if not segments:
@@ -702,9 +756,10 @@ class AirEuropaConnectorClient:
         currency = f.get("currency", self.DEFAULT_CURRENCY)
         offer_id = hashlib.md5(f"{self.IATA.lower()}_{req.origin}_{req.destination}_{dep_date}_{flight_no}_{price}".encode()).hexdigest()[:12]
 
+        _ux_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segment = FlightSegment(
             airline=self.IATA, airline_name=self.AIRLINE_NAME, flight_no=flight_no,
-            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class=_ux_cabin,
         )
         route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
         return FlightOffer(

@@ -133,7 +133,7 @@ class EskyConnectorClient:
 
         pw = await async_playwright().start()
         try:
-            from .browser import get_proxy
+            from .browser import get_proxy, patchright_bandwidth_args
             proxy = get_proxy("ESKY_PROXY")
             launch_kw: dict = {
                 "headless": False,
@@ -141,6 +141,7 @@ class EskyConnectorClient:
                 "args": [
                     "--window-position=-2400,-2400",
                     "--window-size=1366,768",
+                    *patchright_bandwidth_args(),
                 ],
             }
             if proxy:

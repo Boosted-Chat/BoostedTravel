@@ -149,7 +149,7 @@ class PeachConnectorClient:
         return self._empty(req)
 
     async def _search_ow_page(self, context, req: FlightSearchRequest) -> list[FlightOffer]:
-        """Run one OW search on a fresh page (3-step Peach booking flow)."""
+        """Run one OW search on a fresh page — getsearch URL auto-redirects to results."""
         page = None
         try:
             page = await context.new_page()
@@ -159,30 +159,9 @@ class PeachConnectorClient:
             logger.info("Peach: navigating to booking URL for %s→%s on %s",
                         req.origin, req.destination, req.date_from.strftime("%Y/%m/%d"))
 
-            # Step 1: Navigate to getsearch URL to set session data (origin/dest/date)
+            # getsearch URL now auto-redirects to /en/flight_search with results
             await page.goto(search_url, wait_until="domcontentloaded",
                             timeout=int(self.timeout * 1000))
-            await asyncio.sleep(1.5)
-
-            # Step 2: Navigate to the search form page (pre-filled from session)
-            await page.goto("https://booking.flypeach.com/en/search",
-                            wait_until="domcontentloaded", timeout=15000)
-            await asyncio.sleep(1.5)
-
-            # Clear any error modals that might block the click
-            await page.evaluate("""() => {
-                document.querySelectorAll('.js_modal_backdrop, .modal_error-c, [class*="modal"]')
-                    .forEach(el => { if (el.offsetHeight > 0) el.remove(); });
-            }""")
-
-            # Step 3: Click "Search by One-way" — reCAPTCHA auto-passes with CDP Chrome
-            try:
-                one_way_link = page.get_by_role("link", name=re.compile(r"Search by One-way", re.IGNORECASE))
-                await one_way_link.first.click(timeout=10000)
-                logger.info("Peach: clicked 'Search by One-way'")
-            except Exception as e:
-                logger.warning("Peach: could not click one-way search (%s)", e)
-                return []
 
             # Wait for flight results page
             try:
@@ -262,31 +241,30 @@ class PeachConnectorClient:
 
             // For each unique flight, find its containing element and extract data
             for (const flightNo of uniqueFlights) {
-                // Find the paragraph element containing this flight number
+                // Find ANY element (div, span, p) containing exactly this flight number
                 const fnEls = [];
-                document.querySelectorAll('p').forEach(p => {
-                    if (p.textContent.trim() === flightNo) fnEls.push(p);
+                document.querySelectorAll('p, div, span').forEach(el => {
+                    if (el.textContent.trim() === flightNo && el.children.length === 0) fnEls.push(el);
                 });
                 if (fnEls.length === 0) continue;
                 const fnEl = fnEls[0];
 
-                // Walk up to find the flight row container
+                // Walk up to find the flight row container (has >=4 children for columns)
                 let row = fnEl;
                 for (let i = 0; i < 10; i++) {
                     if (!row.parentElement) break;
                     row = row.parentElement;
-                    // Flight row has multiple direct children (flight info, times, fares)
                     if (row.children.length >= 4) break;
                 }
 
                 const text = row.innerText || '';
 
-                // Aircraft type: sibling or nearby paragraph with A3XX/B7XX pattern
+                // Aircraft type: nearby leaf element with A3XX/B7XX pattern
                 let aircraft = '';
-                const nearbyPs = row.querySelectorAll('p');
-                nearbyPs.forEach(p => {
-                    const t = p.textContent.trim();
-                    if (/^[AB]\d{3}/.test(t)) aircraft = t;
+                const nearbyEls = row.querySelectorAll('p, div, span');
+                nearbyEls.forEach(el => {
+                    const t = el.textContent.trim();
+                    if (/^[AB]\d{3}/.test(t) && el.children.length === 0) aircraft = t;
                 });
 
                 // Times (HH:MM pattern)
@@ -356,6 +334,7 @@ class PeachConnectorClient:
                 else max(int((arr_dt - dep_dt).total_seconds()), 0)
             )
 
+            _mm_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline="MM",
                 airline_name="Peach Aviation",
@@ -364,7 +343,7 @@ class PeachConnectorClient:
                 destination=req.destination,
                 departure=dep_dt,
                 arrival=arr_dt,
-                cabin_class="M",
+                cabin_class=_mm_cabin,
             )
 
             route = FlightRoute(

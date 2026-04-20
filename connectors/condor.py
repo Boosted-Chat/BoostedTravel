@@ -93,7 +93,7 @@ async def _get_browser():
     global _pw_instance, _browser
     if _browser and _browser.is_connected():
         return _browser
-    from connectors.browser import launch_headed_browser
+    from .browser import launch_headed_browser
     _browser = await launch_headed_browser()
     logger.info("Condor: browser launched for cookie farming")
     return _browser
@@ -323,7 +323,7 @@ class CondorConnectorClient:
                 headers={
                     "Accept": "application/json, text/plain, */*",
                     "Accept-Language": "en-US",
-                    "Referer": "https://www.condor.com/tca/us/flight/search",
+                    "Referer": "https://www.condor.com/en/flights",
                 },
                 timeout=15,
             )
@@ -815,6 +815,7 @@ class CondorConnectorClient:
             if best_ib_flight and best_ib_price < float("inf"):
                 _ib_price = best_ib_price
                 ib_legs = best_ib_flight.get("legs") or [best_ib_flight]
+                _de_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 ib_segs = []
                 for leg in ib_legs:
                     ib_segs.append(FlightSegment(
@@ -824,7 +825,7 @@ class CondorConnectorClient:
                         destination=leg.get("destination", req.origin),
                         departure=self._parse_condor_dt(leg.get("departure", "")),
                         arrival=self._parse_condor_dt(leg.get("arrival", "")),
-                        cabin_class="M",
+                        cabin_class=_de_cabin,
                     ))
                 ib_dur = 0
                 if ib_segs and ib_segs[0].departure and ib_segs[-1].arrival:
@@ -852,6 +853,7 @@ class CondorConnectorClient:
 
         # Build segments from legs (or the flight itself for direct)
         legs = flight.get("legs") or [flight]
+        _de_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segments: list[FlightSegment] = []
         for leg in legs:
             dep_str = leg.get("departure", "")
@@ -864,7 +866,7 @@ class CondorConnectorClient:
                 destination=leg.get("destination", req.destination),
                 departure=self._parse_condor_dt(dep_str),
                 arrival=self._parse_condor_dt(arr_str),
-                cabin_class="M",
+                cabin_class=_de_cabin,
             ))
 
         total_dur = 0

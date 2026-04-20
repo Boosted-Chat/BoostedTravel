@@ -164,6 +164,7 @@ class AirCanadaConnectorClient:
                     if _ib_best < float("inf"):
                         _ret = req.return_from
                         _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                        _ac_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                         _ib_seg = FlightSegment(
                             airline="AC",
                             airline_name="Air Canada",
@@ -173,7 +174,7 @@ class AirCanadaConnectorClient:
                             departure=_ret_dt,
                             arrival=_ret_dt,
                             duration_seconds=0,
-                            cabin_class="economy",
+                            cabin_class=_ac_cabin,
                         )
                         _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
                         for _i, _o in enumerate(offers):
@@ -267,7 +268,7 @@ class AirCanadaConnectorClient:
                 nearby_fares.append(fare)
 
         # Prefer exact-date fares; fall back to all route fares
-        use_fares = exact_fares if exact_fares else nearby_fares
+        use_fares = exact_fares
 
         for fare in use_fares:
             orig = fare.get("originAirportCode", "")

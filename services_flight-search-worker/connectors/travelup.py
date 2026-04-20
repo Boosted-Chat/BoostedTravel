@@ -37,6 +37,8 @@ from .browser import (
     release_browser_slot,
     get_default_proxy,
     proxy_is_configured,
+    patchright_bandwidth_args,
+    apply_cdp_url_blocking,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,7 +189,8 @@ class TravelupConnectorClient:
 
             launch_kwargs: dict = {
                 "headless": False,
-                "args": ["--window-position=-2400,-2400", "--window-size=1366,800"],
+                "args": ["--window-position=-2400,-2400", "--window-size=1366,800",
+                         *patchright_bandwidth_args()],
             }
             if proxy_is_configured():
                 session_id = f"tup{int(time.time())}{attempt}"
@@ -207,6 +210,7 @@ class TravelupConnectorClient:
                 locale="en-GB",
             )
             page = await context.new_page()
+            await apply_cdp_url_blocking(page)
 
             logger.info("TravelUp: navigating to %s", url[:120])
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)

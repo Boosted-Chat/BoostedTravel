@@ -42,7 +42,11 @@ def _leg_key(route: FlightRoute) -> str:
         return ""
     parts = []
     for seg in route.segments:
-        parts.append(f"{seg.flight_no}_{seg.departure.isoformat()}")
+        try:
+            dep_str = seg.departure.isoformat() if seg.departure else "?"
+        except Exception:
+            dep_str = str(seg.departure)
+        parts.append(f"{seg.flight_no}_{dep_str}")
     return "|".join(parts)
 
 
@@ -165,10 +169,11 @@ def build_combos(
                 rt_converted = _fallback_convert(rt.price, rt.currency, target_currency)
                 combo_price = ob_converted + rt_converted
 
-        # Airlines
-        ob_airlines = set(ob.airlines) if ob.airlines else set()
-        rt_airlines = set(rt.airlines) if rt.airlines else set()
-        all_airlines = sorted(ob_airlines | rt_airlines)
+        # Airlines — outbound first, then inbound-only carriers
+        ob_airlines = list(dict.fromkeys(ob.airlines)) if ob.airlines else []
+        rt_airlines = list(dict.fromkeys(rt.airlines)) if rt.airlines else []
+        ob_set = set(ob_airlines)
+        all_airlines = ob_airlines + [a for a in rt_airlines if a not in ob_set]
 
         combo_hash = hashlib.md5(
             f"{ob.id[:8]}{rt.id[:8]}".encode()
@@ -176,6 +181,8 @@ def build_combos(
 
         if same_source:
             # Same-airline round-trip — looks like a native RT offer
+            # Merge original conditions with per-leg booking URLs so both
+            # outbound and return links are available to the consumer.
             _rt_conds = dict(ob.conditions or {})
             _rt_conds["outbound_booking_url"] = ob.booking_url or ""
             _rt_conds["inbound_booking_url"] = rt.booking_url or ""

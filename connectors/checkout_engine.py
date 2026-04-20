@@ -1986,7 +1986,7 @@ class GenericCheckoutEngine:
             # CDP mode: launch real Chrome as subprocess, connect via CDP.
             # This bypasses Kasada KPSDK — Playwright automation hooks are NOT
             # injected into the Chrome binary, so KPSDK JS runs naturally.
-            from .browser import find_chrome, stealth_popen_kwargs
+            from .browser import find_chrome, stealth_popen_kwargs, bandwidth_saving_args, disable_background_networking_args
             chrome_path = find_chrome()
             _udd_name = config.cdp_user_data_dir or f".{config.source_tag}_chrome_data"
             _user_data_dir = os.path.join(
@@ -2004,6 +2004,8 @@ class GenericCheckoutEngine:
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
+                *bandwidth_saving_args(),
+                *disable_background_networking_args(),
                 "about:blank",
             ]
             logger.info("%s checkout: launching CDP Chrome on port %d", config.airline_name, config.cdp_port)
@@ -2037,10 +2039,11 @@ class GenericCheckoutEngine:
             if config.use_chrome_channel:
                 launch_kwargs["channel"] = "chrome"
             if config.use_proxy:
-                from letsfg.connectors.browser import get_default_proxy
+                from letsfg.connectors.browser import get_default_proxy, patchright_bandwidth_args
                 proxy_dict = get_default_proxy()
                 if proxy_dict:
                     launch_kwargs["proxy"] = proxy_dict
+                    launch_args.extend(patchright_bandwidth_args())
                     logger.info("%s checkout: using proxy %s", config.airline_name, proxy_dict.get("server", ""))
 
             browser = await pw.chromium.launch(**launch_kwargs)

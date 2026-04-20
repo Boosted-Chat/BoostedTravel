@@ -178,6 +178,8 @@ class ScootConnectorClient:
         # Fast path: Sputnik API (~1s, no browser)
         sputnik_offers = await self._try_sputnik(req)
         if sputnik_offers:
+            _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+            sputnik_offers = [o for o in sputnik_offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
             sputnik_offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
             h = hashlib.md5(f"tr{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
             return FlightSearchResponse(
@@ -914,6 +916,7 @@ class ScootConnectorClient:
                     best_price = p
         if best_price == float("inf"):
             return None
+        _tr_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         segments: list[FlightSegment] = []
         for seg in journey.get("segments", []):
@@ -930,7 +933,7 @@ class ScootConnectorClient:
                 destination=desig.get("destination", req.destination),
                 departure=self._parse_dt(desig.get("departure", "")),
                 arrival=self._parse_dt(desig.get("arrival", "")),
-                cabin_class="M",
+                cabin_class=_tr_cabin,
             ))
 
         if not segments:
@@ -943,7 +946,7 @@ class ScootConnectorClient:
                     destination=desig.get("destination", req.destination),
                     departure=self._parse_dt(desig.get("departure", "")),
                     arrival=self._parse_dt(desig.get("arrival", "")),
-                    cabin_class="M",
+                    cabin_class=_tr_cabin,
                 ))
             if not segments:
                 return None
@@ -1126,6 +1129,7 @@ class ScootConnectorClient:
 
     def _parse_segments(self, flight: dict, req: FlightSearchRequest) -> list[FlightSegment]:
         segments: list[FlightSegment] = []
+        _tr_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segs_raw = (
             flight.get("Segments") or flight.get("segments")
             or flight.get("Legs") or flight.get("legs")
@@ -1134,7 +1138,7 @@ class ScootConnectorClient:
         if segs_raw and isinstance(segs_raw, list):
             for seg in segs_raw:
                 if isinstance(seg, dict):
-                    segments.append(self._build_segment(seg, req.origin, req.destination))
+                    segments.append(self._build_segment(seg, req.origin, req.destination, _tr_cabin))
             if segments:
                 return segments
 
@@ -1171,7 +1175,7 @@ class ScootConnectorClient:
             airline=carrier, airline_name="Scoot",
             flight_no=flight_no, origin=origin, destination=dest,
             departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=_tr_cabin,
         ))
         return segments
 
@@ -1198,6 +1202,7 @@ class ScootConnectorClient:
                         dest = part
                         if i + 1 < len(parts):
                             arr_str = parts[i + 1].strip()
+            _tr_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             return FlightSegment(
                 airline=carrier, airline_name="Scoot",
                 flight_no=flight_no,
@@ -1205,12 +1210,12 @@ class ScootConnectorClient:
                 destination=dest or req.destination,
                 departure=ScootConnectorClient._parse_dt(dep_str),
                 arrival=ScootConnectorClient._parse_dt(arr_str),
-                cabin_class="M",
+                cabin_class=_tr_cabin,
             )
         except Exception:
             return None
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
+    def _build_segment(self, seg: dict, default_origin: str, default_dest: str, cabin_class: str = "economy") -> FlightSegment:
         dep_str = (seg.get("DepartureDateTime") or seg.get("departureDateTime")
                    or seg.get("departure") or seg.get("STD") or seg.get("std") or "")
         arr_str = (seg.get("ArrivalDateTime") or seg.get("arrivalDateTime")
@@ -1235,7 +1240,7 @@ class ScootConnectorClient:
             airline=carrier, airline_name="Scoot",
             flight_no=flight_no, origin=origin, destination=dest,
             departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=cabin_class,
         )
 
     def _parse_dom_cards(self, cards: list, req: FlightSearchRequest) -> list[FlightOffer]:
@@ -1260,6 +1265,7 @@ class ScootConnectorClient:
         if is_rt and not ib_cards:
             ob_cards = [c for c in cards if c.get("price") and c["price"] > 0]
 
+        _tr_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         # Find cheapest IB for pairing
         ib_route: Optional[FlightRoute] = None
         ib_price = 0.0
@@ -1274,7 +1280,7 @@ class ScootConnectorClient:
                 airline="TR", airline_name="Scoot",
                 flight_no=cheapest_ib.get("flightNo", ""),
                 origin=req.destination, destination=req.origin,
-                departure=ib_dep, arrival=ib_arr, cabin_class="M",
+                departure=ib_dep, arrival=ib_arr, cabin_class=_tr_cabin,
             )
             ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=ib_dur, stopovers=0)
 
@@ -1293,7 +1299,7 @@ class ScootConnectorClient:
                 airline="TR", airline_name="Scoot",
                 flight_no=flight_no or "", origin=req.origin,
                 destination=req.destination,
-                departure=dep_time, arrival=arr_time, cabin_class="M",
+                departure=dep_time, arrival=arr_time, cabin_class=_tr_cabin,
             )
             route = FlightRoute(segments=[seg], total_duration_seconds=total_dur,
                                 stopovers=0)

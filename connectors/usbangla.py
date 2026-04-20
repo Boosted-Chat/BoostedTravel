@@ -33,7 +33,7 @@ from typing import Optional
 from .browser import launch_headed_browser, auto_block_if_proxied
 
 try:
-    from connectors.browser import acquire_browser_slot, release_browser_slot
+    from .browser import acquire_browser_slot, release_browser_slot
 except ImportError:
     async def acquire_browser_slot(): pass
     def release_browser_slot(): pass

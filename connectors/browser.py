@@ -323,188 +323,83 @@ def proxy_is_configured() -> bool:
 
 
 # ── Resource blocking — saves bandwidth when routing through residential proxy ──
-#
-# 2026-04-11: Massive expansion after proxy stats showed 17 GB/day.
-# Top offenders: Opodo (586 MB), eDreams (584 MB), Kayak CDN (475 MB),
-# Trip.com CDNs (95 MB), Turkish (72 MB), China Eastern (90 MB).
-# Root causes: (1) CSS not blocked, (2) consent/privacy managers loaded,
-# (3) RUM/APM scripts, (4) marketing/A-B testing, (5) Chrome background noise.
 
-# Resource types to always block
+# Resource types to always block (saves ~80% bandwidth)
 _BLOCKED_RESOURCE_TYPES = frozenset({
-    "image",       # jpgs, pngs, webp, svg, etc.
+    "image",       # jpgs, pngs, webp, svg, etc. - huge bandwidth hog
     "media",       # videos, audio files
     "font",        # web fonts (woff2, ttf, etc.)
-    "stylesheet",  # CSS — not needed for API interception or DOM scraping
-    "websocket",   # telemetry/tracking sockets
-    "manifest",    # PWA manifests
+    "websocket",   # usually telemetry/tracking sockets
+    "manifest",    # PWA manifests - not needed for scraping
 })
 
-# ── Domain-based blocking ──────────────────────────────────────────────────────
-# Matched against the hostname of each request. If the hostname equals or is a
-# subdomain of any entry, the request is aborted. Uses parent-domain walking
-# for O(d) matching (d = domain depth, typically 2-4) instead of O(n) linear scan.
-_BLOCKED_DOMAINS = frozenset({
-    # ── Chrome background data hogs (7.5+ GB observed!) ──
-    "optimizationguide-pa.googleapis.com",
-    "edgedl.me.gvt1.com",
-    "safebrowsing.googleapis.com",
-    "clients2.googleusercontent.com",
-    "clients2.google.com",
-    "update.googleapis.com",
-    "accounts.google.com",
-    "content-autofill.googleapis.com",
-    "clientservices.googleapis.com",
-    "mtalk.google.com",
-    "android.clients.google.com",
-    "play.googleapis.com",
-    "chromium-i18n.appspot.com",
-    # ── Google analytics / ads / tracking ──
-    "google-analytics.com",
-    "googletagmanager.com",
-    "googlesyndication.com",
-    "googleadservices.com",
-    "doubleclick.net",
-    "pagead2.googlesyndication.com",
-    # ── Facebook ──
-    "connect.facebook.net",
-    # ── Tag management / analytics SDKs (46 MB from proxy data) ──
-    "tagcommander.com",
-    "tiqcdn.com",
-    "adobedtm.com",
-    "demdex.net",
-    # ── RUM / APM (18+ MB from proxy data) ──
-    "go-mpulse.net",
-    "nr-data.net",
-    "newrelic.com",
-    "speedcurve.com",
-    # ── Analytics platforms ──
-    "hotjar.com",
-    "clarity.ms",
-    "fullstory.com",
-    "mixpanel.com",
-    "amplitude.com",
-    "heapanalytics.com",
-    "segment.com",
-    "segment.io",
-    "usefathom.com",
-    "plausible.io",
-    "mouseflow.com",
-    "logrocket.io",
-    "contentsquare.net",
-    "contentsquare.com",
-    # ── Consent / privacy managers (19+ MB from proxy data) ──
-    "onetrust.com",
-    "cookielaw.org",
-    "usercentrics.eu",
-    "privacy-mgmt.com",
-    "sp-prod.net",
-    "trustarc.com",
-    "quantcast.com",
-    "osano.com",
-    "didomi.io",
-    "privacy.opodo.co.uk",
-    "privacy.edreams.com",
-    # ── Ads ──
-    "adsrvr.org",
-    "adnxs.com",
-    "criteo.com",
-    "criteo.net",
-    "taboola.com",
-    "outbrain.com",
-    "amazon-adsystem.com",
-    "ads.linkedin.com",
-    "snap.licdn.com",
-    "ads.twitter.com",
-    # ── Social / attribution tracking ──
-    "appsflyer.com",
-    "branch.io",
-    "pixel.wp.com",
-    "bat.bing.com",
-    "tr.snapchat.com",
-    "analytics.tiktok.com",
-    # ── Chat / support widgets (12+ MB) ──
-    "drift.com",
-    "driftt.com",
-    "crisp.chat",
-    "tawk.to",
-    "livechatinc.com",
-    "intercom.io",
-    "intercomcdn.com",
-    "zdassets.com",
-    "botframework.com",
-    # ── Fraud / bot detection scripts (12+ MB — ironic but not needed) ──
-    "forter.com",
-    "perimeterx.net",
-    "px-cdn.net",
-    "px-cloud.net",
-    # ── Error tracking ──
-    "sentry.io",
-    "sentry-cdn.com",
-    "bugsnag.com",
-    "rollbar.com",
-    # ── Marketing automation ──
-    "marketo.net",
-    "marketo.com",
-    "mktoresp.com",
-    "hs-scripts.com",
-    "hs-analytics.net",
-    "hsforms.net",
-    "hscollectedforms.net",
-    "pardot.com",
-    # ── A/B testing ──
-    "optimizely.com",
-    "abtasty.com",
-    "visualwebsiteoptimizer.com",
-    "launchdarkly.com",
-    "kameleoon.eu",
-    # ── Push notifications ──
-    "onesignal.com",
-    "pushwoosh.com",
-    "subscribers.com",
-    # ── Social widgets ──
-    "platform.twitter.com",
-    "buttons.github.io",
-    "addthis.com",
-    "sharethis.com",
-    # ── Misc data hogs ──
-    "cdn.cookiebot.com",
-    "cookiebot.com",
-    "evidon.com",
-    "sourcepoint.com",
-})
-
-
-def _host_from_url(url: str) -> str:
-    """Extract hostname from URL without urlparse overhead."""
-    try:
-        start = url.index("://") + 3
-        rest = url[start:]
-        slash = rest.find("/")
-        host = rest[:slash] if slash != -1 else rest
-        colon = host.find(":")
-        if colon != -1:
-            host = host[:colon]
-        return host.lower()
-    except (ValueError, IndexError):
-        return ""
-
-
-def _is_blocked_domain(url: str) -> bool:
-    """Check if URL's hostname matches any blocked domain (O(d) lookup)."""
-    host = _host_from_url(url)
-    if not host:
-        return False
-    # Direct match
-    if host in _BLOCKED_DOMAINS:
-        return True
-    # Walk parent domains: cdn.sub.tagcommander.com → sub.tagcommander.com → tagcommander.com
-    parts = host.split(".")
-    for i in range(1, len(parts) - 1):
-        parent = ".".join(parts[i:])
-        if parent in _BLOCKED_DOMAINS:
-            return True
-    return False
+# URL patterns to block (analytics, tracking, ads, social widgets)
+# These are regex-like globs matched against full URL
+_BLOCKED_URL_PATTERNS = (
+    # ── Chrome background data hogs (7.5GB+ observed!) ──
+    "*optimizationguide-pa.googleapis.com*",
+    "*edgedl.me.gvt1.com*",
+    "*safebrowsing.googleapis.com*",
+    "*clients2.googleusercontent.com*",
+    "*clients2.google.com*",
+    "*update.googleapis.com*",
+    "*accounts.google.com*",
+    "*content-autofill.googleapis.com*",
+    "*clientservices.googleapis.com*",
+    # Google analytics/ads
+    "*google-analytics.com*",
+    "*googletagmanager.com*",
+    "*www.googletagmanager.com*",
+    "*googlesyndication.com*",
+    "*googleadservices.com*",
+    "*doubleclick.net*",
+    "*google.com/pagead*",
+    # Facebook
+    "*facebook.com/tr*",
+    "*facebook.net/en_US/fbevents*",
+    "*connect.facebook.net*",
+    # Other analytics
+    "*hotjar.com*",
+    "*clarity.ms*",
+    "*fullstory.com*",
+    "*mixpanel.com*",
+    "*segment.com*",
+    "*amplitude.com*",
+    "*heapanalytics.com*",
+    "*intercom.io*",
+    "*zendesk.com/embeddable*",
+    "*appsflyer.com*",
+    "*branch.io*",
+    # Ads
+    "*adsrvr.org*",
+    "*adnxs.com*",
+    "*criteo.com*",
+    "*taboola.com*",
+    "*outbrain.com*",
+    "*amazon-adsystem.com*",
+    "*ads.linkedin.com*",
+    "*ads.twitter.com*",
+    # Tracking pixels & beacons
+    "*pixel.wp.com*",
+    "*bat.bing.com*",
+    "*tr.snapchat.com*",
+    "*tiktok.com/i18n*",
+    "*cdn.mxpnl.com*",
+    # Social widgets
+    "*platform.twitter.com/widgets*",
+    "*buttons.github.io*",
+    "*addthis.com*",
+    "*sharethis.com*",
+    # Error tracking (not needed for scraping)
+    "*sentry.io*",
+    "*bugsnag.com*",
+    "*rollbar.com*",
+    # Chat widgets
+    "*drift.com*",
+    "*crisp.chat*",
+    "*tawk.to*",
+    "*livechatinc.com*",
+)
 
 
 async def _block_handler(route):
@@ -517,34 +412,40 @@ async def _block_handler(route):
 
 
 async def _aggressive_block_handler(route):
-    """Block by resource type AND domain for maximum bandwidth savings."""
+    """Block by resource type AND URL pattern for maximum bandwidth savings."""
     req = route.request
-
-    # Block by resource type (images, CSS, media, fonts, websockets)
+    url = req.url.lower()
+    
+    # Block by resource type
     if req.resource_type in _BLOCKED_RESOURCE_TYPES:
         await route.abort()
         return
-
-    # Block by domain (analytics, tracking, ads, consent, RUM, etc.)
-    if _is_blocked_domain(req.url):
-        await route.abort()
-        return
-
+    
+    # Block by URL pattern (analytics, tracking, ads)
+    for pattern in _BLOCKED_URL_PATTERNS:
+        # Convert glob to simple check (fnmatch-style)
+        check = pattern.replace("*", "")
+        if check in url:
+            await route.abort()
+            return
+    
     await route.continue_()
 
 
 async def block_heavy_resources(page) -> None:
-    """Block images, video, CSS, and fonts to save bandwidth.
+    """Block images, video, and fonts to save proxy bandwidth.
 
     Call right after ``ctx.new_page()``, before navigation.
+    Keeps scripts & stylesheets intact (anti-bot systems may check them).
     """
     await page.route("**/*", _block_handler)
 
 
 async def block_all_heavy_resources(page) -> None:
-    """Aggressively block images, CSS, fonts, AND tracking/analytics.
-
-    Blocks ~95% of typical page weight while keeping core functionality.
+    """Aggressively block images, video, fonts, AND tracking/analytics.
+    
+    Use this when bandwidth is critical (expensive residential proxies).
+    Blocks ~90% of typical page weight while keeping core functionality.
     """
     await page.route("**/*", _aggressive_block_handler)
 
@@ -552,11 +453,137 @@ async def block_all_heavy_resources(page) -> None:
 async def auto_block_if_proxied(page) -> None:
     """Block heavy resources and bandwidth hogs on every page.
 
-    Always active — blocks images, CSS, fonts, analytics, tracking, ads,
-    consent managers, RUM/APM, marketing, A/B testing, chat widgets, and
-    Chrome background domains. Saves ~95% of page weight.
+    Always blocks Chrome background domains (optimizationguide, safebrowsing,
+    edgedl, googletagmanager, etc.) which burn gigabytes of proxy bandwidth.
+    Also blocks images, video, fonts, analytics, tracking, ads, and social widgets.
     """
     await page.route("**/*", _aggressive_block_handler)
+
+
+# ── CDP-based URL blocking (undetectable by anti-bot) ──────────────────────────
+
+# URL patterns for Network.setBlockedURLs (CDP glob syntax: * = wildcard)
+_CDP_BLOCKED_URL_PATTERNS: list[str] = [
+    # Chrome background data hogs
+    "*optimizationguide-pa.googleapis.com*",
+    "*edgedl.me.gvt1.com*",
+    "*safebrowsing.googleapis.com*",
+    "*clients2.googleusercontent.com*",
+    "*update.googleapis.com*",
+    "*content-autofill.googleapis.com*",
+    "*clientservices.googleapis.com*",
+    "*accounts.google.com*",
+    # Analytics / tracking / ads
+    "*google-analytics.com*",
+    "*googletagmanager.com*",
+    "*googlesyndication.com*",
+    "*googleadservices.com*",
+    "*doubleclick.net*",
+    "*facebook.net*",
+    "*facebook.com/tr*",
+    "*hotjar.com*",
+    "*clarity.ms*",
+    "*fullstory.com*",
+    "*mixpanel.com*",
+    "*segment.com*",
+    "*amplitude.com*",
+    "*heapanalytics.com*",
+    "*sentry.io*",
+    "*intercom.io*",
+    "*criteo.com*",
+    "*taboola.com*",
+    "*outbrain.com*",
+    "*adnxs.com*",
+    "*adsrvr.org*",
+    "*amazon-adsystem.com*",
+    "*ads.linkedin.com*",
+    "*ads.twitter.com*",
+    "*bat.bing.com*",
+    "*tr.snapchat.com*",
+    "*tiktok.com/i18n*",
+    "*drift.com*",
+    "*crisp.chat*",
+    "*tawk.to*",
+    "*zendesk.com/embeddable*",
+    "*appsflyer.com*",
+    "*branch.io*",
+    "*bugsnag.com*",
+    "*rollbar.com*",
+]
+
+
+async def apply_cdp_url_blocking(page) -> bool:
+    """Block analytics/tracking URLs via CDP Network.setBlockedURLs.
+
+    Unlike ``page.route()``, this is **undetectable** by anti-bot systems
+    (Akamai, PerimeterX, Cloudflare) because blocking happens inside
+    Chrome's network stack with no JavaScript roundtrip.
+
+    Safe to call on every page regardless of WAF protection level.
+    Returns True if blocking was applied, False if CDP session unavailable.
+    """
+    try:
+        client = await page.context.new_cdp_session(page)
+        await client.send("Network.setBlockedURLs", {
+            "urls": _CDP_BLOCKED_URL_PATTERNS,
+        })
+        await client.send("Network.enable")
+        return True
+    except Exception:
+        return False
+
+
+# ── Auto-blocking on page creation (env-var gated) ─────────────────────────────
+
+# Auto-enable CDP URL blocking when proxy is configured (saves ~30% bandwidth).
+# Override: LETSFG_AUTO_BLOCK_RESOURCES=0 to disable, =1 to force on.
+_auto_block_env = os.environ.get("LETSFG_AUTO_BLOCK_RESOURCES", "").strip().lower()
+if _auto_block_env in ("0", "false", "no"):
+    _AUTO_BLOCK_RESOURCES = False
+elif _auto_block_env in ("1", "true", "yes"):
+    _AUTO_BLOCK_RESOURCES = True
+else:
+    # Default: ON when proxy is configured (residential proxy = expensive bandwidth)
+    _AUTO_BLOCK_RESOURCES = proxy_is_configured()
+
+
+def _wrap_context_for_blocking(ctx):
+    """Wrap a BrowserContext so new pages auto-apply CDP URL blocking."""
+    if getattr(ctx, "_auto_block_wrapped", False):
+        return
+    _orig_new_page = ctx.new_page
+
+    async def _new_page_with_blocking(**kwargs):
+        page = await _orig_new_page(**kwargs)
+        await apply_cdp_url_blocking(page)
+        return page
+
+    ctx.new_page = _new_page_with_blocking
+    ctx._auto_block_wrapped = True
+
+
+def _wrap_browser_for_blocking(browser):
+    """Wrap browser so all contexts/pages get auto CDP URL blocking.
+
+    Applied when ``LETSFG_AUTO_BLOCK_RESOURCES=1`` is set. Uses CDP
+    Network.setBlockedURLs (undetectable) instead of page.route (detectable).
+    """
+    if getattr(browser, "_auto_block_wrapped", False):
+        return browser
+
+    for ctx in browser.contexts:
+        _wrap_context_for_blocking(ctx)
+
+    _orig_new_context = browser.new_context
+
+    async def _new_context_with_blocking(**kwargs):
+        ctx = await _orig_new_context(**kwargs)
+        _wrap_context_for_blocking(ctx)
+        return ctx
+
+    browser.new_context = _new_context_with_blocking
+    browser._auto_block_wrapped = True
+    return browser
 
 
 # ── Anti-bot stealth injection ──────────────────────────────────────────────────
@@ -798,6 +825,40 @@ def stealth_position_arg() -> list[str]:
     return ["--headless=new", "--disable-http2", "--window-position=-2400,-2400"]
 
 
+def bandwidth_saving_args() -> list[str]:
+    """Chrome args to block images and web fonts at the engine level.
+
+    Saves ~20-30% proxy bandwidth per page load. Images are never needed
+    for flight search scraping. Web fonts fall back to system fonts.
+
+    These are Blink engine-level flags — zero overhead, undetectable by
+    anti-bot systems (unlike page.route interception).
+    """
+    return [
+        "--blink-settings=imagesEnabled=false",
+        "--disable-remote-fonts",
+    ]
+
+
+def patchright_bandwidth_args() -> list[str]:
+    """Chrome launch args for patchright connectors to save proxy bandwidth.
+
+    Combines image/font blocking (Blink engine level) with background
+    networking suppression. All undetectable by anti-bot systems.
+
+    Usage in patchright connectors::
+
+        from .browser import patchright_bandwidth_args
+        browser = await pw.chromium.launch(
+            args=[*patchright_bandwidth_args(), ...],
+        )
+    """
+    return [
+        *bandwidth_saving_args(),
+        *disable_background_networking_args(),
+    ]
+
+
 def disable_background_networking_args() -> list[str]:
     """
     Chrome args to disable ALL background networking.
@@ -956,6 +1017,7 @@ async def launch_cdp_chrome(
         "--disable-blink-features=AutomationControlled",
         *stealth_args(),
         *proxy_chrome_args(),
+        *bandwidth_saving_args(),
         *disable_background_networking_args(),
         *(extra_args or []),
         start_url,
@@ -979,6 +1041,8 @@ async def connect_cdp(port: int):
     pw = await async_playwright().start()
     _launched_pw_instances.append(pw)
     browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+    if _AUTO_BLOCK_RESOURCES:
+        _wrap_browser_for_blocking(browser)
     return browser
 
 
@@ -1006,6 +1070,8 @@ async def get_or_launch_cdp(
         browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
         _launched_pw_instances.append(pw)
         logger.info("Connected to existing Chrome on port %d", port)
+        if _AUTO_BLOCK_RESOURCES:
+            _wrap_browser_for_blocking(browser)
         return browser, None
     except Exception:
         if pw:
@@ -1024,6 +1090,8 @@ async def get_or_launch_cdp(
     pw = await async_playwright().start()
     _launched_pw_instances.append(pw)
     browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+    if _AUTO_BLOCK_RESOURCES:
+        _wrap_browser_for_blocking(browser)
     return browser, proc
 
 
@@ -1073,6 +1141,8 @@ async def launch_headed_browser(
         browser = await pw.chromium.launch(**launch_kw)
     logger.info("Browser launched (channel=%s, headless=%s, proxy=%s)",
                 channel, headless, bool(proxy))
+    if _AUTO_BLOCK_RESOURCES:
+        _wrap_browser_for_blocking(browser)
     return browser
 
 

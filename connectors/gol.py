@@ -104,7 +104,7 @@ async def _ensure_persistent_page():
 
     logger.info("GOL: loading Angular SPA...")
     await page.goto(f"{_GOL_BASE}/compra", wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(6)
+    await asyncio.sleep(3)
 
     # Dismiss LGPD/cookie overlays
     await _dismiss_cookies(page)
@@ -232,13 +232,15 @@ class GolConnectorClient:
                 "when": {"date": f"{ret_date}T00:00:00"},
             })
 
+        # Map cabin code to GOL cabin class (ECONOMY, EXECUTIVA)
+        _g3_cabin = {"M": "ECONOMY", "W": "ECONOMY", "C": "EXECUTIVA", "F": "EXECUTIVA"}.get(req.cabin_class or "M", "ECONOMY")
         search_payload = {
             "promocodebanner": False,
             "destinationCountryToUSA": False,
             "lastSearchCourtesyTicket": False,
             "passengerCourtesyType": None,
             "airSearch": {
-                "cabinClass": None,
+                "cabinClass": _g3_cabin,
                 "currency": None,
                 "pointOfSale": "BR",
                 "awardBooking": False,
@@ -344,13 +346,15 @@ class GolConnectorClient:
             "to": {"code": req.origin, "useNearbyLocations": False},
             "when": {"date": f"{ret_date}T00:00:00"},
         }]
+        # Map cabin code to GOL cabin class (ECONOMY, EXECUTIVA)
+        _g3_cabin_ib = {"M": "ECONOMY", "W": "ECONOMY", "C": "EXECUTIVA", "F": "EXECUTIVA"}.get(req.cabin_class or "M", "ECONOMY")
         search_payload = {
             "promocodebanner": False,
             "destinationCountryToUSA": False,
             "lastSearchCourtesyTicket": False,
             "passengerCourtesyType": None,
             "airSearch": {
-                "cabinClass": None,
+                "cabinClass": _g3_cabin_ib,
                 "currency": None,
                 "pointOfSale": "BR",
                 "awardBooking": False,
@@ -457,6 +461,8 @@ class GolConnectorClient:
         if best_price == float("inf") or best_price <= 0:
             return None
 
+        # Map cabin code to cabin name for segment
+        _g3_cabin_name = {"M": "economy", "W": "economy", "C": "business", "F": "business"}.get(req.cabin_class or "M", "economy")
         segments: list[FlightSegment] = []
         for seg in segments_raw:
             segments.append(FlightSegment(
@@ -468,7 +474,7 @@ class GolConnectorClient:
                 departure=self._parse_dt(seg.get("departure", "")),
                 arrival=self._parse_dt(seg.get("arrival", "")),
                 duration_seconds=seg.get("duration", 0) * 60,
-                cabin_class="M",
+                cabin_class=_g3_cabin_name,
             ))
 
         if not segments:

@@ -84,7 +84,7 @@ async def _get_browser():
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
-        from connectors.browser import launch_headed_browser
+        from .browser import launch_headed_browser
         _browser = await launch_headed_browser()
         logger.info("Zipair: browser launched")
         return _browser
@@ -322,6 +322,7 @@ class ZipairConnectorClient:
         target_date = (req.return_from if is_return and req.return_from else req.date_from).strftime("%Y-%m-%d")
         booking_url = self._build_booking_url(req)
         offers: list[FlightOffer] = []
+        _zg_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         for itinerary in raw_flights:
             if not isinstance(itinerary, list) or not itinerary:
@@ -337,7 +338,7 @@ class ZipairConnectorClient:
             segments: list[FlightSegment] = []
             all_fares: list[dict] = []
             for seg in itinerary:
-                segments.append(self._build_segment(seg))
+                segments.append(self._build_segment(seg, _zg_cabin))
                 all_fares.extend(seg.get("fares", []))
 
             if not segments or not all_fares:
@@ -410,7 +411,7 @@ class ZipairConnectorClient:
 
         return best_price, best_cabin
 
-    def _build_segment(self, seg: dict) -> FlightSegment:
+    def _build_segment(self, seg: dict, cabin_class: str = "economy") -> FlightSegment:
         times = seg.get("scheduledDepartureArrivalDateTime", {})
         dep_str = times.get("departureDate", "")
         arr_str = times.get("arrivalDate", "")
@@ -427,7 +428,7 @@ class ZipairConnectorClient:
             destination=seg.get("destination", ""),
             departure=self._parse_dt(dep_str),
             arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=cabin_class,
         )
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:

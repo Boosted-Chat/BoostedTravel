@@ -207,7 +207,7 @@ async def _ensure_warm_page():
             wait_until="domcontentloaded",
             timeout=30000,
         )
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
 
         # Create API session
         sess = await _warm_page.evaluate("""async () => {
@@ -530,6 +530,7 @@ class FlynasConnectorClient:
             carrier = leg.get("carrierCode") or leg.get("operatedBy") or "XY"
             if flight_no and not flight_no.startswith(("XY", "xy")):
                 flight_no = f"XY{flight_no}"
+            _xy_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments.append(FlightSegment(
                 airline=carrier,
                 airline_name="flynas",
@@ -538,11 +539,12 @@ class FlynasConnectorClient:
                 destination=leg.get("destination", ""),
                 departure=self._parse_dt(leg.get("departureDate", "")),
                 arrival=self._parse_dt(leg.get("arrivalDate", "")),
-                cabin_class="M",
+                cabin_class=_xy_cabin,
             ))
 
         if not segments:
             # Fallback: build from flight-level data
+            _xy_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             flight_no = str(flight.get("flightNumber", "")).strip()
             if flight_no and not flight_no.startswith(("XY", "xy")):
                 flight_no = f"XY{flight_no}"
@@ -554,7 +556,7 @@ class FlynasConnectorClient:
                 destination=flight.get("destination", ""),
                 departure=self._parse_dt(flight.get("departureDate", "")),
                 arrival=self._parse_dt(flight.get("arrivalDate", "")),
-                cabin_class="M",
+                cabin_class=_xy_cabin,
             ))
 
         total_dur = 0

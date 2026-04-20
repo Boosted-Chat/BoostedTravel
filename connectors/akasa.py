@@ -331,9 +331,10 @@ class AkasaConnectorClient:
 
         if best_price == float("inf") or best_price <= 0:
             return None
+        _qp_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         # Parse segments
-        segments = self._parse_nsk_segments(journey.get("segments", []))
+        segments = self._parse_nsk_segments(journey.get("segments", []), _qp_cabin)
         if not segments:
             return None
 
@@ -354,9 +355,9 @@ class AkasaConnectorClient:
         journey_key = journey.get("journeyKey", "")
         offer_key = f"{journey_key}_{best_price}"
 
-        # Map productClass to cabin: EC=Economy, AV=Akasa Value (premium economy equivalent)
-        cabin_map = {"EC": "M", "AV": "W", "NB": "M", "LB": "M"}
-        cabin = cabin_map.get(best_product, "M")
+        # Map productClass to cabin name: EC=Economy, AV=Akasa Value (premium economy equivalent)
+        cabin_map = {"EC": "economy", "AV": "premium_economy", "NB": "economy", "LB": "economy"}
+        cabin = cabin_map.get(best_product, "economy")
         for seg in segments:
             seg.cabin_class = cabin
 
@@ -375,7 +376,7 @@ class AkasaConnectorClient:
             source_tier="free",
         )
 
-    def _parse_nsk_segments(self, segments_raw: list) -> list[FlightSegment]:
+    def _parse_nsk_segments(self, segments_raw: list, cabin_class: str = "economy") -> list[FlightSegment]:
         """Parse Navitaire segments.
 
         Each segment has:
@@ -404,7 +405,7 @@ class AkasaConnectorClient:
                 destination=dest,
                 departure=dep_dt,
                 arrival=arr_dt,
-                cabin_class="M",
+                cabin_class=cabin_class,
             ))
 
         return segments

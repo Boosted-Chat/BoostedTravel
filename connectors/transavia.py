@@ -167,7 +167,7 @@ async def _get_browser():
         )
         _launched_procs.append(_chrome_proc)
         # Cloudflare resolves when Chrome loads the page natively
-        await asyncio.sleep(12.0)
+        await asyncio.sleep(5.0)
 
         pw = await async_playwright().start()
         _pw_instance = pw
@@ -989,11 +989,12 @@ class TransaviaConnectorClient:
         if not duration_seconds and dep_dt.year > 2000 and arr_dt.year > 2000:
             duration_seconds = int((arr_dt - dep_dt).total_seconds())
 
+        _hv_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segment = FlightSegment(
             airline=carrier, airline_name="Transavia", flight_no=flight_no,
             origin=origin, destination=destination,
             departure=dep_dt, arrival=arr_dt,
-            cabin_class="M",
+            cabin_class=_hv_cabin,
         )
         route = FlightRoute(
             segments=[segment],
@@ -1034,13 +1035,14 @@ class TransaviaConnectorClient:
 
         cur = flight.get("currency") or currency
 
+        _hv_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
         segments: list[FlightSegment] = []
         if segments_raw and isinstance(segments_raw, list):
             for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
+                segments.append(self._build_segment(seg, req.origin, req.destination, _hv_cabin))
         else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
+            segments.append(self._build_segment(flight, req.origin, req.destination, _hv_cabin))
         if not segments:
             return None
 
@@ -1073,7 +1075,7 @@ class TransaviaConnectorClient:
             source="transavia_direct", source_tier="free",
         )
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
+    def _build_segment(self, seg: dict, default_origin: str, default_dest: str, cabin_class: str = "economy") -> FlightSegment:
         dep_str = seg.get("departure") or seg.get("departureDate") or seg.get("departureDateTime") or seg.get("departureTime") or seg.get("std") or ""
         arr_str = seg.get("arrival") or seg.get("arrivalDate") or seg.get("arrivalDateTime") or seg.get("arrivalTime") or seg.get("sta") or ""
         flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("flightNo") or seg.get("number") or "").replace(" ", "")
@@ -1088,7 +1090,7 @@ class TransaviaConnectorClient:
             airline=carrier_code, airline_name="Transavia", flight_no=flight_no,
             origin=origin, destination=destination,
             departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=cabin_class,
         )
 
     @staticmethod

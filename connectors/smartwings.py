@@ -137,7 +137,7 @@ async def _get_browser():
         _launched_procs.append(_chrome_proc)
         # Cloudflare Turnstile resolves when Chrome loads the page natively
         # BEFORE CDP/Playwright attaches — give it time.
-        await asyncio.sleep(12.0)
+        await asyncio.sleep(5.0)
 
         pw = await async_playwright().start()
         _pw_instance = pw
@@ -301,7 +301,7 @@ class SmartwingsConnectorClient:
             try:
                 await page.wait_for_url("**/book.smartwings.com/**", timeout=20000)
             except Exception:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
                 if "book.smartwings.com" not in page.url:
                     logger.warning("Smartwings: did not redirect to booking page")
                     return self._empty(req)
@@ -313,7 +313,7 @@ class SmartwingsConnectorClient:
                     timeout=15000,
                 )
             except Exception:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
 
             # The date should already be selected; click continue
             try:
@@ -329,7 +329,7 @@ class SmartwingsConnectorClient:
                     ".bound-table-flightline", timeout=20000,
                 )
             except Exception:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
 
             # ── Step 9: Parse flight results from DOM ──
             offers = await self._parse_flights_page(page, req)
@@ -511,6 +511,7 @@ class SmartwingsConnectorClient:
             dur_secs = self._parse_duration(duration_str)
             if dur_secs == 0 and dep_dt and arr_dt:
                 dur_secs = int((arr_dt - dep_dt).total_seconds())
+            _qs_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
             segment = FlightSegment(
                 airline="QS",
@@ -521,7 +522,7 @@ class SmartwingsConnectorClient:
                 departure=dep_dt,
                 arrival=arr_dt,
                 duration_seconds=dur_secs,
-                cabin_class="economy",
+                cabin_class=_qs_cabin,
             )
             route = FlightRoute(
                 segments=[segment],

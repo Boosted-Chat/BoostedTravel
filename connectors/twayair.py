@@ -413,19 +413,19 @@ class TwayAirConnectorClient:
                 timeout=int(self.timeout * 1000),
             )
             # Akamai sensor needs time to run — too short causes 403 on AJAX
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(4.0)
 
             title = await page.title()
             if "denied" in title.lower():
                 # Akamai interstitial — retry after waiting
                 logger.info("TwayAir: Akamai challenge on first load, retrying...")
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
                 await page.goto(
                     "https://www.twayair.com/app/main",
                     wait_until="domcontentloaded",
                     timeout=int(self.timeout * 1000),
                 )
-                await asyncio.sleep(8)
+                await asyncio.sleep(4)
                 title = await page.title()
                 if "denied" in title.lower():
                     logger.warning("TwayAir [CDP]: Akamai blocked after retry (title=%r)", title)
@@ -583,6 +583,7 @@ class TwayAirConnectorClient:
             except ValueError:
                 continue
 
+            _tw_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segment = FlightSegment(
                 airline="TW",
                 airline_name="T'way Air",
@@ -591,7 +592,7 @@ class TwayAirConnectorClient:
                 destination=arr_airport,
                 departure=dep_dt,
                 arrival=dep_dt,
-                cabin_class="M",
+                cabin_class=_tw_cabin,
             )
 
             route = FlightRoute(

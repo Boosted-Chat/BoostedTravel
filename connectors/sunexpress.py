@@ -544,12 +544,13 @@ class SunExpressConnectorClient:
             if duration_sec == 0 and dep_dt and arr_dt:
                 duration_sec = max(int((arr_dt - dep_dt).total_seconds()), 0)
 
+            _xq_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segment = FlightSegment(
                 airline="XQ", airline_name="SunExpress",
                 flight_no=flight_no,
                 origin=dep_iata, destination=arr_iata,
                 departure=dep_dt, arrival=arr_dt,
-                cabin_class="M",
+                cabin_class=_xq_cabin,
             )
 
             route = FlightRoute(

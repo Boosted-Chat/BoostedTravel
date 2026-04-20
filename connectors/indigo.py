@@ -138,7 +138,7 @@ async def _get_browser():
             pass
 
         # Launch real Chrome subprocess
-        from connectors.browser import find_chrome
+        from .browser import find_chrome
 
         chrome = find_chrome()
         os.makedirs(_USER_DATA_DIR, exist_ok=True)
@@ -299,7 +299,7 @@ class IndiGoConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=int(self.timeout * 1000),
             )
-            await asyncio.sleep(6.0)
+            await asyncio.sleep(3.0)
 
             await self._dismiss_cookies(page)
             await asyncio.sleep(0.5)
@@ -807,6 +807,7 @@ class IndiGoConnectorClient:
             return None
 
         # Build segments from journey.segments[]
+        _6e_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segments_raw = journey.get("segments") or []
         segments: list[FlightSegment] = []
         for seg in segments_raw:
@@ -820,7 +821,7 @@ class IndiGoConnectorClient:
                 destination=desig.get("destination") or req.destination,
                 departure=self._parse_dt(desig.get("departure") or ""),
                 arrival=self._parse_dt(desig.get("arrival") or ""),
-                cabin_class="M",
+                cabin_class=_6e_cabin,
             ))
         if not segments:
             # Fallback: use journey-level designator
@@ -831,7 +832,7 @@ class IndiGoConnectorClient:
                 destination=desig.get("destination") or req.destination,
                 departure=self._parse_dt(desig.get("departure") or ""),
                 arrival=self._parse_dt(desig.get("arrival") or ""),
-                cabin_class="M",
+                cabin_class=_6e_cabin,
             ))
 
         total_dur = 0

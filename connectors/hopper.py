@@ -283,7 +283,7 @@ class HopperConnectorClient:
             brand_name = fare_slice.get("fareBrandName", "")
 
             # Build outbound route
-            outbound_route = self._build_route(outbound_slice, airline_map)
+            outbound_route = self._build_route(outbound_slice, airline_map, req.cabin_class or "M")
             if not outbound_route:
                 continue
 
@@ -300,7 +300,7 @@ class HopperConnectorClient:
             if inbound_slice_id:
                 inbound_slice = slice_map.get(inbound_slice_id)
                 if inbound_slice:
-                    inbound_route = self._build_route(inbound_slice, airline_map)
+                    inbound_route = self._build_route(inbound_slice, airline_map, req.cabin_class or "M")
                     if inbound_route and inbound_route.stopovers > req.max_stopovers:
                         continue
 
@@ -361,8 +361,9 @@ class HopperConnectorClient:
         """Map slice ID to slice data."""
         return {s["id"]: s for s in slices if "id" in s}
 
-    def _build_route(self, sl: dict, airline_map: dict) -> Optional[FlightRoute]:
+    def _build_route(self, sl: dict, airline_map: dict, cabin_code: str = "M") -> Optional[FlightRoute]:
         """Build a FlightRoute from a Hopper slice."""
+        _hp_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(cabin_code, "economy")
         segments = []
         for seg in sl.get("segments", []):
             airline_code = seg.get("marketingAirline", {}).get("value", "")
@@ -378,7 +379,7 @@ class HopperConnectorClient:
                 destination=seg.get("destinationAirportCode", {}).get("value", ""),
                 departure=self._parse_dt(dep_str),
                 arrival=self._parse_dt(arr_str),
-                cabin_class="M",
+                cabin_class=_hp_cabin,
             ))
 
         if not segments:

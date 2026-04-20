@@ -261,6 +261,8 @@ class AirArabiaConnectorClient:
                         rt_combined.sort(key=lambda o: o.price)
                         unique = rt_combined[:50]
 
+        _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+        unique = [o for o in unique if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
         unique.sort(key=lambda o: o.price)
 
         logger.info(
@@ -332,6 +334,7 @@ class AirArabiaConnectorClient:
                     delta = arr_dt - dep_dt
                     duration_secs = max(int(delta.total_seconds()), 0)
 
+                _g9_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segment = FlightSegment(
                     airline="G9",
                     airline_name="Air Arabia",
@@ -341,7 +344,7 @@ class AirArabiaConnectorClient:
                     departure=dep_dt,
                     arrival=arr_dt,
                     duration_seconds=duration_secs,
-                    cabin_class="economy",
+                    cabin_class=_g9_cabin,
                 )
 
                 route = FlightRoute(

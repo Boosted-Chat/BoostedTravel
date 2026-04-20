@@ -427,6 +427,7 @@ class KuwaitAirwaysConnectorClient:
             if not isinstance(segments_data, list):
                 segments_data = [flight]
 
+            _ku_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments = []
             for seg in segments_data:
                 dep_str = seg.get("departure") or seg.get("departureTime") or seg.get("depTime") or ""
@@ -442,7 +443,7 @@ class KuwaitAirwaysConnectorClient:
                     airline=airline_code[:2], airline_name=self.AIRLINE_NAME if airline_code == self.IATA else airline_code,
                     flight_no=flight_no or self.IATA, origin=seg.get("origin") or seg.get("departureAirport") or req.origin,
                     destination=seg.get("destination") or seg.get("arrivalAirport") or req.destination,
-                    departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+                    departure=dep_dt, arrival=arr_dt, cabin_class=_ku_cabin,
                 ))
 
             if not segments:
@@ -607,10 +608,11 @@ class KuwaitAirwaysConnectorClient:
         flight_no = f.get("flightNo", self.IATA)
         currency = f.get("currency", self.DEFAULT_CURRENCY)
         offer_id = hashlib.md5(f"{self.IATA.lower()}_{req.origin}_{req.destination}_{dep_date}_{flight_no}_{price}".encode()).hexdigest()[:12]
+        _ku_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         segment = FlightSegment(
             airline=self.IATA, airline_name=self.AIRLINE_NAME, flight_no=flight_no,
-            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class=_ku_cabin,
         )
         route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
         return FlightOffer(

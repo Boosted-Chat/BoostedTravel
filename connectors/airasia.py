@@ -332,7 +332,7 @@ class AirAsiaConnectorClient:
                     destination=seg_des.get("arrivalStation", req.destination),
                     departure=self._parse_dt(seg_des.get("departureTime", "")),
                     arrival=self._parse_dt(seg_des.get("arrivalTime", "")),
-                    cabin_class="M",
+                    cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
                 ))
         else:
             segments.append(FlightSegment(
@@ -341,7 +341,7 @@ class AirAsiaConnectorClient:
                 destination=designator.get("arrivalStation", req.destination),
                 departure=self._parse_dt(designator.get("departureTime", "")),
                 arrival=self._parse_dt(designator.get("arrivalTime", "")),
-                cabin_class="M",
+                cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
             ))
 
         total_dur = 0
@@ -419,18 +419,19 @@ class AirAsiaConnectorClient:
                     pass
         return best if best < float("inf") else None
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
+    def _build_segment(self, seg: dict, default_origin: str, default_dest: str, cabin_class: str = "M") -> FlightSegment:
         dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
         arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
         flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
         origin = seg.get("origin") or seg.get("departureStation") or seg.get("departureAirport") or default_origin
         destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("arrivalAirport") or default_dest
         carrier = seg.get("carrierCode") or seg.get("carrier") or seg.get("airline") or "AK"
+        _ak_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(cabin_class, "economy")
         return FlightSegment(
             airline=carrier, airline_name="AirAsia", flight_no=flight_no,
             origin=origin, destination=destination,
             departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=_ak_cabin,
         )
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:

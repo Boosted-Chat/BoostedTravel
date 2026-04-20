@@ -312,6 +312,10 @@ class EasyjetConnectorClient:
         """
         t0 = time.monotonic()
 
+        # Reset Chrome profile for fresh session (Akamai tracks sessions)
+        await _reset_chrome_profile()
+        await asyncio.sleep(0.5)
+
         context = await _get_context()
         page = await context.new_page()
         await inject_stealth_js(page)
@@ -354,14 +358,15 @@ class EasyjetConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=int(self.timeout * 1000),
             )
-            await asyncio.sleep(2.0)
+            # More human-like wait
+            await asyncio.sleep(random.uniform(2.5, 4.0))
 
             # Dismiss cookie/consent banners
             await _dismiss_cookies(page)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
             await _dismiss_cookies(page)
 
-            # Fill the search form
+            # Fill the search form with human-like delays
             ok = await self._fill_search_form(page, req)
             if not ok:
                 logger.warning("easyJet: form fill failed, aborting")
@@ -376,6 +381,9 @@ class EasyjetConnectorClient:
                 new_page_event.set()
 
             context.on("page", _on_new_page)
+
+            # Human-like delay before clicking search
+            await asyncio.sleep(random.uniform(0.5, 1.5))
 
             # Click "Show flights"
             try:
@@ -460,16 +468,16 @@ class EasyjetConnectorClient:
     # ------------------------------------------------------------------
 
     async def _fill_search_form(self, page, req: FlightSearchRequest) -> bool:
-        """Fill the easyJet homepage search form."""
+        """Fill the easyJet homepage search form with human-like timing."""
         ok = await self._fill_airport_field(page, "From", req.origin)
         if not ok:
             return False
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(random.uniform(0.7, 1.3))
 
         ok = await self._fill_airport_field(page, "To", req.destination)
         if not ok:
             return False
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(random.uniform(0.7, 1.3))
 
         ok = await self._fill_date(page, req)
         if not ok:
@@ -535,15 +543,16 @@ class EasyjetConnectorClient:
                 clear_btn = page.get_by_role("button", name=clear_name)
                 if await clear_btn.count() > 0:
                     await clear_btn.click(timeout=2000)
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(random.uniform(0.3, 0.6))
             except Exception:
                 pass
 
             await field.click(timeout=3000)
-            await asyncio.sleep(0.3)
-            await field.fill(query)
+            await asyncio.sleep(random.uniform(0.3, 0.6))
+            # Type character by character with random delay for human-like behavior
+            await field.type(query, delay=random.randint(80, 150))
             logger.info("easyJet: typed '%s' in %s field", query, label)
-            await asyncio.sleep(3.0)  # extra time for autocomplete via proxy
+            await asyncio.sleep(random.uniform(3.0, 4.5))  # extra time for autocomplete via proxy
 
             # Strategy 1: Playwright role-based selectors
             for role in ("option", "radio", "listitem"):
@@ -858,7 +867,7 @@ class EasyjetConnectorClient:
             destination=flight.get("arrivalAirportCode", ""),
             departure=self._parse_dt(dep_str),
             arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
         )
 
         total_dur = int((segment.arrival - segment.departure).total_seconds())

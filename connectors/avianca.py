@@ -285,12 +285,14 @@ class AviancaConnectorClient:
     def _build_search_url(self, req: FlightSearchRequest) -> str:
         dt = _to_datetime(req.date_from)
         trip = "round-trip" if req.return_from else "one-way"
+        # Avianca cabin codes: economy, business, first (Amadeus/Navitaire)
+        _av_cabin = {"M": "economy", "W": "economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         url = (
             f"https://booking.avianca.com/av/booking/avail"
             f"?departureDate={dt.strftime('%Y-%m-%d')}&tripType={trip}"
             f"&from={req.origin}&to={req.destination}"
             f"&nbAdults={req.adults or 1}&nbYoungs=0&nbChildren=0&nbInfants=0"
-            f"&language=EN&platform=WEBB2C&pointOfSale=US"
+            f"&cabinClass={_av_cabin}&language=EN&platform=WEBB2C&pointOfSale=US"
         )
         if req.return_from:
             ret_dt = _to_datetime(req.return_from)
@@ -458,6 +460,7 @@ class AviancaConnectorClient:
                 fno_str = str(fno) if fno else ""
                 flight_no = f"{carrier}{fno_str}" if fno_str and not fno_str.startswith(carrier) else (fno_str or f"{carrier}?")
 
+                _av_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
                     airline=carrier,
                     airline_name="Avianca" if carrier == "AV" else carrier,
@@ -467,7 +470,7 @@ class AviancaConnectorClient:
                     departure=dep_dt,
                     arrival=arr_dt,
                     duration_seconds=dur,
-                    cabin_class="economy",
+                    cabin_class=_av_cabin,
                 ))
             if not segments:
                 continue
@@ -529,6 +532,7 @@ class AviancaConnectorClient:
             arr_dt = _parse_dt(arr_str) if arr_str else dep_dt + timedelta(hours=3)
             dur = int((arr_dt - dep_dt).total_seconds()) if arr_dt > dep_dt else 0
 
+            _av_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments.append(FlightSegment(
                 airline=carrier,
                 airline_name="Avianca" if carrier == "AV" else carrier,
@@ -538,7 +542,7 @@ class AviancaConnectorClient:
                 departure=dep_dt,
                 arrival=arr_dt,
                 duration_seconds=dur,
-                cabin_class="economy",
+                cabin_class=_av_cabin,
             ))
         return segments
 

@@ -33,7 +33,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, proxy_chrome_args
+from .browser import find_chrome, proxy_chrome_args, bandwidth_saving_args
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ _CHROME_FLAGS = [
     "--enable-unsafe-swiftshader",
     "--window-position=-2400,-2400",
     "--window-size=1366,768",
+    *bandwidth_saving_args(),
 ]
 
 # ── Shared browser singleton via CDP ────────────────────────────────────
@@ -103,7 +104,7 @@ async def _get_browser():
         if _browser and _browser.is_connected():
             return _browser
 
-        from connectors.browser import find_chrome
+        from .browser import find_chrome
 
         chrome = find_chrome()
         user_data = os.path.join(
@@ -330,7 +331,7 @@ class CebuPacificConnectorClient:
                     destination=seg_des.get("destination", req.destination),
                     departure=self._parse_dt(seg_des.get("departure")),
                     arrival=self._parse_dt(seg_des.get("arrival")),
-                    cabin_class="M",
+                    cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
                 )
             )
 

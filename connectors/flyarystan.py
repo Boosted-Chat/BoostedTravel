@@ -262,6 +262,7 @@ class FlyArystanConnectorClient:
             display_flight_no = "/".join(flight_no_parts)
 
             for fare_brand, price in fares.items():
+                _fs_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 # Build segments
                 segments = []
                 if len(flight_no_parts) == 1:
@@ -274,7 +275,7 @@ class FlyArystanConnectorClient:
                         departure=dep_dt,
                         arrival=arr_dt,
                         duration_seconds=duration_secs,
-                        cabin_class="M",
+                        cabin_class=_fs_cabin,
                     ))
                 else:
                     for idx, fn in enumerate(flight_no_parts):
@@ -287,7 +288,7 @@ class FlyArystanConnectorClient:
                             departure=dep_dt if idx == 0 else dep_dt,
                             arrival=arr_dt if idx == len(flight_no_parts) - 1 else dep_dt,
                             duration_seconds=0,
-                            cabin_class="M",
+                            cabin_class=_fs_cabin,
                         ))
 
                 route = FlightRoute(

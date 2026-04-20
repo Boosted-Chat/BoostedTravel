@@ -72,8 +72,6 @@ class LHGroupBaseConnector:
     PORTAL_CODE: str = "LH"
     BASE_URL: str = "https://www.lufthansa.com"
     MARKET_CODE: str = "DE"
-    BOOKING_PATH: str = "book-and-manage/destination"
-
     def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
 
@@ -220,8 +218,7 @@ class LHGroupBaseConnector:
         ).hexdigest()[:12]
 
         booking_url = (
-            f"{self.BASE_URL}/{self.MARKET_CODE.lower()}/en/"
-            f"{self.BOOKING_PATH}"
+            f"{self.BASE_URL}/{self.MARKET_CODE.lower()}/en/book-and-manage/destination"
             f"?OriginCode={req.origin}&DestinationCode={req.destination}"
         )
 
@@ -297,4 +294,3 @@ class BrusselsAirlinesDirectConnector(LHGroupBaseConnector):
     DEFAULT_CURRENCY = "EUR"
     PORTAL_CODE = "SN"
     MARKET_CODE = "BE"
-    BOOKING_PATH = "book-a-flight/destination"

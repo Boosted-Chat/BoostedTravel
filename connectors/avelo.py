@@ -231,12 +231,12 @@ class AveloConnectorClient:
                 logger.warning("Avelo: did not redirect to select page")
                 return []
 
-            # Wait for flight cards to appear — Blazor renders div[role=button]
-            # elements with class flight-block-wrapper-v2
+            # Wait for flight cards to appear — Blazor WASM app renders flight buttons
+            # Wait for any price text ($NNN) to appear on the page
             try:
-                await page.wait_for_selector(
-                    '.flight-block-wrapper-v2',
-                    timeout=20000,
+                await page.wait_for_function(
+                    "() => /\\$\\d{2,}/.test(document.body.innerText || '')",
+                    timeout=25000,
                 )
             except Exception:
                 logger.warning("Avelo: no flight cards found")
@@ -263,17 +263,20 @@ class AveloConnectorClient:
         )
 
         raw_flights = await page.evaluate("""() => {
-            const cards = document.querySelectorAll('.flight-block-wrapper-v2');
-            if (cards.length === 0) return {flights: []};
-
+            // Avelo uses button elements for each flight card
+            const buttons = document.querySelectorAll('button');
             const flights = [];
-            for (const card of cards) {
-                const text = card.innerText || card.textContent || '';
+            for (const btn of buttons) {
+                const text = btn.innerText || btn.textContent || '';
+                // Flight buttons contain duration info like "2h 50m nonstop"
+                if (!/(\\d+h\\s*\\d+m|nonstop|\\d+\\s*stop)/i.test(text)) continue;
+                // Must have a price
+                if (!/\\$\\d/.test(text)) continue;
+
                 const lines = text.split(/\\r?\\n|\\r/).map(l => l.trim()).filter(Boolean);
                 if (lines.length < 3) continue;
 
                 const times = lines.filter(l => /^\\d{1,2}:\\d{2}\\s*[ap]m$/i.test(l));
-                // Airport codes may be standalone "HVN" or in "New Haven, CT (HVN)"
                 const codeLines = [];
                 for (const l of lines) {
                     const m3 = l.match(/^([A-Z]{3})$/);
@@ -325,6 +328,7 @@ class AveloConnectorClient:
             if not arr_time:
                 arr_time = dep_time + timedelta(seconds=duration_secs) if duration_secs else dep_time
 
+            _xp_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline="XP",
                 airline_name="Avelo Airlines",
@@ -333,7 +337,7 @@ class AveloConnectorClient:
                 destination=flight.get("destination", req.destination),
                 departure=dep_time,
                 arrival=arr_time,
-                cabin_class="M",
+                cabin_class=_xp_cabin,
             )
             route = FlightRoute(
                 segments=[seg],

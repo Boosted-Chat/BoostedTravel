@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from ..models.flights import FlightSearchRequest, FlightSearchResponse
+from ..models.flights import FlightOffer, FlightSearchRequest, FlightSearchResponse
 
 logger = logging.getLogger(__name__)
 

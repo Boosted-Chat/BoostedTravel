@@ -247,6 +247,7 @@ class LHGroupBaseConnector:
                         ib_p = ib_product["price"] if ib_product else 0
                         ret_date = req.return_from
                         ret_str = ret_date.strftime("%Y-%m-%d") if hasattr(ret_date, "strftime") else str(ret_date)
+                        _lh_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                         if ib_flights:
                             ib_flt = ib_flights[0]
                             ib_prov = ib_flt.get("provider", {})
@@ -259,7 +260,7 @@ class LHGroupBaseConnector:
                                 departure=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
                                 arrival=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
                                 duration_seconds=0,
-                                cabin_class="economy",
+                                cabin_class=_lh_cabin,
                             )
                             ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
                             ib_price = ib_p
@@ -273,7 +274,7 @@ class LHGroupBaseConnector:
                                 departure=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
                                 arrival=datetime.combine(ret_date, datetime.min.time()) if not isinstance(ret_date, datetime) else ret_date,
                                 duration_seconds=0,
-                                cabin_class="economy",
+                                cabin_class=_lh_cabin,
                             )
                             ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
                             ib_price = ib_p
@@ -423,6 +424,7 @@ class LHGroupBaseConnector:
         display_fn = f"{airline_code}{flight_no}" if flight_no else ""
         dep_date_str = dep_date.strftime("%Y-%m-%d") if hasattr(dep_date, "strftime") else str(dep_date)
 
+        _lh_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segment = FlightSegment(
             airline=airline_code or self.AIRLINE_CODE,
             airline_name=airline_name,
@@ -432,7 +434,7 @@ class LHGroupBaseConnector:
             departure=dep_dt if isinstance(dep_dt, datetime) else datetime.combine(dep_dt, datetime.min.time()),
             arrival=arr_dt if isinstance(arr_dt, datetime) else datetime.combine(arr_dt, datetime.min.time()),
             duration_seconds=duration,
-            cabin_class="economy",
+            cabin_class=_lh_cabin,
         )
 
         route = FlightRoute(

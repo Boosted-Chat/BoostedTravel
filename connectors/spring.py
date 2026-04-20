@@ -327,7 +327,7 @@ class SpringConnectorClient:
             departure=dep_dt or datetime(2000, 1, 1),
             arrival=arr_dt or datetime(2000, 1, 1),
             duration_seconds=dur,
-            cabin_class="economy",
+            cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
             aircraft=aircraft,
         )
 

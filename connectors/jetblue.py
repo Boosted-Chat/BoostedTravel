@@ -207,6 +207,8 @@ class JetBlueConnectorClient:
         target_date = req.date_from.strftime("%Y-%m-%d")
         booking_url = self._build_booking_url(req)
         offers: list[FlightOffer] = []
+        # Map cabin code to cabin name for segment
+        _b6_cabin = {"M": "economy", "W": "economy", "C": "mint", "F": "mint"}.get(req.cabin_class or "M", "economy")
         is_rt = bool(req.return_from)
 
         # Find return fare for RT
@@ -226,7 +228,7 @@ class JetBlueConnectorClient:
                             destination=req.origin,
                             departure=datetime.strptime(ret_target, "%Y-%m-%d"),
                             arrival=datetime.strptime(ret_target, "%Y-%m-%d"),
-                            cabin_class="M",
+                            cabin_class=_b6_cabin,
                         )],
                         total_duration_seconds=0, stopovers=0,
                     )
@@ -250,7 +252,7 @@ class JetBlueConnectorClient:
                 destination=req.destination,
                 departure=datetime.strptime(fare_date, "%Y-%m-%d"),
                 arrival=datetime.strptime(fare_date, "%Y-%m-%d"),
-                cabin_class="M",
+                cabin_class=_b6_cabin,
             )
             outbound_route = FlightRoute(
                 segments=[seg], total_duration_seconds=0, stopovers=0,

@@ -49,7 +49,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import _launched_pw_instances, acquire_browser_slot, auto_block_if_proxied, release_browser_slot
+from .browser import _launched_pw_instances, acquire_browser_slot, auto_block_if_proxied, release_browser_slot, get_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,7 @@ async def _refresh_session():
 
     browser = await pw.chromium.launch(
         headless=False, channel="chrome",
+        proxy=get_proxy("BANGKOKAIRWAYS_PROXY"),
         args=[
             "--disable-blink-features=AutomationControlled",
             "--window-position=-2400,-2400",

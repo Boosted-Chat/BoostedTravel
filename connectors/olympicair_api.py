@@ -170,12 +170,13 @@ class OlympicAirConnectorClient:
             if best_ib_item and best_ib_price < float("inf"):
                 _ib_price = round(best_ib_price, 2)
                 ib_dep_dt = self._parse_oa_date(best_ib_item.get("Date", "")) or datetime(2000, 1, 1)
+                _oa_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 _ib_route = FlightRoute(
                     segments=[FlightSegment(
                         airline="OA", airline_name="Olympic Air", flight_no="",
                         origin=req.destination, destination=req.origin,
                         departure=ib_dep_dt, arrival=ib_dep_dt,
-                        duration_seconds=0, cabin_class="economy",
+                        duration_seconds=0, cabin_class=_oa_cabin,
                     )],
                     total_duration_seconds=0, stopovers=0,
                 )

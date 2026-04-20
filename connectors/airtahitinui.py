@@ -1,15 +1,14 @@
 """
-Air Tahiti Nui connector — www.airtahitinui.com.
+Air Tahiti Nui connector — book.airtahitinui.com (Amadeus e-Retail).
 
 Air Tahiti Nui (IATA: TN) is the flag carrier of French Polynesia.
 Hub at Papeete Faa'a (PPT) with routes to Los Angeles, Auckland,
 Tokyo, Paris, and Seattle.
 
-Status: fare data source unavailable as of 2026.
-  - flights.airtahitinui.com: DNS dead
-  - booking.airtahitinui.com: DNS dead
-  - www.airtahitinui.com: Drupal CMS with no structured fare data or booking widget
-  Connector returns empty gracefully until a new data source is found.
+Status: booking engine discovered at book.airtahitinui.com (Amadeus e-Retail).
+  - Old domains (flights/booking.airtahitinui.com): DNS dead
+  - New booking engine: book.airtahitinui.com/plnext/AirTahitiNuiDX/
+  Connector returns empty; fare scraping TBD (Amadeus SPA needs Playwright).
 """
 
 from __future__ import annotations
@@ -35,7 +34,8 @@ from .browser import get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.airtahitinui.com"
+_BASE = "https://book.airtahitinui.com"
+_BOOKING_URL = "https://book.airtahitinui.com/plnext/AirTahitiNuiDX/Override.action?LANGUAGE=US&SO_SITE_MARKET_ID=AU&SITE=A03OA03O#/FDCS"
 _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -60,7 +60,7 @@ _IATA_TO_SLUG: dict[str, str] = {
 
 
 class AirTahitiNuiConnectorClient:
-    """Air Tahiti Nui (TN) — data source unavailable; returns empty."""
+    """Air Tahiti Nui (TN) — booking engine at book.airtahitinui.com; fare scraping TBD."""
 
     def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
@@ -72,9 +72,9 @@ class AirTahitiNuiConnectorClient:
         return await self._search_ow(req)
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        # flights.airtahitinui.com DNS dead; www.airtahitinui.com is a Drupal CMS
-        # with no booking widget or structured fare data accessible.
-        logger.debug("AirTahitiNui: data source unavailable, returning empty")
+        # Booking engine at book.airtahitinui.com (Amadeus e-Retail SPA).
+        # Fare scraping not yet implemented — needs Playwright + API interception.
+        logger.debug("AirTahitiNui: fare scraping TBD (Amadeus SPA), returning empty")
         return self._empty(req)
 
     @staticmethod

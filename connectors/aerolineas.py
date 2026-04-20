@@ -266,10 +266,11 @@ class AerolineasConnectorClient:
         currency = total_match.group(1) if total_match else section_matches[0][3]
         total_price = _parse_price(total_match.group(2)) if total_match else sum(_parse_price(m[4]) for m in section_matches)
 
-        outbound = self._build_route(req.origin, req.destination, req.date_from)
+        _ar_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
+        outbound = self._build_route(req.origin, req.destination, req.date_from, _ar_cabin)
         inbound = None
         if req.return_from:
-            inbound = self._build_route(req.destination, req.origin, req.return_from)
+            inbound = self._build_route(req.destination, req.origin, req.return_from, _ar_cabin)
 
         booking_url = data.get("url") or self._build_url(req)
         offer_hash = hashlib.md5(
@@ -293,7 +294,7 @@ class AerolineasConnectorClient:
         ]
 
     @staticmethod
-    def _build_route(origin: str, destination: str, travel_date: date | datetime) -> FlightRoute:
+    def _build_route(origin: str, destination: str, travel_date: date | datetime, cabin_class: str = "economy") -> FlightRoute:
         travel_day = _as_date(travel_date)
         departure = datetime.combine(travel_day, dt_time(hour=12, minute=0))
         segment = FlightSegment(
@@ -307,7 +308,7 @@ class AerolineasConnectorClient:
             departure=departure,
             arrival=departure,
             duration_seconds=0,
-            cabin_class="economy",
+            cabin_class=cabin_class,
         )
         return FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
 

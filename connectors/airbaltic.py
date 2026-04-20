@@ -234,6 +234,8 @@ class AirbalticConnectorClient:
             except ValueError:
                 pass
 
+            # Map cabin code to cabin name for segment
+            _bt_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segment = FlightSegment(
                 airline="BT",
                 airline_name="airBaltic",
@@ -243,7 +245,7 @@ class AirbalticConnectorClient:
                 departure=dep_dt,
                 arrival=dep_dt,
                 duration_seconds=0,
-                cabin_class="economy",
+                cabin_class=_bt_cabin,
             )
 
             route = FlightRoute(

@@ -121,6 +121,7 @@ class StarluxConnectorClient:
                         _ib_best = min(_ib_valid, key=lambda o: o.price)
                         _ret = req.return_from
                         _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                        _jx_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                         _ib_seg = FlightSegment(
                             airline="JX",
                             airline_name="Starlux Airlines",
@@ -130,7 +131,7 @@ class StarluxConnectorClient:
                             departure=_ret_dt,
                             arrival=_ret_dt,
                             duration_seconds=0,
-                            cabin_class="economy",
+                            cabin_class=_jx_cabin,
                         )
                         _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
                         for _i, _o in enumerate(offers):
@@ -150,6 +151,8 @@ class StarluxConnectorClient:
                             )
             except Exception:
                 pass
+        _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+        offers = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
         offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
 
         elapsed = time.monotonic() - t0

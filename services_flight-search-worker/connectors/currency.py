@@ -1,7 +1,7 @@
 """
 Lightweight currency conversion for normalizing multi-provider flight prices.
 
-Uses exchangerate.host (free, no API key) with a simple in-memory cache.
+Uses frankfurter.dev (ECB rates, free, no API key) with a simple in-memory cache.
 Fallback to hardcoded rates if the API is unreachable.
 """
 
@@ -19,45 +19,45 @@ _cache: dict[str, dict[str, float]] = {}
 _cache_ts: float = 0.0
 _CACHE_TTL = 3600  # 1 hour
 
-# Hardcoded fallback rates (vs EUR) — updated March 2026
+# Hardcoded fallback rates (vs EUR) — updated April 2026
 _FALLBACK_VS_EUR: dict[str, float] = {
     "EUR": 1.0,
-    "USD": 1.08,
-    "GBP": 0.86,
-    "PLN": 4.28,
-    "CZK": 25.3,
-    "HUF": 395.0,
-    "SEK": 11.2,
-    "NOK": 11.5,
-    "DKK": 7.46,
-    "CHF": 0.96,
-    "RON": 4.97,
+    "USD": 1.18,
+    "GBP": 0.87,
+    "PLN": 4.23,
+    "CZK": 24.3,
+    "HUF": 363.0,
+    "SEK": 10.8,
+    "NOK": 11.0,
+    "DKK": 7.47,
+    "CHF": 0.92,
+    "RON": 5.1,
     "BGN": 1.96,
-    "TRY": 39.5,
-    "CAD": 1.47,
-    "AUD": 1.66,
-    "JPY": 162.0,
-    "CNY": 7.85,
-    "INR": 91.0,
-    "BRL": 6.2,
-    "THB": 37.5,
-    "ZAR": 20.5,
-    "KWD": 0.33,
-    "AED": 3.97,
-    "SAR": 4.05,
-    "KES": 140.0,
-    "NGN": 1760.0,
-    "EGP": 53.0,
-    "MYR": 5.05,
-    "SGD": 1.45,
-    "HKD": 8.42,
-    "NZD": 1.82,
-    "MXN": 21.5,
-    "ARS": 1085.0,
-    "KRW": 1480.0,
-    "IDR": 17500.0,
-    "PHP": 63.0,
-    "VND": 27500.0,
+    "TRY": 53.0,
+    "CAD": 1.61,
+    "AUD": 1.64,
+    "JPY": 188.0,
+    "CNY": 8.05,
+    "INR": 109.5,
+    "BRL": 5.87,
+    "THB": 37.8,
+    "ZAR": 19.3,
+    "KWD": 0.36,
+    "AED": 4.33,
+    "SAR": 4.42,
+    "KES": 153.0,
+    "NGN": 1920.0,
+    "EGP": 60.0,
+    "MYR": 4.66,
+    "SGD": 1.50,
+    "HKD": 9.24,
+    "NZD": 2.0,
+    "MXN": 20.3,
+    "ARS": 1350.0,
+    "KRW": 1745.0,
+    "IDR": 20270.0,
+    "PHP": 70.9,
+    "VND": 30500.0,
 }
 
 
@@ -69,20 +69,25 @@ async def fetch_rates(base: str = "EUR") -> dict[str, float]:
     if base in _cache and (now - _cache_ts) < _CACHE_TTL:
         return _cache[base]
 
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"https://api.exchangerate.host/latest?base={base}"
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            rates = data.get("rates", {})
-            if rates:
-                _cache[base] = {k: float(v) for k, v in rates.items()}
-                _cache_ts = now
-                return _cache[base]
-    except Exception as e:
-        logger.debug("Exchange rate API unavailable: %s — using fallback", e)
+    # Try multiple free APIs in priority order
+    apis = [
+        f"https://api.frankfurter.dev/v1/latest?base={base}",
+        f"https://open.er-api.com/v6/latest/{base}",
+    ]
+    for api_url in apis:
+        try:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+                resp = await client.get(api_url)
+                resp.raise_for_status()
+                data = resp.json()
+                rates = data.get("rates", {})
+                if rates:
+                    _cache[base] = {k: float(v) for k, v in rates.items()}
+                    _cache_ts = now
+                    return _cache[base]
+        except Exception as e:
+            logger.debug("Exchange rate API %s unavailable: %s", api_url, e)
+            continue
 
     return {}
 

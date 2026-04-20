@@ -263,6 +263,7 @@ class FlySafairConnectorClient:
             if not lowest_price or lowest_price <= 0:
                 return None
 
+        _fa_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         legs = flight.get("legs", [])
         segments = []
         for leg in legs:
@@ -276,7 +277,7 @@ class FlySafairConnectorClient:
                 destination=leg.get("to", {}).get("code", ""),
                 departure=self._parse_dt(dep_str),
                 arrival=self._parse_dt(arr_str),
-                cabin_class="M",
+                cabin_class=_fa_cabin,
             ))
 
         if not segments:
@@ -289,7 +290,7 @@ class FlySafairConnectorClient:
                 destination=flight.get("to", {}).get("code", ""),
                 departure=self._parse_dt(flight.get("departureDate", "")),
                 arrival=self._parse_dt(flight.get("arrivalDate", "")),
-                cabin_class="M",
+                cabin_class=_fa_cabin,
             ))
 
         flight_time = flight.get("flightTime", 0)

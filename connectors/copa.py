@@ -226,6 +226,8 @@ class CopaConnectorClient:
         # Fast path: Sputnik API (~1s, no browser)
         sputnik_offers = await self._try_sputnik(req)
         if sputnik_offers:
+            _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+            sputnik_offers = [o for o in sputnik_offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
             sputnik_offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
             h = hashlib.md5(f"cm{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
             return FlightSearchResponse(
@@ -503,6 +505,7 @@ class CopaConnectorClient:
                 carrier = mc.get("airlineCode", "CM")
                 fno = str(mc.get("flightNumber", ""))
 
+                _cm_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
                     airline=carrier,
                     airline_name=mc.get("airlineName", "Copa Airlines"),
@@ -512,7 +515,7 @@ class CopaConnectorClient:
                     departure=dep_dt,
                     arrival=arr_dt,
                     duration_seconds=int((arr_dt - dep_dt).total_seconds()) if arr_dt > dep_dt else 0,
-                    cabin_class="economy",
+                    cabin_class=_cm_cabin,
                 ))
 
             if not segments:
@@ -590,7 +593,7 @@ class CopaConnectorClient:
                 departure=dep_dt,
                 arrival=arr_dt,
                 duration_seconds=dur,
-                cabin_class="economy",
+                cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
             ))
 
         return segments
@@ -874,6 +877,7 @@ class CopaConnectorClient:
                 if not price or price <= 0:
                     continue
 
+                _cm_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segment = FlightSegment(
                     airline="CM",
                     airline_name="Copa Airlines",
@@ -883,7 +887,7 @@ class CopaConnectorClient:
                     departure=dep_dt,
                     arrival=arr_dt,
                     duration_seconds=dur_seconds,
-                    cabin_class="economy",
+                    cabin_class=_cm_cabin,
                 )
 
                 route = FlightRoute(

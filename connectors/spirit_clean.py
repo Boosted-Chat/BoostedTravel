@@ -447,6 +447,7 @@ class SpiritConnectorClient:
         for seg in (segments_raw if isinstance(segments_raw, list) else []):
             des = seg.get("designator", {})
             ident = seg.get("identifier", {})
+            _nk_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             carrier = ident.get("carrierCode", "NK")
             flight_num = ident.get("identifier", "")
             segments.append(FlightSegment(
@@ -457,10 +458,11 @@ class SpiritConnectorClient:
                 destination=des.get("destination", req.destination),
                 departure=_parse_dt(des.get("departure", "")),
                 arrival=_parse_dt(des.get("arrival", "")),
-                cabin_class="M",
+                cabin_class=_nk_cabin,
             ))
 
         if not segments:
+            _nk_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             des = journey.get("designator", {})
             segments.append(FlightSegment(
                 airline="NK", airline_name="Spirit Airlines", flight_no="",
@@ -468,7 +470,7 @@ class SpiritConnectorClient:
                 destination=des.get("destination", req.destination),
                 departure=_parse_dt(des.get("departure", "")),
                 arrival=_parse_dt(des.get("arrival", "")),
-                cabin_class="M",
+                cabin_class=_nk_cabin,
             ))
 
         total_dur = 0

@@ -352,12 +352,14 @@ class LatamConnectorClient:
         adults = req.adults or 1
         children = req.children or 0
         infants = req.infants or 0
+        # LATAM cabin codes: Y=Economy, W=Premium Economy, C=Business
+        _la_cabin = {"M": "Y", "W": "W", "C": "C", "F": "C"}.get(req.cabin_class or "M", "Y")
         return (
             f"https://www.latamairlines.com/us/en/flight-offers"
             f"?outbound={outbound}&inbound=null"
             f"&origin={req.origin}&destination={req.destination}"
             f"&adt={adults}&chd={children}&inf={infants}"
-            f"&trip=OW&cabin=Y&redemption=false&sort=RECOMMENDED"
+            f"&trip=OW&cabin={_la_cabin}&redemption=false&sort=RECOMMENDED"
         )
 
     async def _dismiss_overlays(self, page) -> None:
@@ -539,6 +541,7 @@ class LatamConnectorClient:
             dep_dt = _parse_dt(dep_str) if dep_str else _to_datetime(req.date_from)
             arr_dt = _parse_dt(arr_str) if arr_str else dep_dt + timedelta(seconds=dur or 7200)
 
+            _la_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments.append(FlightSegment(
                 airline=carrier,
                 airline_name=self._airline_name(carrier),
@@ -548,7 +551,7 @@ class LatamConnectorClient:
                 departure=dep_dt,
                 arrival=arr_dt,
                 duration_seconds=dur if isinstance(dur, int) else 0,
-                cabin_class="economy",
+                cabin_class=_la_cabin,
             ))
 
         return segments
@@ -627,12 +630,13 @@ class LatamConnectorClient:
     @staticmethod
     def _user_url(req: FlightSearchRequest) -> str:
         dt = _to_datetime(req.date_from)
+        _la_cabin_url = {"M": "Y", "W": "W", "C": "C", "F": "C"}.get(req.cabin_class or "M", "Y")
         return (
             f"https://www.latamairlines.com/us/en/flight-offers"
             f"?outbound={dt.strftime('%Y-%m-%dT00:00:00.000Z')}&inbound=null"
             f"&origin={req.origin}&destination={req.destination}"
             f"&adt={req.adults or 1}&chd=0&inf=0"
-            f"&trip=OW&cabin=Y&redemption=false&sort=RECOMMENDED"
+            f"&trip=OW&cabin={_la_cabin_url}&redemption=false&sort=RECOMMENDED"
         )
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:

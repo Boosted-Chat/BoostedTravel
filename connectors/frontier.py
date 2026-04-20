@@ -39,7 +39,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_args, auto_block_if_proxied
+from .browser import stealth_args, auto_block_if_proxied, get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ async def _get_browser():
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
-        from connectors.browser import launch_headed_browser
+        from .browser import launch_headed_browser
         _browser = await launch_headed_browser()
         logger.info("Frontier: browser launched")
         return _browser
@@ -140,7 +140,7 @@ class FrontierConnectorClient:
             ret = req.return_from.strftime("%m/%d/%Y")
             url += f"&dr1={ret}"
 
-        async with AsyncSession(impersonate="chrome") as s:
+        async with AsyncSession(impersonate="chrome131", proxies=get_curl_cffi_proxies()) as s:
             resp = await s.get(url, timeout=15)
 
         if resp.status_code != 200:
@@ -221,7 +221,7 @@ class FrontierConnectorClient:
                 wait_until="domcontentloaded",
                 timeout=int(self.timeout * 1000),
             )
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             title = await page.title()
             if "denied" in title.lower() or "blocked" in title.lower():
@@ -318,9 +318,10 @@ class FrontierConnectorClient:
             except (json.JSONDecodeError, ValueError):
                 legs_raw = []
 
+        _f9_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segments: list[FlightSegment] = []
         for leg in legs_raw:
-            segments.append(self._build_segment(leg))
+            segments.append(self._build_segment(leg, _f9_cabin))
         if not segments:
             return None
 
@@ -377,7 +378,7 @@ class FrontierConnectorClient:
         return None
 
     @staticmethod
-    def _build_segment(leg: dict) -> FlightSegment:
+    def _build_segment(leg: dict, cabin_class: str = "economy") -> FlightSegment:
         dep_str = leg.get("departureDate") or ""
         arr_str = leg.get("arrivalDate") or ""
         flight_no = str(leg.get("flightNumber") or "")
@@ -391,7 +392,7 @@ class FrontierConnectorClient:
             destination=destination,
             departure=FrontierConnectorClient._parse_dt(dep_str),
             arrival=FrontierConnectorClient._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=cabin_class,
         )
 
     def _build_response(

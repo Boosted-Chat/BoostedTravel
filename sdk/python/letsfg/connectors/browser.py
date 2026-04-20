@@ -535,9 +535,16 @@ async def apply_cdp_url_blocking(page) -> bool:
 
 # ── Auto-blocking on page creation (env-var gated) ─────────────────────────────
 
-_AUTO_BLOCK_RESOURCES = os.environ.get(
-    "LETSFG_AUTO_BLOCK_RESOURCES", ""
-).strip() in ("1", "true")
+# Auto-enable CDP URL blocking when proxy is configured (saves ~30% bandwidth).
+# Override: LETSFG_AUTO_BLOCK_RESOURCES=0 to disable, =1 to force on.
+_auto_block_env = os.environ.get("LETSFG_AUTO_BLOCK_RESOURCES", "").strip().lower()
+if _auto_block_env in ("0", "false", "no"):
+    _AUTO_BLOCK_RESOURCES = False
+elif _auto_block_env in ("1", "true", "yes"):
+    _AUTO_BLOCK_RESOURCES = True
+else:
+    # Default: ON when proxy is configured (residential proxy = expensive bandwidth)
+    _AUTO_BLOCK_RESOURCES = proxy_is_configured()
 
 
 def _wrap_context_for_blocking(ctx):
@@ -833,6 +840,25 @@ def bandwidth_saving_args() -> list[str]:
     ]
 
 
+def patchright_bandwidth_args() -> list[str]:
+    """Chrome launch args for patchright connectors to save proxy bandwidth.
+
+    Combines image/font blocking (Blink engine level) with background
+    networking suppression. All undetectable by anti-bot systems.
+
+    Usage in patchright connectors::
+
+        from .browser import patchright_bandwidth_args
+        browser = await pw.chromium.launch(
+            args=[*patchright_bandwidth_args(), ...],
+        )
+    """
+    return [
+        *bandwidth_saving_args(),
+        *disable_background_networking_args(),
+    ]
+
+
 def disable_background_networking_args() -> list[str]:
     """
     Chrome args to disable ALL background networking.
@@ -991,6 +1017,7 @@ async def launch_cdp_chrome(
         "--disable-blink-features=AutomationControlled",
         *stealth_args(),
         *proxy_chrome_args(),
+        *bandwidth_saving_args(),
         *disable_background_networking_args(),
         *(extra_args or []),
         start_url,

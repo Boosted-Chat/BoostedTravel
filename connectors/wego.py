@@ -782,6 +782,7 @@ class WegoConnectorClient:
                     from datetime import timedelta
                     arrival = departure + timedelta(seconds=duration_s)
                 
+                _wego_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 seg = FlightSegment(
                     airline=airline,
                     airline_name=airline,
@@ -791,7 +792,7 @@ class WegoConnectorClient:
                     departure=departure,
                     arrival=arrival,
                     duration_seconds=duration_s,
-                    cabin_class="economy",
+                    cabin_class=_wego_cabin,
                 )
                 
                 route = FlightRoute(
@@ -941,6 +942,7 @@ class WegoConnectorClient:
                 duration_s = matching_itin['duration_min'] * 60
                 stops = matching_itin['stops']
             
+            _wego_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline=airline,
                 airline_name=airline,
@@ -950,7 +952,7 @@ class WegoConnectorClient:
                 departure=dt,
                 arrival=dt,
                 duration_seconds=duration_s,
-                cabin_class="economy",
+                cabin_class=_wego_cabin,
             )
             
             route = FlightRoute(
@@ -1019,6 +1021,7 @@ class WegoConnectorClient:
                 
                 duration_s = int((arr_time - dep_time).total_seconds())
                 
+                _wego_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 seg = FlightSegment(
                     airline=airline,
                     airline_name=airline,
@@ -1028,7 +1031,7 @@ class WegoConnectorClient:
                     departure=dep_time,
                     arrival=arr_time,
                     duration_seconds=duration_s,
-                    cabin_class="economy",
+                    cabin_class=_wego_cabin,
                 )
                 
                 route = FlightRoute(
@@ -1170,6 +1173,7 @@ class WegoConnectorClient:
                 dur = sd.get("durationMinutes") or sd.get("duration") or 0
                 dur_s = int(dur) * 60 if isinstance(dur, (int, float)) and dur > 0 else 0
 
+                _wego_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
                     airline=airline_code or airline_name,
                     airline_name=airline_name,
@@ -1179,7 +1183,7 @@ class WegoConnectorClient:
                     departure=_parse_dt(dep_time) if dep_time else dt,
                     arrival=_parse_dt(arr_time) if arr_time else dt,
                     duration_seconds=dur_s,
-                    cabin_class="economy",
+                    cabin_class=_wego_cabin,
                 ))
 
         if not segments:

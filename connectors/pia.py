@@ -37,6 +37,7 @@ from typing import Optional
 
 import httpx
 
+from .browser import get_httpx_proxy_url
 from ..models.flights import (
     FlightOffer,
     FlightRoute,
@@ -115,6 +116,7 @@ class PiaConnectorClient:
                 timeout=self.timeout,
                 follow_redirects=True,
                 headers=_HEADERS,
+                proxy=get_httpx_proxy_url(),
             ) as client:
                 resp = await client.get(_AVAIL_URL, params=params)
                 resp.raise_for_status()

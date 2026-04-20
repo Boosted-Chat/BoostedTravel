@@ -21,6 +21,7 @@ import logging
 import time
 
 from ..models.flights import (
+    FlightOffer,
     FlightSearchRequest,
     FlightSearchResponse,
 )

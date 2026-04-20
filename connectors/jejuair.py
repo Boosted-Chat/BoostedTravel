@@ -146,11 +146,12 @@ class JejuAirConnectorClient:
                                 if 0 < t < ib_best:
                                     ib_best = t
                         if ib_best < float("inf"):
+                            _7c_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                             _ret_dt = self._parse_dt(ret_str)
                             _ib_seg = FlightSegment(
                                 airline="7C", airline_name="Jeju Air", flight_no="",
                                 origin=req.destination, destination=req.origin,
-                                departure=_ret_dt, arrival=_ret_dt, cabin_class="M",
+                                departure=_ret_dt, arrival=_ret_dt, cabin_class=_7c_cabin,
                             )
                             _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
                             for _i, _o in enumerate(offers):
@@ -244,6 +245,7 @@ class JejuAirConnectorClient:
                 f"7c_{origin}{dest}{dep_date_str}{total}".encode()
             ).hexdigest()[:12]
 
+            _7c_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline="7C",
                 airline_name="Jeju Air",
@@ -252,7 +254,7 @@ class JejuAirConnectorClient:
                 destination=dest,
                 departure=dep_dt,
                 arrival=dep_dt,  # exact time not available from lowfare calendar
-                cabin_class="M",
+                cabin_class=_7c_cabin,
             )
             route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
 

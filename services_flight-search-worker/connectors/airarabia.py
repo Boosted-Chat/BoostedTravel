@@ -261,6 +261,8 @@ class AirArabiaConnectorClient:
                         rt_combined.sort(key=lambda o: o.price)
                         unique = rt_combined[:50]
 
+        _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+        unique = [o for o in unique if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
         unique.sort(key=lambda o: o.price)
 
         logger.info(

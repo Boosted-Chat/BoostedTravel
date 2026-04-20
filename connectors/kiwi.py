@@ -440,9 +440,12 @@ class KiwiConnectorClient:
         if not outbound:
             return None
 
-        # Collect airlines
-        all_segs = outbound.segments + (inbound.segments if inbound else [])
-        airlines = list({s.airline for s in all_segs if s.airline})
+        # Collect airlines — use outbound only for offer-level summary;
+        # inbound airlines would mislead when this offer is used as a one-way leg
+        airlines = sorted({s.airline for s in outbound.segments if s.airline})
+
+        # owner_airline = first outbound segment carrier (deterministic)
+        owner_airline = outbound.segments[0].airline if outbound.segments else (airlines[0] if airlines else "")
 
         # Travel hack info
         travel_hack = itin.get("travelHack", {}) or {}
@@ -506,7 +509,7 @@ class KiwiConnectorClient:
             outbound=outbound,
             inbound=inbound,
             airlines=airlines,
-            owner_airline=airlines[0] if airlines else "",
+            owner_airline=owner_airline,
             booking_url=booking_url,
             is_locked=False,
             conditions=conditions,

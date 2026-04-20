@@ -187,6 +187,7 @@ class CathayConnectorClient:
         offers: list[FlightOffer] = []
 
         # Build inbound route stub for RT (calendar API returns combined RT price)
+        _cx_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         inbound_route = None
         if is_rt and req.return_from:
             ret_dt = datetime.combine(req.return_from, datetime.min.time())
@@ -198,7 +199,7 @@ class CathayConnectorClient:
                 destination=req.origin,
                 departure=ret_dt,
                 arrival=ret_dt,
-                cabin_class="M",
+                cabin_class=_cx_cabin,
             )
             inbound_route = FlightRoute(
                 segments=[inbound_seg],
@@ -233,7 +234,7 @@ class CathayConnectorClient:
                 destination=dest,
                 departure=dep_dt,
                 arrival=dep_dt,  # no arrival time in calendar data
-                cabin_class="M",
+                cabin_class=_cx_cabin,
             )
 
             route = FlightRoute(

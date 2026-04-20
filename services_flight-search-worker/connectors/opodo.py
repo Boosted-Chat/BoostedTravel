@@ -161,8 +161,8 @@ class OpodoConnectorClient:
             if req.return_from:
                 url += f";ret={req.return_from.isoformat()}"
 
-            await page.goto(url, wait_until="networkidle", timeout=25000)
-            await page.wait_for_timeout(1000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
 
             # Dismiss cookie consent
             for sel in [

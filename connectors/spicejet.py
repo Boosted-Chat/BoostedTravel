@@ -342,6 +342,7 @@ class SpiceJetConnectorClient:
             parts = carrier_str.split()
             carrier = parts[0] if parts else "SG"
             flight_no = f"{carrier}{parts[1]}" if len(parts) > 1 else carrier
+            _sg_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
             segments.append(
                 FlightSegment(
@@ -352,7 +353,7 @@ class SpiceJetConnectorClient:
                     destination=designator.get("destination", req.destination),
                     departure=self._parse_dt(dep_str),
                     arrival=self._parse_dt(arr_str),
-                    cabin_class="economy",
+                    cabin_class=_sg_cabin,
                 )
             )
 
@@ -406,6 +407,7 @@ class SpiceJetConnectorClient:
         dep_dt = self._parse_dt(dep_str)
         arr_dt = self._parse_dt(arr_str)
         dur = int((arr_dt - dep_dt).total_seconds()) if dep_dt and arr_dt else 0
+        _sg_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         return FlightSegment(
             airline=carrier,
@@ -418,7 +420,7 @@ class SpiceJetConnectorClient:
             departure=dep_dt,
             arrival=arr_dt,
             duration_seconds=max(dur, 0),
-            cabin_class="economy",
+            cabin_class=_sg_cabin,
             aircraft=aircraft,
         )
 

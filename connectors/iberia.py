@@ -272,12 +272,13 @@ class IberiaConnectorClient:
                 ib_price_f, ib_curr, ib_name = rev_fare
                 _ib_price = ib_price_f
                 ret_dt = datetime.combine(req.return_from, datetime.min.time()) if hasattr(req.return_from, 'year') else datetime(2000, 1, 1)
+                _ib_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 _ib_route = FlightRoute(
                     segments=[FlightSegment(
                         airline="IB", airline_name="Iberia", flight_no="",
                         origin=req.destination, destination=req.origin,
                         departure=ret_dt, arrival=ret_dt,
-                        duration_seconds=0, cabin_class="economy",
+                        duration_seconds=0, cabin_class=_ib_cabin,
                     )],
                     total_duration_seconds=0, stopovers=0,
                 )
@@ -310,6 +311,7 @@ class IberiaConnectorClient:
     ) -> FlightOffer:
         target_date = req.date_from.strftime("%Y-%m-%d")
         dep_dt = datetime.combine(req.date_from, datetime.min.time())
+        _ib_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         seg = FlightSegment(
             airline="IB",
@@ -322,7 +324,7 @@ class IberiaConnectorClient:
             departure=dep_dt,
             arrival=dep_dt,
             duration_seconds=0,
-            cabin_class="economy",
+            cabin_class=_ib_cabin,
         )
         route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
 

@@ -385,6 +385,7 @@ class LotConnectorClient:
             raw_segments = flight.get("segments", [])
 
             # Parse segments from segment IDs
+            _lo_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments: list[FlightSegment] = []
             for raw_seg in raw_segments:
                 seg_id = raw_seg.get("segmentId", "")
@@ -401,7 +402,7 @@ class LotConnectorClient:
                         departure=parsed["departure"],
                         arrival=parsed["departure"],  # placeholder
                         duration_seconds=0,
-                        cabin_class="economy",
+                        cabin_class=_lo_cabin,
                     )
                 )
 
@@ -419,7 +420,7 @@ class LotConnectorClient:
                     departure=segments[0].departure,
                     arrival=segments[0].departure + timedelta(seconds=total_dur),
                     duration_seconds=total_dur,
-                    cabin_class="economy",
+                    cabin_class=_lo_cabin,
                 )
             elif total_dur > 0 and len(segments) > 1:
                 # Multi-segment: compute per-segment durations from gap between departures
@@ -435,7 +436,7 @@ class LotConnectorClient:
                         departure=segments[i].departure,
                         arrival=segments[i].departure + timedelta(seconds=seg_dur),
                         duration_seconds=seg_dur,
-                        cabin_class="economy",
+                        cabin_class=_lo_cabin,
                     )
                 # Last segment: remaining duration
                 elapsed = int((segments[-1].departure - segments[0].departure).total_seconds())
@@ -449,7 +450,7 @@ class LotConnectorClient:
                     departure=segments[-1].departure,
                     arrival=segments[-1].departure + timedelta(seconds=last_dur),
                     duration_seconds=last_dur,
-                    cabin_class="economy",
+                    cabin_class=_lo_cabin,
                 )
 
             route = FlightRoute(

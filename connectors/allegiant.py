@@ -515,6 +515,7 @@ class AllegiantConnectorClient:
         if operated.get("flightNo"):
             flight_no = str(operated["flightNo"])
 
+        _g4_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         seg = FlightSegment(
             airline=carrier,
             airline_name="Allegiant",
@@ -523,7 +524,7 @@ class AllegiantConnectorClient:
             destination=dest_code,
             departure=dep_dt,
             arrival=arr_dt,
-            cabin_class="M",
+            cabin_class=_g4_cabin,
         )
 
         dur = 0

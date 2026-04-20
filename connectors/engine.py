@@ -362,6 +362,15 @@ _BROWSER_SOURCES: set[str] = {
 # by timeout ascending, and often get cancelled by the global search timeout
 # (180s) before they even acquire a slot.
 _PRIORITY_BROWSER_SOURCES: set[str] = {
+    # ── ALL meta-search aggregators — each queries 100+ airlines ──
+    # These are the highest-value connectors: one meta-search returning results
+    # is worth more than 10 individual airline connectors. They MUST get browser
+    # slots before individual airlines.
+    "momondo_meta", "kayak_meta", "cheapflights_meta", "skyscanner_meta",
+    "wego_meta", "aviasales_meta", "agoda_meta", "ixigo_meta",
+    # ── Top-tier global OTAs — massive route coverage ──
+    "edreams_ota", "opodo_ota", "tripcom_ota", "bookingcom_ota",
+    "traveloka_ota", "lastminute_ota",
     # Gulf carriers — frequently cheapest on long-haul international routes
     "emirates_direct", "etihad_direct", "qatar_direct",
     # Global full-service carriers with native RT search support
@@ -369,9 +378,6 @@ _PRIORITY_BROWSER_SOURCES: set[str] = {
     "korean_direct", "nh_direct",
     # US big 3 — essential for transatlantic/transpacific routes
     "delta_direct", "united_direct", "american_direct",
-    # Key aggregator OTAs with highest route coverage
-    "momondo_meta", "kayak_meta", "skyscanner_meta",
-    "edreams_ota", "opodo_ota",
 }
 
 # Fast mode sources — OTAs, metas, and key high-volume LCCs (~25 connectors).
@@ -392,6 +398,8 @@ _FAST_MODE_SOURCES: set[str] = {
     "ryanair_direct", "wizzair_direct", "easyjet_direct", "southwest_direct",
     "spirit_direct", "frontier_direct", "allegiant_direct", "jetblue_direct",
     "vueling_direct", "norwegian_direct", "transavia_direct",
+    # ── Key full-service carriers (high user demand) ──
+    "emirates_direct", "turkish_direct", "finnair_direct",
     # ── Kiwi is always included (global aggregator) ──
     "kiwi_connector",
 }
@@ -425,10 +433,11 @@ _ECONOMY_ONLY_SOURCES: set[str] = {
 # These connectors have fundamental blockers that can't be bypassed with connector-level fixes.
 # Coverage NOT lost — Kiwi, Duffel GDS, and healthy OTAs still cover these airlines.
 _TEMPORARILY_DISABLED: set[str] = {
-    # ── OTAs / aggregators ──
-    "yatra_ota",          # GDPR block — redirects to /online/gdpr from EU/US IPs (needs Indian proxy)
     # ── Direct airlines ──
+    "nh_direct",              # nodriver headed Chrome + Akamai — fails on Cloud Run (SwiftShader/Xvfb)
+    "virginatlantic_direct",  # Akamai 444 hard-block on GraphQL even with residential proxy (SwiftShader fingerprint)
     # ═══ FIXED ═══
+    # yatra_ota — re-enabled 2026-04-18 (works on Cloud Run, 80 offers)
     # delta_direct — re-enabled 2026-04-18 (comprehensive Chrome flags + Akamai warm-up)
     # nh_direct, asiana_direct, hainan_direct — re-enabled 2026-04-14
     # airserbia_direct — GraphQL capture fixed, re-enabled 2026-04-14
@@ -872,7 +881,7 @@ class MultiProvider:
         tasks = []
         providers_used = []
 
-        # ── Log proxy status ──
+        # ── Log proxy status (only when configured) ──
         from .browser import proxy_is_configured, get_default_proxy_url
         if proxy_is_configured():
             # Mask credentials in log
@@ -881,8 +890,6 @@ class MultiProvider:
             p = urlparse(raw)
             masked = f"{p.scheme}://{p.hostname}:{p.port}"
             logger.info("LETSFG_PROXY active: %s — all connectors routing through proxy", masked)
-        else:
-            logger.debug("No LETSFG_PROXY set — connectors using direct connections")
 
         # ── Cloud Run backend (paid API providers: Duffel, Amadeus, Sabre, etc.) ──
         if self.backend_available:
@@ -1124,6 +1131,7 @@ class MultiProvider:
         # for slow browser connectors queued behind the semaphore.
         all_tasks = tasks + combo_tasks
         GLOBAL_TIMEOUT = float(os.environ.get("LETSFG_SEARCH_TIMEOUT", "180"))
+        PRIORITY_GRACE = 60  # extra seconds for priority browser connectors
         
         # Create named Task objects so we can identify which finished
         named_tasks = [asyncio.create_task(t, name=str(i)) for i, t in enumerate(all_tasks)]
@@ -1132,13 +1140,44 @@ class MultiProvider:
         done, pending = await asyncio.wait(named_tasks, timeout=GLOBAL_TIMEOUT, return_when=asyncio.ALL_COMPLETED)
         
         # Cancel any pending tasks (they're too slow)
+        # BUT: give priority browser sources a grace period — these are key
+        # carriers (Emirates, Qatar, etc.) that may need extra time due to
+        # browser slot contention + slow airline sites.
         if pending:
-            logger.info("Global timeout (%.0fs): %d/%d tasks completed, cancelling %d pending",
-                        GLOBAL_TIMEOUT, len(done), len(named_tasks), len(pending))
+            # Identify which pending tasks are priority browser connectors
+            priority_pending = set()
+            non_priority_pending = set()
             for task in pending:
+                idx = int(task.get_name())
+                # Only normal provider tasks (not combo) can be priority
+                if idx < len(providers_used) and providers_used[idx] in _PRIORITY_BROWSER_SOURCES:
+                    priority_pending.add(task)
+                else:
+                    non_priority_pending.add(task)
+
+            # Cancel non-priority tasks immediately
+            for task in non_priority_pending:
                 task.cancel()
-            # Wait briefly for cancellations to propagate
-            await asyncio.gather(*pending, return_exceptions=True)
+            if non_priority_pending:
+                await asyncio.gather(*non_priority_pending, return_exceptions=True)
+
+            # Give priority tasks a grace period
+            if priority_pending:
+                priority_names = [providers_used[int(t.get_name())] for t in priority_pending if int(t.get_name()) < len(providers_used)]
+                logger.info("Global timeout (%.0fs): granting %ds grace to %d priority connectors: %s",
+                            GLOBAL_TIMEOUT, PRIORITY_GRACE, len(priority_pending), priority_names)
+                grace_done, grace_pending = await asyncio.wait(priority_pending, timeout=PRIORITY_GRACE, return_when=asyncio.ALL_COMPLETED)
+                if grace_done:
+                    done = done | grace_done
+                    logger.info("Grace period: %d priority connectors completed", len(grace_done))
+                if grace_pending:
+                    logger.info("Grace period expired: cancelling %d remaining priority connectors", len(grace_pending))
+                    for task in grace_pending:
+                        task.cancel()
+                    await asyncio.gather(*grace_pending, return_exceptions=True)
+
+            logger.info("Global timeout (%.0fs): %d/%d tasks completed total",
+                        GLOBAL_TIMEOUT, len(done), len(named_tasks))
         
         # Rebuild results list in original order
         results = []
@@ -1162,17 +1201,28 @@ class MultiProvider:
         merged_passenger_ids = []
         merged_offer_request_id = ""
 
+        succeeded: list[str] = []
+        failed: list[str] = []
         for i, result in enumerate(normal_results):
             provider = providers_used[i]
             if isinstance(result, Exception):
                 logger.error("Provider %s failed: %s", provider, result)
+                failed.append(provider)
                 continue
             if isinstance(result, FlightSearchResponse):
+                if result.offers:
+                    succeeded.append(f"{provider}({len(result.offers)})")
+                else:
+                    succeeded.append(f"{provider}(0)")
                 all_offers.extend(result.offers)
                 # Keep backend's passenger_ids and offer_request_id (needed for bookings)
                 if provider == "backend" and result.passenger_ids:
                     merged_passenger_ids = result.passenger_ids
                     merged_offer_request_id = result.offer_request_id
+
+        logger.info("Provider results: %d succeeded [%s], %d failed [%s]",
+                     len(succeeded), ", ".join(succeeded),
+                     len(failed), ", ".join(failed))
 
         # ── Fire-and-forget telemetry: report connector outcomes to backend ──
         self._send_telemetry(
@@ -1248,8 +1298,21 @@ class MultiProvider:
         # Normalize prices to requested currency for fair comparison
         await self._normalize_prices(all_offers, req.currency)
 
+        # ── Pipeline diagnostics: log per-source offer counts ──────────────
+        self._log_pipeline_stage("collected (pre-filter)", all_offers)
+
+        # ── Date validation ────────────────────────────────────────────────
+        # Reject offers whose outbound departure date doesn't match the
+        # requested date.  Some connectors (EveryMundo airTRFX, Sputnik
+        # calendar APIs) return fares across a wide date range — e.g.
+        # November fares for a June search.  ±1 day tolerance for timezone
+        # edge cases.
+        all_offers = self._filter_offers_by_date(all_offers, req)
+        self._log_pipeline_stage("after date filter", all_offers)
+
         # Deduplicate similar offers (same route, similar time, similar price)
         deduped = self._deduplicate(all_offers)
+        self._log_pipeline_stage("after dedup", deduped)
 
         # ── Filter by max_stopovers ────────────────────────────────────────
         # Applied post-aggregate so ALL sources (local + backend) respect it.
@@ -1283,28 +1346,54 @@ class MultiProvider:
         # requested route.  Catches connectors that return wrong routes
         # (e.g. Singapore connector returning SIN→LHR for a LON→DEL search).
         deduped = self._filter_wrong_routes(deduped, req)
+        self._log_pipeline_stage("after route filter", deduped)
 
         # ── Round-trip preference ──────────────────────────────────────────
         # When a round-trip was requested, prefer offers that include both
         # outbound and inbound routes.  One-way offers (inbound is None)
-        # are dropped when true round-trip offers are available; kept only
-        # as a fallback when no connector returned a proper RT result.
+        # are dropped ONLY when a round-trip offer from the SAME airline
+        # exists.  This preserves airlines whose connectors don't handle
+        # RT natively AND whose return-direction combo search failed —
+        # previously these airlines disappeared entirely because the old
+        # all-or-nothing filter dropped every OW offer if ANY RT existed.
         if is_round_trip:
             rt_offers = [o for o in deduped if o.inbound is not None]
             if rt_offers:
-                ow_dropped = len(deduped) - len(rt_offers)
-                if ow_dropped:
+                # Build set of airlines that have at least one RT offer
+                rt_airlines: set[str] = set()
+                for o in rt_offers:
+                    key = o.owner_airline or (o.airlines[0] if o.airlines else "")
+                    if key:
+                        rt_airlines.add(key)
+
+                # Keep: all RT offers + OW offers from airlines NOT in rt_airlines
+                kept = list(rt_offers)
+                ow_kept = 0
+                ow_dropped = 0
+                for o in deduped:
+                    if o.inbound is not None:
+                        continue  # already in kept via rt_offers
+                    airline_key = o.owner_airline or (o.airlines[0] if o.airlines else "")
+                    if airline_key and airline_key not in rt_airlines:
+                        kept.append(o)
+                        ow_kept += 1
+                    else:
+                        ow_dropped += 1
+
+                if ow_dropped or ow_kept:
                     logger.info(
-                        "RT preference: keeping %d round-trip offers, "
-                        "dropping %d one-way",
-                        len(rt_offers), ow_dropped,
+                        "RT preference: %d RT offers, dropped %d OW (airline has RT), "
+                        "kept %d OW (airline has no RT — fallback)",
+                        len(rt_offers), ow_dropped, ow_kept,
                     )
-                deduped = rt_offers
+                deduped = kept
+            self._log_pipeline_stage("after RT filter", deduped)
 
         # --- Airline-diverse selection ---
         # Ensure at least the cheapest offer per airline is included,
         # then fill remaining slots with overall cheapest.
         deduped = self._diverse_select(deduped, req.sort, req.limit)
+        self._log_pipeline_stage("after diverse_select (final)", deduped)
 
         # Build airlines summary (cheapest per airline across ALL deduped offers)
         airlines_summary = self._build_airlines_summary(all_offers)
@@ -1584,7 +1673,7 @@ class MultiProvider:
                 currency=req.currency, offers=[], total_results=0,
             )
         except BaseException as exc:
-            logger.warning("wizzair_direct crashed: %s", type(exc).__name__)
+            logger.warning("wizzair_direct crashed: %s: %s", type(exc).__name__, str(exc)[:200])
             return FlightSearchResponse(
                 search_id="", origin=req.origin, destination=req.destination,
                 currency=req.currency, offers=[], total_results=0,
@@ -1691,7 +1780,7 @@ class MultiProvider:
             if is_cancelled:
                 logger.debug("%s cancelled (global timeout)", source)
             else:
-                logger.warning("%s crashed: %s", source, type(exc).__name__)
+                logger.warning("%s crashed: %s: %s", source, type(exc).__name__, str(exc)[:200])
             # Record error — 'cancelled' connectors never actually ran,
             # so they must NOT poison the health dashboard.
             telemetry.ok = False
@@ -1762,6 +1851,23 @@ class MultiProvider:
         "MEX": {"MEX", "NLU"},
         "YTO": {"YYZ", "YTZ", "YHM"},
         "YMQ": {"YUL", "YMX"},
+        # Airport codes that share a metro area — route filter must accept
+        # flights from either airport when the user searches for one.
+        "WAW": {"WAW", "WMI"},       # Warsaw Chopin + Modlin
+        "WMI": {"WAW", "WMI"},
+        "BRU": {"BRU", "CRL"},       # Brussels Zaventem + Charleroi
+        "CRL": {"BRU", "CRL"},
+        "OSL": {"OSL", "TRF"},       # Oslo Gardermoen + Torp Sandefjord
+        "TRF": {"OSL", "TRF"},
+        "DFW": {"DFW", "DAL"},       # Dallas–Fort Worth + Love Field
+        "DAL": {"DFW", "DAL"},
+        "IAH": {"IAH", "HOU"},       # Houston Bush + Hobby
+        "HOU": {"IAH", "HOU"},
+        "SFO": {"SFO", "OAK", "SJC"},  # San Francisco Bay Area
+        "OAK": {"SFO", "OAK", "SJC"},
+        "SJC": {"SFO", "OAK", "SJC"},
+        "MIA": {"MIA", "FLL"},       # Miami + Fort Lauderdale
+        "FLL": {"MIA", "FLL"},
     }
 
     # City code → primary (largest) airport for connectors that don't handle city codes
@@ -1854,6 +1960,20 @@ class MultiProvider:
 
         return _route_matches(offer.outbound) and _route_matches(offer.inbound)
 
+    @staticmethod
+    def _log_pipeline_stage(stage: str, offers: list[FlightOffer]) -> None:
+        """Log per-source offer counts at a pipeline stage (for diagnostics)."""
+        by_source: dict[str, int] = {}
+        for o in offers:
+            src = o.source or "unknown"
+            by_source[src] = by_source.get(src, 0) + 1
+        if by_source:
+            parts = ", ".join(f"{s}={n}" for s, n in sorted(by_source.items(), key=lambda x: -x[1]))
+            logger.info("Pipeline [%s]: %d offers from %d sources — %s",
+                        stage, len(offers), len(by_source), parts)
+        else:
+            logger.info("Pipeline [%s]: 0 offers", stage)
+
     def _filter_wrong_routes(self, offers: list[FlightOffer], req: FlightSearchRequest) -> list[FlightOffer]:
         """Remove offers whose actual route doesn't match the requested origin → destination."""
         valid_origins = self._expand_iata(req.origin)
@@ -1910,6 +2030,62 @@ class MultiProvider:
                 removed += 1
         if removed:
             logger.info("Date filter: removed %d legs not on %s", removed, target_date)
+        return kept
+
+    @staticmethod
+    def _filter_offers_by_date(offers: list[FlightOffer], req) -> list[FlightOffer]:
+        """Remove offers whose departure dates don't match the request (±1 day).
+
+        Unlike _filter_legs_by_date (combo legs only), this runs on ALL offers
+        including Stream A results from connectors.  Catches EveryMundo/Sputnik
+        connectors that return fares from wrong months.
+        """
+        from datetime import date as date_cls, datetime as dt_cls
+
+        def _to_date(v):
+            if v is None:
+                return None
+            if isinstance(v, dt_cls):
+                return v.date()
+            if isinstance(v, date_cls):
+                return v
+            if isinstance(v, str):
+                try:
+                    return dt_cls.strptime(v[:10], "%Y-%m-%d").date()
+                except ValueError:
+                    return None
+            return None
+
+        ob_target = _to_date(req.date_from)
+        ib_target = _to_date(req.return_from) if hasattr(req, "return_from") else None
+
+        if ob_target is None:
+            return offers
+
+        kept = []
+        removed = 0
+        for o in offers:
+            # Check outbound departure date
+            if o.outbound and o.outbound.segments:
+                dep = o.outbound.segments[0].departure
+                dep_d = _to_date(dep)
+                if dep_d is not None and abs((dep_d - ob_target).days) > 1:
+                    removed += 1
+                    continue
+
+            # Check inbound departure date (if RT search and offer has inbound)
+            if ib_target and o.inbound and o.inbound.segments:
+                ib_dep = o.inbound.segments[0].departure
+                ib_d = _to_date(ib_dep)
+                if ib_d is not None and abs((ib_d - ib_target).days) > 1:
+                    removed += 1
+                    continue
+
+            kept.append(o)
+
+        if removed:
+            logger.info("Date validation: removed %d offers with wrong departure date (%d remain)",
+                        removed, len(kept))
         return kept
 
     def _deduplicate(self, offers: list[FlightOffer]) -> list[FlightOffer]:
@@ -2066,30 +2242,49 @@ class MultiProvider:
 
     @staticmethod
     def _dedup_key(offer: FlightOffer) -> str:
-        """Generate a deduplication key based on route and timing."""
-        parts = []
-        if offer.outbound and offer.outbound.segments:
-            first = offer.outbound.segments[0]
-            last = offer.outbound.segments[-1]
-            # Round departure to nearest 10 minutes for fuzzy matching
-            dep_rounded = first.departure.replace(
-                minute=(first.departure.minute // 10) * 10, second=0, microsecond=0
-            )
-            arr_rounded = last.arrival.replace(
-                minute=(last.arrival.minute // 10) * 10, second=0, microsecond=0
-            )
-            parts.append(f"{first.origin}-{last.destination}-{dep_rounded.isoformat()}-{arr_rounded.isoformat()}")
-            # Add airlines
-            airline_str = "-".join(sorted(s.airline for s in offer.outbound.segments))
-            parts.append(airline_str)
+        """Generate a deduplication key based on route and timing.
 
-        if offer.inbound and offer.inbound.segments:
-            first = offer.inbound.segments[0]
-            last = offer.inbound.segments[-1]
-            dep_rounded = first.departure.replace(
-                minute=(first.departure.minute // 10) * 10, second=0, microsecond=0
-            )
-            parts.append(f"ret-{dep_rounded.isoformat()}")
+        Robust against edge cases: missing segments, date-only departures,
+        None arrivals.  Falls back to offer.id when key can't be built.
+        """
+        parts = []
+        try:
+            if offer.outbound and offer.outbound.segments:
+                first = offer.outbound.segments[0]
+                last = offer.outbound.segments[-1]
+                # Round departure to nearest 10 minutes for fuzzy matching
+                dep = first.departure
+                arr = last.arrival
+                if hasattr(dep, 'minute'):
+                    dep_rounded = dep.replace(
+                        minute=(dep.minute // 10) * 10, second=0, microsecond=0
+                    )
+                else:
+                    dep_rounded = dep  # date object, no rounding needed
+                if hasattr(arr, 'minute'):
+                    arr_rounded = arr.replace(
+                        minute=(arr.minute // 10) * 10, second=0, microsecond=0
+                    )
+                else:
+                    arr_rounded = arr
+                parts.append(f"{first.origin}-{last.destination}-{dep_rounded}-{arr_rounded}")
+                # Add airlines
+                airline_str = "-".join(sorted(s.airline for s in offer.outbound.segments))
+                parts.append(airline_str)
+
+            if offer.inbound and offer.inbound.segments:
+                first_ib = offer.inbound.segments[0]
+                dep_ib = first_ib.departure
+                if hasattr(dep_ib, 'minute'):
+                    dep_ib_rounded = dep_ib.replace(
+                        minute=(dep_ib.minute // 10) * 10, second=0, microsecond=0
+                    )
+                else:
+                    dep_ib_rounded = dep_ib
+                parts.append(f"ret-{dep_ib_rounded}")
+        except Exception:
+            # Malformed offer — fall back to unique ID
+            return offer.id
 
         return "|".join(parts) if parts else offer.id
 

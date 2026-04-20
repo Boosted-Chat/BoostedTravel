@@ -231,7 +231,7 @@ class SpiritConnectorClient:
                     )
                 except Exception as e:
                     logger.debug("NK: homepage nav: %s", e)
-                await asyncio.sleep(8)
+                await asyncio.sleep(4)
                 _homepage_warmed = True
             else:
                 try:
@@ -492,6 +492,7 @@ class SpiritConnectorClient:
         if best_price == float("inf"):
             return None
 
+        _nk_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         # Build segments from journey.segments
         segments_raw = journey.get("segments", [])
         segments: list[FlightSegment] = []
@@ -508,7 +509,7 @@ class SpiritConnectorClient:
                 destination=des.get("destination", req.destination),
                 departure=_parse_dt(des.get("departure", "")),
                 arrival=_parse_dt(des.get("arrival", "")),
-                cabin_class="M",
+                cabin_class=_nk_cabin,
             ))
 
         if not segments:
@@ -519,7 +520,7 @@ class SpiritConnectorClient:
                 destination=des.get("destination", req.destination),
                 departure=_parse_dt(des.get("departure", "")),
                 arrival=_parse_dt(des.get("arrival", "")),
-                cabin_class="M",
+                cabin_class=_nk_cabin,
             ))
 
         total_dur = 0

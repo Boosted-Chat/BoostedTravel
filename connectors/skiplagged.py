@@ -21,6 +21,7 @@ from typing import Optional
 
 import httpx
 
+from .browser import get_curl_cffi_proxies, get_httpx_proxy_url
 from ..models.flights import (
     FlightOffer,
     FlightRoute,
@@ -118,7 +119,7 @@ class SkiplaggedConnectorClient:
             "counts[children]": "0",
         }
 
-        async with AsyncSession(impersonate="chrome131") as s:
+        async with AsyncSession(impersonate="chrome131", proxies=get_curl_cffi_proxies()) as s:
             r = await s.get(_SEARCH_URL, params=params, headers=_HEADERS, timeout=self.timeout)
             if r.status_code != 200:
                 return []

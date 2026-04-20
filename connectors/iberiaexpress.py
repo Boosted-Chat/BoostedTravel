@@ -161,6 +161,7 @@ class IberiaExpressConnectorClient:
         target_date = req.date_from.strftime("%Y-%m-%d")
         dep_dt = datetime.combine(req.date_from, datetime.min.time())
 
+        _i2_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         seg = FlightSegment(
             airline="I2",
             airline_name="Iberia Express",
@@ -172,7 +173,7 @@ class IberiaExpressConnectorClient:
             departure=dep_dt,
             arrival=dep_dt,
             duration_seconds=0,
-            cabin_class="economy",
+            cabin_class=_i2_cabin,
         )
         route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
 
@@ -184,7 +185,7 @@ class IberiaExpressConnectorClient:
                 airline="I2", airline_name="Iberia Express", flight_no="",
                 origin=req.destination, destination=req.origin,
                 departure=ib_dt, arrival=ib_dt,
-                duration_seconds=0, cabin_class="economy",
+                duration_seconds=0, cabin_class=_i2_cabin,
             )
             _ib_route = FlightRoute(segments=[ib_seg], total_duration_seconds=0, stopovers=0)
 

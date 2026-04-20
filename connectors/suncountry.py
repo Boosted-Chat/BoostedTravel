@@ -325,6 +325,7 @@ class SunCountryConnectorClient:
             seats = fare.get("available")
             dep_dt = datetime.fromisoformat(fare["date"])
 
+            _sy_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline="SY",
                 airline_name="Sun Country Airlines",
@@ -334,7 +335,7 @@ class SunCountryConnectorClient:
                 departure=dep_dt,
                 arrival=dep_dt,
                 duration_seconds=0,
-                cabin_class="economy",
+                cabin_class=_sy_cabin,
             )
             route = FlightRoute(segments=[seg])
 
@@ -378,6 +379,7 @@ class SunCountryConnectorClient:
                 continue
 
             dep_dt = datetime.fromisoformat(fare["date"])
+            _sy_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline="SY",
                 airline_name="Sun Country Airlines",
@@ -387,7 +389,7 @@ class SunCountryConnectorClient:
                 departure=dep_dt,
                 arrival=dep_dt,
                 duration_seconds=0,
-                cabin_class="economy",
+                cabin_class=_sy_cabin,
             )
             route = FlightRoute(segments=[seg])
             results.append((route, round(price, 2)))

@@ -37,7 +37,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_args, auto_block_if_proxied
+from .browser import stealth_args, auto_block_if_proxied, get_curl_cffi_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ async def _get_browser():
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
-        from connectors.browser import launch_headed_browser
+        from .browser import launch_headed_browser
         _browser = await launch_headed_browser()
         logger.info("Flybondi: browser launched")
         return _browser
@@ -163,7 +163,7 @@ class FlybondiConnectorClient:
 
     def _fetch_all_edges(self, url: str, req: FlightSearchRequest) -> list[dict] | None:
         """Fetch SSR page via curl_cffi and return ALL flight edges (outbound + inbound)."""
-        r = curl_requests.get(url, impersonate="chrome131", timeout=int(self.timeout))
+        r = curl_requests.get(url, impersonate="chrome131", timeout=int(self.timeout), proxies=get_curl_cffi_proxies())
         if r.status_code != 200:
             logger.warning("Flybondi API: HTTP %d", r.status_code)
             return None
@@ -392,6 +392,7 @@ class FlybondiConnectorClient:
 
         # Build segments from legs
         legs_raw = node.get("legs", [])
+        _fo_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segments: list[FlightSegment] = []
         for leg in legs_raw:
             segments.append(FlightSegment(
@@ -402,7 +403,7 @@ class FlybondiConnectorClient:
                 destination=leg.get("destination", node.get("destination", req.destination)),
                 departure=self._parse_dt(leg.get("departureDate", "")),
                 arrival=self._parse_dt(leg.get("arrivalDate", "")),
-                cabin_class="M",
+                cabin_class=_fo_cabin,
             ))
 
         if not segments:
@@ -415,7 +416,7 @@ class FlybondiConnectorClient:
                 destination=node.get("destination", req.destination),
                 departure=self._parse_dt(node.get("departureDate", "")),
                 arrival=self._parse_dt(node.get("arrivalDate", "")),
-                cabin_class="M",
+                cabin_class=_fo_cabin,
             ))
 
         # Total duration from node or compute from segments

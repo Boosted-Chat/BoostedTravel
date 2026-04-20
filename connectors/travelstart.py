@@ -23,6 +23,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from .browser import get_httpx_proxy_url
 from ..models.flights import (
     FlightOffer,
     FlightRoute,
@@ -152,7 +153,8 @@ class TravelstartConnectorClient:
         for attempt in range(2):
             try:
                 async with httpx.AsyncClient(
-                    timeout=self.timeout, follow_redirects=True
+                    timeout=self.timeout, follow_redirects=True,
+                    proxy=get_httpx_proxy_url(),
                 ) as client:
                     resp = await client.post(url, json=payload, headers=_HEADERS)
 

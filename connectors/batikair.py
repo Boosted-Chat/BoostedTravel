@@ -750,6 +750,7 @@ class BatikAirConnectorClient:
                     if dur < 0:
                         dur += 86400  # crosses midnight
 
+                _id_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 seg = FlightSegment(
                     airline=f.get("carrier", "ID"),
                     airline_name=f.get("airline", "Batik Air"),
@@ -759,7 +760,7 @@ class BatikAirConnectorClient:
                     departure=dep_dt or datetime(2000, 1, 1),
                     arrival=arr_dt or datetime(2000, 1, 1),
                     duration_seconds=dur,
-                    cabin_class="economy",
+                    cabin_class=_id_cabin,
                     aircraft="",
                 )
 
@@ -852,13 +853,14 @@ class BatikAirConnectorClient:
                                 ib_arr = self._parse_dt(ibf.get("arrivalDateTime", "") or ibf.get("arrival", ""))
                                 ib_dur = max(int((ib_arr - ib_dep).total_seconds()), 0) if ib_dep.year > 2000 and ib_arr.year > 2000 else 0
                                 ib_carrier = ibf.get("carrierCode", "") or ibf.get("carrier", "") or "ID"
+                                _id_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                                 best_ib_seg = FlightSegment(
                                     airline=ib_carrier, airline_name="Batik Air",
                                     flight_no=str(ibf.get("flightNumber", "") or ibf.get("flightNo", "")),
                                     origin=ibf.get("origin", req.destination),
                                     destination=ibf.get("destination", req.origin),
                                     departure=ib_dep, arrival=ib_arr,
-                                    duration_seconds=ib_dur, cabin_class="economy",
+                                    duration_seconds=ib_dur, cabin_class=_id_cabin,
                                 )
                             break
                         except (TypeError, ValueError):
@@ -893,12 +895,13 @@ class BatikAirConnectorClient:
             arr_dt = self._parse_dt(arr_str)
             dur = max(int((arr_dt - dep_dt).total_seconds()), 0) if dep_dt.year > 2000 and arr_dt.year > 2000 else 0
 
+            _id_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline=carrier, airline_name="Batik Air", flight_no=fno,
                 origin=flight.get("origin", req.origin),
                 destination=flight.get("destination", req.destination),
                 departure=dep_dt, arrival=arr_dt, duration_seconds=dur,
-                cabin_class="economy", aircraft="",
+                cabin_class=_id_cabin, aircraft="",
             )
 
             route = FlightRoute(segments=[seg], total_duration_seconds=dur, stopovers=0)

@@ -78,6 +78,10 @@ from .browser import (
     proxy_chrome_args,
     proxy_is_configured,
     stealth_popen_kwargs,
+    bandwidth_saving_args,
+    disable_background_networking_args,
+    apply_cdp_url_blocking,
+    patchright_bandwidth_args,
 )
 
 # ── ITA-specific resource blocking (allows CF challenge scripts) ──
@@ -276,6 +280,7 @@ async def _get_browser():
                 "--ignore-certificate-errors",
                 "--no-first-run",
                 "--no-sandbox",
+                *patchright_bandwidth_args(),
             ]
             chrome_args.extend([
                 "--window-position=-2400,-2400",
@@ -302,6 +307,8 @@ async def _get_browser():
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
                 "--window-size=1400,900",
+                *bandwidth_saving_args(),
+                *disable_background_networking_args(),
                 "about:blank",
             ]
             _chrome_proc = subprocess.Popen(
@@ -364,6 +371,8 @@ class ITAAirwaysConnectorClient:
             use_proxy = _proxy_has_auth()
             if use_proxy:
                 await _ita_auto_block(page)
+            else:
+                await apply_cdp_url_blocking(page)
 
             # --- API response interception ---
             captured: dict = {}

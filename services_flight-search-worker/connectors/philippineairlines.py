@@ -266,7 +266,7 @@ class PhilippineAirlinesConnectorClient:
                 nearby_fares.append(fare)
 
         # Prefer exact-date fares; fall back to all route fares
-        use_fares = exact_fares if exact_fares else nearby_fares
+        use_fares = exact_fares
 
         for fare in use_fares:
             orig = fare.get("originAirportCode", "")

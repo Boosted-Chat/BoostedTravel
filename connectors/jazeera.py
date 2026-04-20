@@ -341,6 +341,7 @@ class JazeeraConnectorClient:
                     carrier = seg_ident.get("carrierCode", "J9") if seg_ident else "J9"
                     fnum = seg_ident.get("identifier", "") if seg_ident else ""
                     seg_des = seg.get("designator", {})
+                    _j9_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                     ib_flight_segs.append(FlightSegment(
                         airline="J9", airline_name="Jazeera Airways",
                         flight_no=f"J9{fnum}" if fnum and not fnum.startswith("J9") else (fnum or "J9"),
@@ -348,15 +349,16 @@ class JazeeraConnectorClient:
                         destination=seg_des.get("destination", req.origin) if seg_des else req.origin,
                         departure=self._parse_dt(seg_des.get("departure", "") if seg_des else ""),
                         arrival=self._parse_dt(seg_des.get("arrival", "") if seg_des else ""),
-                        cabin_class="economy",
+                        cabin_class=_j9_cabin,
                     ))
                 if not ib_flight_segs:
+                    _j9_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                     ib_flight_segs.append(FlightSegment(
                         airline="J9", airline_name="Jazeera Airways", flight_no="J9",
                         origin=req.destination, destination=req.origin,
                         departure=self._parse_dt(ib_des.get("departure", "")),
                         arrival=self._parse_dt(ib_des.get("arrival", "")),
-                        cabin_class="economy",
+                        cabin_class=_j9_cabin,
                     ))
                 ib_dur = 0
                 if ib_flight_segs[0].departure and ib_flight_segs[-1].arrival:

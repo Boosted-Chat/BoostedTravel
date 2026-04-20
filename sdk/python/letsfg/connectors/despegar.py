@@ -28,7 +28,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import acquire_browser_slot, release_browser_slot
+from .browser import acquire_browser_slot, release_browser_slot, patchright_bandwidth_args
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,7 @@ class DespegarConnectorClient:
                     args=[
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox",
+                        *patchright_bandwidth_args(),
                     ],
                 )
 

@@ -300,7 +300,7 @@ class JetstarConnectorClient:
                         wait_until="domcontentloaded",
                         timeout=20000,
                     )
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(3)
                     warmup_title = await page.title()
                     logger.info("Jetstar: warm-up page title: %s", warmup_title)
                     _warmup_done = True
@@ -543,6 +543,7 @@ class JetstarConnectorClient:
 
         # Fallback: build segment from sell key info
         if not segments and key_info:
+            _jq_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             seg = FlightSegment(
                 airline=key_info.get("carrier", "JQ"),
                 airline_name="Jetstar",
@@ -551,7 +552,7 @@ class JetstarConnectorClient:
                 destination=key_info.get("destination", req.destination),
                 departure=key_info.get("departure", datetime(2000, 1, 1)),
                 arrival=key_info.get("arrival", datetime(2000, 1, 1)),
-                cabin_class="M",
+                cabin_class=_jq_cabin,
             )
             segments.append(seg)
 
@@ -675,7 +676,7 @@ class JetstarConnectorClient:
             destination=destination,
             departure=self._parse_dt(dep_str),
             arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
         )
 
     def _parse_navitaire_data(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
@@ -710,9 +711,9 @@ class JetstarConnectorClient:
         legs_raw = flight.get("legs") or flight.get("segments") or []
         segments: list[FlightSegment] = []
         for leg in legs_raw:
-            segments.append(self._build_segment(leg, req.origin, req.destination))
+            segments.append(self._build_segment(leg, req.origin, req.destination, req.cabin_class or "M"))
         if not segments:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
+            segments.append(self._build_segment(flight, req.origin, req.destination, req.cabin_class or "M"))
 
         total_dur = 0
         if segments and segments[0].departure and segments[-1].arrival:
@@ -854,7 +855,7 @@ class JetstarConnectorClient:
                     flight_no="",
                     origin=origin, destination=destination,
                     departure=dep_dt, arrival=arr_dt,
-                    cabin_class="M",
+                    cabin_class={"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy"),
                 )
                 dur = fd.get("durationMins", 0) * 60
                 if dur == 0 and dep_dt and arr_dt:
@@ -925,18 +926,19 @@ class JetstarConnectorClient:
                     pass
         return best if best < float("inf") else None
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
+    def _build_segment(self, seg: dict, default_origin: str, default_dest: str, cabin_class: str = "M") -> FlightSegment:
         dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
         arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
         flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
         origin = seg.get("origin") or seg.get("departureStation") or seg.get("departureAirport") or default_origin
         destination = seg.get("destination") or seg.get("arrivalStation") or seg.get("arrivalAirport") or default_dest
         carrier = seg.get("carrierCode") or seg.get("carrier") or seg.get("airline") or "JQ"
+        _jq_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(cabin_class, "economy")
         return FlightSegment(
             airline=carrier, airline_name="Jetstar", flight_no=flight_no,
             origin=origin, destination=destination,
             departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=_jq_cabin,
         )
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:

@@ -33,7 +33,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, bandwidth_saving_args, disable_background_networking_args, apply_cdp_url_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,8 @@ async def _get_context():
                 "--window-position=-2400,-2400",
                 "--window-size=1366,768",
                 "--lang=en-US",
+                *bandwidth_saving_args(),
+                *disable_background_networking_args(),
                 "about:blank",
             ]
             _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
@@ -244,6 +246,7 @@ class TiketConnectorClient:
     ) -> list[FlightOffer] | None:
         context = await _get_context()
         page = await context.new_page()
+        await apply_cdp_url_blocking(page)
 
         captured_data: list[dict] = []
 

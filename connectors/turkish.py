@@ -229,6 +229,8 @@ class TurkishConnectorClient:
         # Fast path: Sputnik API (no browser needed, ~1s)
         sputnik_offers = await self._try_sputnik(req)
         if sputnik_offers:
+            _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+            sputnik_offers = [o for o in sputnik_offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
             sputnik_offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
             h = hashlib.md5(f"tk{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
             return FlightSearchResponse(
@@ -1572,6 +1574,7 @@ class TurkishConnectorClient:
                             fc = seg.get("flightCode", {})
                             ac = fc.get("airlineCode", "TK")
                             fn = fc.get("flightNumber", "")
+                            _tk_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                             segs.append(FlightSegment(
                                 airline=ac,
                                 airline_name="Turkish Airlines" if ac == "TK" else ac,
@@ -1581,7 +1584,7 @@ class TurkishConnectorClient:
                                 departure=_parse_tk_datetime(seg["departureDateTime"]),
                                 arrival=_parse_tk_datetime(seg["arrivalDateTime"]),
                                 duration_seconds=seg.get("journeyDurationInMillis", 0) // 1000,
-                                cabin_class="economy",
+                                cabin_class=_tk_cabin,
                                 aircraft=seg.get("equipmentName", ""),
                             ))
                         if segs:
@@ -1617,6 +1620,7 @@ class TurkishConnectorClient:
                     arr_dt = _parse_tk_datetime(seg["arrivalDateTime"])
                     dur_ms = seg.get("journeyDurationInMillis", 0)
 
+                    _tk_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                     segments.append(FlightSegment(
                         airline=airline_code,
                         airline_name="Turkish Airlines" if airline_code == "TK" else airline_code,
@@ -1626,7 +1630,7 @@ class TurkishConnectorClient:
                         departure=dep_dt,
                         arrival=arr_dt,
                         duration_seconds=dur_ms // 1000,
-                        cabin_class="economy",
+                        cabin_class=_tk_cabin,
                         aircraft=seg.get("equipmentName", ""),
                     ))
 

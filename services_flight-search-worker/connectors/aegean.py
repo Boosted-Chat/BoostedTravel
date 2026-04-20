@@ -288,9 +288,9 @@ class AegeanConnectorClient:
             else:
                 nearby_fares.append(fare)
 
-        # Use exact-date fares if available, otherwise use all route-matching fares
-        # (EveryMundo pages show cheapest fares which may not include the exact date)
-        use_fares = exact_date_fares if exact_date_fares else nearby_fares
+        # Only use exact-date fares — never fall back to wrong-date fares.
+        # Returning November offers for a June search is worse than returning empty.
+        use_fares = exact_date_fares
 
         for fare in use_fares:
             price = fare.get("totalPrice")

@@ -240,7 +240,7 @@ class ChinaEasternConnectorClient:
         try:
             logger.info("ChinaEastern: loading homepage for %s→%s", req.origin, req.destination)
             await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(3.0)
             await _dismiss_overlays(page)
 
             # Switch to International tab (defaults to domestic)
@@ -321,7 +321,7 @@ class ChinaEasternConnectorClient:
                     search_data.clear()
                     api_event.clear()
                     await page.goto(fixed_url, wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(6.0)  # wait for briefInfo to fire on correct date
+                    await asyncio.sleep(4.0)  # wait for briefInfo to fire on correct date
 
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + remaining
@@ -330,7 +330,7 @@ class ChinaEasternConnectorClient:
                     break
                 url = page.url
                 if any(k in url.lower() for k in ["result", "search", "flight", "availability", "shopping"]):
-                    await asyncio.sleep(6.0)
+                    await asyncio.sleep(4.0)
                     break
                 await asyncio.sleep(1.0)
 
@@ -644,13 +644,14 @@ class ChinaEasternConnectorClient:
                     fno = seg.get("flightNo") or seg.get("carrierNo") or ""
                     full_fno = f"{carrier}{fno}" if fno and not fno.startswith(carrier) else fno
 
+                    _mu_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                     segments.append(FlightSegment(
                         airline=carrier[:2],
                         airline_name=seg.get("airlineCodeName") or self.AIRLINE_NAME,
                         flight_no=full_fno or f"{self.IATA}???",
                         origin=seg.get("orgCode") or req.origin,
                         destination=seg.get("destCode") or req.destination,
-                        departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+                        departure=dep_dt, arrival=arr_dt, cabin_class=_mu_cabin,
                     ))
 
                 if not segments:
@@ -736,11 +737,12 @@ class ChinaEasternConnectorClient:
                 if flight_no and not flight_no.startswith(airline_code):
                     flight_no = f"{airline_code}{flight_no}"
 
+                _mu_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
                     airline=airline_code[:2], airline_name=self.AIRLINE_NAME if airline_code == self.IATA else airline_code,
                     flight_no=flight_no or self.IATA, origin=seg.get("origin") or seg.get("departureAirport") or req.origin,
                     destination=seg.get("destination") or seg.get("arrivalAirport") or req.destination,
-                    departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+                    departure=dep_dt, arrival=arr_dt, cabin_class=_mu_cabin,
                 ))
 
             if not segments:
@@ -863,9 +865,10 @@ class ChinaEasternConnectorClient:
         currency = f.get("currency", self.DEFAULT_CURRENCY)
         offer_id = hashlib.md5(f"{self.IATA.lower()}_{req.origin}_{req.destination}_{dep_date}_{flight_no}_{price}".encode()).hexdigest()[:12]
 
+        _mu_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segment = FlightSegment(
             airline=self.IATA, airline_name=self.AIRLINE_NAME, flight_no=flight_no,
-            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class="economy",
+            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class=_mu_cabin,
         )
         route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
         return FlightOffer(

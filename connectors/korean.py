@@ -334,6 +334,7 @@ class KoreanConnectorClient:
                             if _ib_best < float("inf"):
                                 _ret = req.return_from
                                 _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                                _ke_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                                 _ib_seg = FlightSegment(
                                     airline="KE",
                                     airline_name="Korean Air",
@@ -343,7 +344,7 @@ class KoreanConnectorClient:
                                     departure=_ret_dt,
                                     arrival=_ret_dt,
                                     duration_seconds=0,
-                                    cabin_class="economy",
+                                    cabin_class=_ke_cabin,
                                 )
                                 _ib_route = FlightRoute(segments=[_ib_seg], total_duration_seconds=0, stopovers=0)
                                 for _i, _o in enumerate(offers):
@@ -364,6 +365,8 @@ class KoreanConnectorClient:
                     except Exception:
                         pass
 
+                _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
+                offers = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
                 offers.sort(key=lambda o: o.price)
 
                 elapsed = time.monotonic() - t0
@@ -474,12 +477,14 @@ class KoreanConnectorClient:
                 f"ke_{origin_code}{dest_code}{dep_date}{price}".encode()
             ).hexdigest()[:12]
 
+            # Korean Air cabin codes: Y=Economy, C=Business, F=First
+            _ke_cabin = {"M": "Y", "W": "Y", "C": "C", "F": "F"}.get(req.cabin_class or "M", "Y")
             booking_url = (
                 f"https://www.koreanair.com/booking/best-prices"
                 f"?departureStation={origin_code}&arrivalStation={dest_code}"
                 f"&departureDate={dep_date or target_date}"
                 f"&adt={req.adults}&chd={req.children}&inf={req.infants}"
-                f"&tripType={'RT' if req.return_from else 'OW'}&cabin=Y"
+                f"&tripType={'RT' if req.return_from else 'OW'}&cabin={_ke_cabin}"
             )
 
             offers.append(FlightOffer(

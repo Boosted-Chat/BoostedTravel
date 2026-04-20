@@ -927,8 +927,9 @@ class SouthwestConnectorClient:
             if not cheapest_product_id and isinstance(fare_data, dict):
                 cheapest_product_id = fare_data.get("productId", "")
 
+        _wn_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         if cheapest_product_id:
-            segments = self._parse_product_id_segments(cheapest_product_id)
+            segments = self._parse_product_id_segments(cheapest_product_id, _wn_cabin)
 
         if not segments:
             # Fallback: use route-level origin/destination
@@ -936,7 +937,7 @@ class SouthwestConnectorClient:
                 airline="WN", airline_name="Southwest Airlines", flight_no="",
                 origin=req.origin, destination=req.destination,
                 departure=datetime(2000, 1, 1), arrival=datetime(2000, 1, 1),
-                cabin_class="M",
+                cabin_class=_wn_cabin,
             )]
 
         total_dur = detail.get("totalDuration", 0)
@@ -968,7 +969,7 @@ class SouthwestConnectorClient:
             source_tier="free",
         )
 
-    def _parse_product_id_segments(self, product_id: str) -> list[FlightSegment]:
+    def _parse_product_id_segments(self, product_id: str, cabin_class: str = "M") -> list[FlightSegment]:
         """Parse segment info from Southwest productId string.
         
         Format: "WGA|code,class,ORIGIN,DEST,depTimeISO,arrTimeISO,carrier,opCarrier,flightNum,aircraft"
@@ -993,7 +994,7 @@ class SouthwestConnectorClient:
                     destination=dest,
                     departure=self._parse_dt(dep_str),
                     arrival=self._parse_dt(arr_str),
-                    cabin_class="M",
+                    cabin_class=cabin_class,
                 ))
         return segments
 

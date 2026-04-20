@@ -292,6 +292,7 @@ class PNGAirConnectorClient:
                 if best_ib_info and best_ib_p < float("inf"):
                     ib_fi, ib_cur = best_ib_info
                     _ib_price = round(best_ib_p, 2)
+                    _cg_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                     _ib_route = FlightRoute(
                         segments=[FlightSegment(
                             airline="CG", airline_name="PNG Air",
@@ -301,7 +302,7 @@ class PNGAirConnectorClient:
                             destination_city=ib_fi["dest_city"],
                             departure=ib_fi["dep_dt"], arrival=ib_fi["arr_dt"],
                             duration_seconds=ib_fi["duration_s"],
-                            cabin_class="economy",
+                            cabin_class=_cg_cabin,
                         )],
                         total_duration_seconds=ib_fi["duration_s"], stopovers=0,
                     )

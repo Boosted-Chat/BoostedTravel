@@ -842,6 +842,7 @@ class SaudiaConnectorClient:
                 if flight_no and not flight_no.startswith(airline_code):
                     flight_no = f"{airline_code}{flight_no}"
 
+                _sv_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
                     airline=airline_code[:2],
                     airline_name="Saudia" if airline_code == "SV" else airline_code,
@@ -850,7 +851,7 @@ class SaudiaConnectorClient:
                     destination=seg.get("destination") or seg.get("arrivalAirport") or req.destination,
                     departure=dep_dt,
                     arrival=arr_dt,
-                    cabin_class="economy",
+                    cabin_class=_sv_cabin,
                 ))
 
             if not segments:
@@ -1053,6 +1054,7 @@ class SaudiaConnectorClient:
         offer_id = hashlib.md5(
             f"sv_{req.origin}_{req.destination}_{dep_date}_{flight_no}_{price}".encode()
         ).hexdigest()[:12]
+        _sv_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         segment = FlightSegment(
             airline="SV",
@@ -1063,7 +1065,7 @@ class SaudiaConnectorClient:
             departure=dep_dt,
             arrival=arr_dt,
             duration_seconds=flight.get("durationMin", 0) * 60,
-            cabin_class="economy",
+            cabin_class=_sv_cabin,
         )
 
         route = FlightRoute(

@@ -85,7 +85,7 @@ async def _get_browser():
     global _browser, _pw_instance
     if _browser and _browser.is_connected():
         return _browser
-    from connectors.browser import launch_headed_browser
+    from .browser import launch_headed_browser
     _browser = await launch_headed_browser(extra_args=[
         "--lang=zh-CN",
         "--disable-blink-features=AutomationControlled",

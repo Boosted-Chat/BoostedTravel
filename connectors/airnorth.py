@@ -339,6 +339,7 @@ class AirnorthConnectorClient:
             num_stops = int(stop_num_m.group(1)) if stop_num_m else 0
 
         # Build segments
+        _tl_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         if len(flight_nums) == 1 or num_stops == 0:
             # Single segment (direct flight)
             segments = [
@@ -353,7 +354,7 @@ class AirnorthConnectorClient:
                     departure=dep_dt,
                     arrival=arr_dt,
                     duration_seconds=duration_secs,
-                    cabin_class="economy",
+                    cabin_class=_tl_cabin,
                 )
             ]
         else:
@@ -376,7 +377,7 @@ class AirnorthConnectorClient:
                         departure=seg_dep,
                         arrival=seg_arr,
                         duration_seconds=seg_duration,
-                        cabin_class="economy",
+                        cabin_class=_tl_cabin,
                     )
                 )
 

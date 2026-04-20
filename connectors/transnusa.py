@@ -34,7 +34,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, bandwidth_saving_args, disable_background_networking_args, apply_cdp_url_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,8 @@ async def _get_browser():
         "--disable-http2",
         "--window-position=-2400,-2400",
         "--window-size=1366,768",
+        *bandwidth_saving_args(),
+        *disable_background_networking_args(),
         "about:blank",
     ]
     _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
@@ -197,6 +199,7 @@ class TransNusaConnectorClient:
         try:
             context = await _get_context()
             page = await context.new_page()
+            await apply_cdp_url_blocking(page)
 
             # Response interception for Crane IBE API calls
             search_data: dict = {}
@@ -616,6 +619,7 @@ class TransNusaConnectorClient:
 
         duration = int((arr_dt - dep_dt).total_seconds()) if arr_dt > dep_dt else 0
         stops = flight.get("stops", flight.get("stopovers", 0))
+        _8b_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         segment = FlightSegment(
             airline="8B",
@@ -626,7 +630,7 @@ class TransNusaConnectorClient:
             departure=dep_dt,
             arrival=arr_dt,
             duration_seconds=duration,
-            cabin_class="economy",
+            cabin_class=_8b_cabin,
         )
 
         route = FlightRoute(
@@ -703,6 +707,7 @@ class TransNusaConnectorClient:
             # Flight number
             fn_m = re.search(r'\b(8B\s*\d+|QG\s*\d+)\b', card_html)
             flight_no = fn_m.group(1).replace(" ", "") if fn_m else ""
+            _8b_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
             segment = FlightSegment(
                 airline="8B",
@@ -713,7 +718,7 @@ class TransNusaConnectorClient:
                 departure=dep_dt,
                 arrival=arr_dt,
                 duration_seconds=duration,
-                cabin_class="economy",
+                cabin_class=_8b_cabin,
             )
 
             route = FlightRoute(

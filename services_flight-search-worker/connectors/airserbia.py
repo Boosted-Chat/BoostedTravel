@@ -7,7 +7,7 @@ headed CDP Chrome with form fill + API interception is required.
 
 Strategy (CDP Chrome + API interception):
 1. Launch headed Chrome via CDP (off-screen, stealth).
-2. Navigate to airchina.com → SPA loads with search widget.
+2. Navigate to airserbia.com → SPA loads with search widget.
 3. Accept cookies → set one-way → fill origin/dest → select date → search.
 4. Intercept the search API response (flight availability JSON).
 5. If API not captured, fall back to DOM scraping on results page.
@@ -34,7 +34,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied, inject_stealth_js
+from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -150,14 +150,28 @@ async def _reset_profile():
 async def _dismiss_overlays(page) -> None:
     try:
         await page.evaluate("""() => {
+            // Air Serbia uses CookieFirst — try that first
+            const cf = document.querySelector('[data-cookiefirst-action="accept"]');
+            if (cf && cf.offsetHeight > 0) { cf.click(); return; }
+            const cfRoot = document.querySelector('#cookiefirst-root');
+            if (cfRoot) {
+                const cfBtns = cfRoot.querySelectorAll('button');
+                for (const b of cfBtns) {
+                    const t = (b.textContent || '').trim().toLowerCase();
+                    if ((t.includes('accept') || t.includes('agree')) && b.offsetHeight > 0) {
+                        b.click(); return;
+                    }
+                }
+            }
+            // OneTrust fallback
             const accept = document.querySelector('#onetrust-accept-btn-handler');
             if (accept && accept.offsetHeight > 0) { accept.click(); return; }
-            // Air Serbia uses Cookiebot/custom consent — try aria-label match
+            // Generic fallback
             const ariaBtn = document.querySelector('button[aria-label*="Accept all"]');
             if (ariaBtn && ariaBtn.offsetHeight > 0) { ariaBtn.click(); return; }
             const btns = document.querySelectorAll('button');
             for (const b of btns) {
-                const t = b.textContent.trim().toLowerCase();
+                const t = (b.textContent || '').trim().toLowerCase();
                 if ((t.includes('accept all') || t.includes('agree') || t.includes('got it'))
                     && b.offsetHeight > 0) { b.click(); return; }
             }
@@ -166,7 +180,8 @@ async def _dismiss_overlays(page) -> None:
         await page.evaluate("""() => {
             document.querySelectorAll(
                 '#onetrust-consent-sdk, .onetrust-pc-dark-filter, ' +
-                '[class*="cookie"], [class*="consent"], [class*="overlay"]'
+                '#cookiefirst-root, [class*="cookiefirst"], ' +
+                '[class*="cookie-banner"], [class*="consent-banner"]'
             ).forEach(el => el.remove());
         }""")
     except Exception:
@@ -202,19 +217,21 @@ class AirSerbiaConnectorClient:
         t0 = time.monotonic()
         context = await _get_context()
         page = await context.new_page()
-        await inject_stealth_js(page)
         await auto_block_if_proxied(page)
 
         search_data: dict = {}
         api_event = asyncio.Event()
 
         async def _on_response(response):
+            nonlocal search_data
             url = response.url.lower()
             if response.status not in (200, 201):
                 return
             try:
+                # Match GraphQL and flight-related URLs
                 if any(k in url for k in ["/search", "/availability", "/flight",
-                                           "/offer", "/fare", "/lowprice", "/schedule"]):
+                                           "/offer", "/fare", "/lowprice", "/schedule",
+                                           "/graphql", "/api/"]):
                     ct = response.headers.get("content-type", "")
                     if "json" not in ct and "text" not in ct:
                         return
@@ -224,17 +241,31 @@ class AirSerbiaConnectorClient:
                     data = json.loads(body)
                     if not isinstance(data, dict):
                         return
+                    # Prefer the GraphQL response with bookingAirSearch (the flight data)
+                    bas = (data.get("data") or {}).get("bookingAirSearch")
+                    if bas:
+                        search_data = data  # replace with flight data response
+                        api_event.set()  # ONLY set event for GraphQL flight data
+                        logger.info("AirSerbia: captured GraphQL flight data (%d bytes)", len(body))
+                        return
+                    # Fallback: check generic keywords (non-GraphQL endpoints)
+                    # Store silently but DON'T set api_event — keep waiting for GraphQL
                     keys_str = " ".join(str(k).lower() for k in data.keys())
                     if any(k in keys_str for k in ["flight", "itiner", "offer", "fare",
                                                      "bound", "trip", "result", "segment",
                                                      "avail", "journey", "price"]):
-                        search_data.update(data)
-                        api_event.set()
-                        logger.info("AirSerbia: captured API → %s (%d keys)", url[:80], len(data))
+                        if not search_data:  # only if no better response yet
+                            search_data = data
+                            # DON'T set api_event here — keep waiting for GraphQL
+                            logger.info("AirSerbia: captured API fallback → %s (%d keys)", url[:80], len(data))
             except Exception:
                 pass
 
         page.on("response", _on_response)
+
+        async def _on_new_page(new_page):
+            logger.info("AirSerbia: new page opened → %s", new_page.url[:80])
+            new_page.on("response", _on_response)
 
         try:
             logger.info("AirSerbia: loading homepage for %s→%s", req.origin, req.destination)
@@ -276,9 +307,13 @@ class AirSerbiaConnectorClient:
             if not ok:
                 return self._empty(req)
 
+            # Attach listener to new pages BEFORE clicking search
+            # (booking.airserbia.com may open in a new tab)
+            context.on("page", _on_new_page)
+
             # Click search — use Playwright click (JS click doesn't trigger the handler)
             try:
-                search_btn = page.locator('button.btn-search:visible').first
+                search_btn = page.locator('button.btn-search:visible, button:has-text("Show flights"):visible').first
                 await search_btn.click(timeout=5000)
             except Exception:
                 # Fallback to JS click on any visible show/search button
@@ -292,30 +327,30 @@ class AirSerbiaConnectorClient:
                 }""")
             logger.info("AirSerbia: search clicked")
 
-            # Search navigates to booking.airserbia.com — wait for that page and attach listener
+            # Wait for navigation/API response — may stay on same page or open new tab
             remaining = max(self.timeout - (time.monotonic() - t0), 15)
             deadline = time.monotonic() + remaining
+            booking_redirect_time = None
             while time.monotonic() < deadline:
                 if api_event.is_set():
                     break
                 cur_url = page.url
                 if "booking.airserbia.com" in cur_url or "flight-selection" in cur_url:
-                    # On booking page — wait for flight data to load
-                    await asyncio.sleep(3.0)
-                    break
+                    # Booking page detected — wait up to 12s for GraphQL response
+                    if booking_redirect_time is None:
+                        booking_redirect_time = time.monotonic()
+                        logger.info("AirSerbia: redirected to booking page, waiting for GraphQL...")
+                    elapsed_on_booking = time.monotonic() - booking_redirect_time
+                    if elapsed_on_booking > 12:
+                        break
+                    await asyncio.sleep(1.0)
+                    continue
                 if any(k in cur_url.lower() for k in ["result", "search", "availability"]):
                     await asyncio.sleep(2.0)
                     break
                 await asyncio.sleep(1.0)
 
-            # Also scan for new pages at booking.airserbia.com
-            if not api_event.is_set() and _browser:
-                for bctx in _browser.contexts:
-                    for pg in bctx.pages:
-                        if "booking.airserbia.com" in pg.url and pg != page:
-                            pg.on("response", _on_response)
-                            await asyncio.sleep(2.0)
-
+            # Final wait for late API responses (new-tab scenario covered by context.on("page"))
             if not api_event.is_set():
                 try:
                     await asyncio.wait_for(api_event.wait(), timeout=8.0)
@@ -324,6 +359,7 @@ class AirSerbiaConnectorClient:
 
             offers = []
             if search_data:
+                logger.info("AirSerbia: captured API data (%d keys)", len(search_data))
                 offers = self._parse_api_response(search_data, req)
             if not offers:
                 offers = await self._scrape_dom(page, req)
@@ -344,6 +380,10 @@ class AirSerbiaConnectorClient:
             logger.error("AirSerbia error: %s", e)
             return self._empty(req)
         finally:
+            try:
+                context.remove_listener("page", _on_new_page)
+            except Exception:
+                pass
             try:
                 page.remove_listener("response", _on_response)
             except Exception:
@@ -435,6 +475,11 @@ class AirSerbiaConnectorClient:
             return False
 
     def _parse_api_response(self, data: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+        # Check for GraphQL response format (Air Serbia DX platform)
+        bas = (data.get("data") or {}).get("bookingAirSearch")
+        if bas:
+            return self._parse_graphql(bas, req)
+
         offers = []
         flights = (
             data.get("flights") or data.get("results") or data.get("itineraries") or
@@ -454,6 +499,94 @@ class AirSerbiaConnectorClient:
             offer = self._build_offer(flight, req)
             if offer:
                 offers.append(offer)
+        return offers
+
+    def _parse_graphql(self, bas: dict, req: FlightSearchRequest) -> list[FlightOffer]:
+        """Parse Air Serbia GraphQL bookingAirSearch response."""
+        orig_resp = bas.get("originalResponse", {})
+        currency = orig_resp.get("currency", self.DEFAULT_CURRENCY)
+        offers = []
+
+        # unbundledOffers[0] contains the outbound offer list
+        ub = orig_resp.get("unbundledOffers") or []
+        offer_list = ub[0] if ub and isinstance(ub[0], list) else ub
+
+        for raw in offer_list:
+            if not isinstance(raw, dict) or raw.get("soldout"):
+                continue
+            try:
+                # Price: total.alternatives[0][0].amount
+                total_block = raw.get("total", {})
+                alts = total_block.get("alternatives", [[]])
+                price = float(alts[0][0].get("amount", 0)) if alts and alts[0] else 0
+                if price <= 0:
+                    continue
+                cur = alts[0][0].get("currency", currency) if alts and alts[0] else currency
+
+                cabin = raw.get("cabinClass", "economy").lower()
+                brand = raw.get("brandId", "")
+
+                # Segments from itineraryPart[0].segments
+                itin_parts = raw.get("itineraryPart", [])
+                if not itin_parts or not isinstance(itin_parts, list):
+                    continue
+                itin = itin_parts[0] if isinstance(itin_parts[0], dict) else {}
+                seg_list = itin.get("segments", [])
+                if not seg_list:
+                    continue
+
+                segments = []
+                for seg in seg_list:
+                    flt = seg.get("flight", {})
+                    airline_code = flt.get("airlineCode", self.IATA)
+                    op_code = flt.get("operatingAirlineCode", airline_code)
+                    flt_num = str(flt.get("flightNumber", ""))
+                    flight_no = f"{airline_code}{flt_num}" if flt_num else self.IATA
+
+                    dep_dt = self._parse_dt(seg.get("departure", ""), req.date_from)
+                    arr_dt = self._parse_dt(seg.get("arrival", ""), req.date_from)
+
+                    segments.append(FlightSegment(
+                        airline=airline_code[:2],
+                        airline_name=self.AIRLINE_NAME if airline_code == self.IATA else op_code,
+                        flight_no=flight_no,
+                        origin=seg.get("origin", req.origin),
+                        destination=seg.get("destination", req.destination),
+                        departure=dep_dt,
+                        arrival=arr_dt,
+                        cabin_class=cabin,
+                    ))
+
+                if not segments:
+                    continue
+
+                total_dur = itin.get("totalDuration", 0) * 60  # minutes → seconds
+                stops = itin.get("stops", max(0, len(segments) - 1))
+                route = FlightRoute(segments=segments, total_duration_seconds=total_dur, stopovers=stops)
+
+                offer_id = hashlib.md5(
+                    f"{self.IATA.lower()}_{req.origin}_{req.destination}_{req.date_from}_{price}_{segments[0].flight_no}_{brand}".encode()
+                ).hexdigest()[:12]
+
+                offers.append(FlightOffer(
+                    id=f"{self.IATA.lower()}_{offer_id}",
+                    price=round(price, 2),
+                    currency=cur,
+                    price_formatted=f"{cur} {price:,.2f}",
+                    outbound=route,
+                    inbound=None,
+                    airlines=list({s.airline for s in segments}),
+                    owner_airline=self.IATA,
+                    booking_url=self._booking_url(req),
+                    is_locked=False,
+                    source=self.SOURCE,
+                    source_tier="free",
+                ))
+            except Exception as e:
+                logger.debug("AirSerbia: GraphQL offer parse error: %s", e)
+                continue
+
+        logger.info("AirSerbia: parsed %d offers from GraphQL", len(offers))
         return offers
 
     def _find_flights(self, data, depth=0) -> list:
@@ -490,7 +623,6 @@ class AirSerbiaConnectorClient:
                 segments_data = [flight]
 
             segments = []
-            _ju_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             for seg in segments_data:
                 dep_str = seg.get("departure") or seg.get("departureTime") or seg.get("depTime") or ""
                 arr_str = seg.get("arrival") or seg.get("arrivalTime") or seg.get("arrTime") or ""
@@ -505,7 +637,7 @@ class AirSerbiaConnectorClient:
                     airline=airline_code[:2], airline_name=self.AIRLINE_NAME if airline_code == self.IATA else airline_code,
                     flight_no=flight_no or self.IATA, origin=seg.get("origin") or seg.get("departureAirport") or req.origin,
                     destination=seg.get("destination") or seg.get("arrivalAirport") or req.destination,
-                    departure=dep_dt, arrival=arr_dt, cabin_class=_ju_cabin,
+                    departure=dep_dt, arrival=arr_dt, cabin_class="economy",
                 ))
 
             if not segments:
@@ -628,10 +760,9 @@ class AirSerbiaConnectorClient:
         currency = f.get("currency", self.DEFAULT_CURRENCY)
         offer_id = hashlib.md5(f"{self.IATA.lower()}_{req.origin}_{req.destination}_{dep_date}_{flight_no}_{price}".encode()).hexdigest()[:12]
 
-        _ju_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segment = FlightSegment(
             airline=self.IATA, airline_name=self.AIRLINE_NAME, flight_no=flight_no,
-            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class=_ju_cabin,
+            origin=req.origin, destination=req.destination, departure=dep_dt, arrival=arr_dt, cabin_class="economy",
         )
         route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
         return FlightOffer(

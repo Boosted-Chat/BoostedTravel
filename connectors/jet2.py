@@ -599,13 +599,14 @@ class Jet2ConnectorClient:
 
     def _make_offer(self, price: float, req: FlightSearchRequest) -> FlightOffer:
         """Create a FlightOffer from a price."""
+        _ls_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         dep_dt = datetime(req.date_from.year, req.date_from.month, req.date_from.day, 0, 0)
         segment = FlightSegment(
             airline="LS", airline_name="Jet2",
             flight_no="",
             origin=req.origin, destination=req.destination,
             departure=dep_dt, arrival=dep_dt,
-            cabin_class="M",
+            cabin_class=_ls_cabin,
         )
         route = FlightRoute(segments=[segment], total_duration_seconds=0, stopovers=0)
         offer_id = f"ls_{hashlib.md5(f'{req.date_from}_{price}'.encode()).hexdigest()[:12]}"

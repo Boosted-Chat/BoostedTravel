@@ -38,6 +38,8 @@ from ..models.flights import (
     FlightSegment,
 )
 
+from .browser import patchright_bandwidth_args, apply_cdp_url_blocking
+
 logger = logging.getLogger(__name__)
 
 # ── nodriver + Playwright hybrid browser ──────────────────────────────────────
@@ -75,6 +77,7 @@ async def _ensure_nd_browser():
                 "--window-size=1400,900",
                 "--window-position=-2400,-2400",
                 "--disable-http2",
+                *patchright_bandwidth_args(),
             ],
         )
         logger.info("NH: nodriver Chrome launched (port %s)", _nd_browser.config.port)

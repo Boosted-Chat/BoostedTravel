@@ -33,7 +33,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, proxy_chrome_args
+from .browser import find_chrome, proxy_chrome_args, bandwidth_saving_args
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ _CHROME_FLAGS = [
     "--enable-unsafe-swiftshader",
     "--window-position=-2400,-2400",
     "--window-size=1366,768",
+    *bandwidth_saving_args(),
 ]
 
 # ── Shared browser singleton via CDP ────────────────────────────────────

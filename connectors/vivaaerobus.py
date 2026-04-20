@@ -24,6 +24,7 @@ from typing import Any
 
 from curl_cffi.requests import AsyncSession
 
+from .browser import get_curl_cffi_proxies
 from ..models.flights import (
     FlightOffer,
     FlightRoute,
@@ -52,7 +53,7 @@ _http_client: AsyncSession | None = None
 def _get_client() -> AsyncSession:
     global _http_client
     if _http_client is None:
-        _http_client = AsyncSession(impersonate="chrome136", headers=_HEADERS, timeout=30)
+        _http_client = AsyncSession(impersonate="chrome131", headers=_HEADERS, timeout=30, proxies=get_curl_cffi_proxies())
     return _http_client
 
 

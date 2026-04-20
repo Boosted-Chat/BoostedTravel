@@ -398,6 +398,7 @@ class QatarConnectorClient:
                 airline_name = seg.get("operatingAirlineName", "Qatar Airways")
                 dur = seg.get("duration", 0)
 
+                _qr_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(
                     FlightSegment(
                         airline=carrier,
@@ -408,7 +409,7 @@ class QatarConnectorClient:
                         departure=dep_dt,
                         arrival=arr_dt,
                         duration_seconds=dur,
-                        cabin_class="economy",
+                        cabin_class=_qr_cabin,
                     )
                 )
 

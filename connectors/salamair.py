@@ -237,7 +237,8 @@ class SalamAirConnectorClient:
         self, flight: dict, currency: str, req: FlightSearchRequest
     ) -> list[FlightOffer]:
         """Parse one flight entry into offers (one per fare type)."""
-        segments = self._parse_segments(flight)
+        _ov_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
+        segments = self._parse_segments(flight, _ov_cabin)
         if not segments:
             return []
 
@@ -322,7 +323,7 @@ class SalamAirConnectorClient:
 
         return offers
 
-    def _parse_segments(self, flight: dict) -> list[FlightSegment]:
+    def _parse_segments(self, flight: dict, cabin_class: str = "economy") -> list[FlightSegment]:
         segments: list[FlightSegment] = []
 
         for seg in flight.get("segments") or []:
@@ -355,7 +356,7 @@ class SalamAirConnectorClient:
                 departure=dep_dt,
                 arrival=arr_dt,
                 duration_seconds=duration,
-                cabin_class="economy",
+                cabin_class=cabin_class,
                 aircraft=aircraft,
             ))
 

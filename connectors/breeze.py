@@ -328,6 +328,7 @@ class BreezeConnectorClient:
             if legs:
                 equipment = legs[0].get("legInfo", {}).get("equipmentType", "")
 
+            _mx_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
             segments.append(FlightSegment(
                 airline=carrier,
                 airline_name="Breeze Airways",
@@ -337,7 +338,7 @@ class BreezeConnectorClient:
                 departure=s_dep,
                 arrival=s_arr,
                 duration_seconds=int((s_arr - s_dep).total_seconds()),
-                cabin_class="economy",
+                cabin_class=_mx_cabin,
                 aircraft=equipment,
             ))
 

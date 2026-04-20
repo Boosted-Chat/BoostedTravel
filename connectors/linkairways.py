@@ -89,7 +89,7 @@ class LinkAirwaysConnectorClient:
         children = req.children if req.children else 0
         infants = req.infants if req.infants else 0
 
-        from connectors.browser import acquire_browser_slot, release_browser_slot
+        from .browser import acquire_browser_slot, release_browser_slot
 
         await acquire_browser_slot()
         try:
@@ -158,7 +158,7 @@ class LinkAirwaysConnectorClient:
     ) -> list[FlightOffer]:
         """Run Playwright search and parse results."""
         from playwright.async_api import async_playwright
-        from connectors.browser import stealth_args
+        from .browser import stealth_args
 
         pw = await async_playwright().start()
         browser = None

@@ -79,7 +79,7 @@ class AzerbaijanairlinesConnectorClient:
         payload = {"origins": [req.origin], "destinations": [req.destination], "departureDaysInterval": {"min": max(0, days_from_now - 7), "max": days_from_now + 14}, "journeyType": "ROUND_TRIP" if is_rt else "ONE_WAY"}
         fares = await self._call_sputnik(payload)
         offers = [o for o in (self._build_offer(f, req) for f in fares) if o is not None]
-        offers = [o for o in offers if o.outbound and o.outbound.segments and abs((o.outbound.segments[0].departure.date() - dt).days) <= 60]
+        offers = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == dt]
         offers.sort(key=lambda o: o.price)
         elapsed = time.monotonic() - t0
         logger.info("Azerbaijan Airlines %s->%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)

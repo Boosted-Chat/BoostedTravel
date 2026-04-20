@@ -601,6 +601,7 @@ class FlydubaiConnectorClient:
                 # Check if this tab matches our target date
                 is_target = target_str in text or target_str2 in text
                 dep = req.date_from if is_target else datetime(2000, 1, 1)
+                _fz_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 offer = FlightOffer(
                     id=f"fz_{hashlib.md5(text.encode()).hexdigest()[:12]}",
                     price=round(price, 2),
@@ -613,7 +614,7 @@ class FlydubaiConnectorClient:
                             destination=req.destination,
                             departure=dep,
                             arrival=datetime(2000, 1, 1),
-                            cabin_class="M",
+                            cabin_class=_fz_cabin,
                         )],
                         total_duration_seconds=0,
                         stopovers=0,
@@ -679,13 +680,14 @@ class FlydubaiConnectorClient:
         best_price = self._extract_best_price(flight)
         if best_price is None or best_price <= 0:
             return None
+        _fz_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
         segments: list[FlightSegment] = []
         if segments_raw and isinstance(segments_raw, list):
             for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
+                segments.append(self._build_segment(seg, req.origin, req.destination, _fz_cabin))
         else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
+            segments.append(self._build_segment(flight, req.origin, req.destination, _fz_cabin))
         total_dur = 0
         if segments and segments[0].departure and segments[-1].arrival:
             total_dur = int((segments[-1].arrival - segments[0].departure).total_seconds())
@@ -758,6 +760,7 @@ class FlydubaiConnectorClient:
             if best_ib_seg and best_ib_price < float("inf"):
                 _ib_price = round(best_ib_price, 2)
                 ib_dep_date = (best_ib_seg.get("departureDate") or "")[:10]
+                _fz_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 _ib_route = FlightRoute(
                     segments=[FlightSegment(
                         airline="FZ", airline_name="flydubai", flight_no="",
@@ -765,7 +768,7 @@ class FlydubaiConnectorClient:
                         destination=best_ib_seg.get("dest") or req.origin,
                         departure=self._parse_dt(ib_dep_date),
                         arrival=datetime(2000, 1, 1),
-                        cabin_class="M",
+                        cabin_class=_fz_cabin,
                     )],
                     total_duration_seconds=0, stopovers=0,
                 )
@@ -860,7 +863,7 @@ class FlydubaiConnectorClient:
                     pass
         return best if best < float("inf") else None
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
+    def _build_segment(self, seg: dict, default_origin: str, default_dest: str, cabin_class: str = "economy") -> FlightSegment:
         dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or ""
         arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or ""
         flight_no = str(seg.get("flightNumber") or seg.get("flight_no") or seg.get("number") or "").replace(" ", "")
@@ -871,7 +874,7 @@ class FlydubaiConnectorClient:
             airline=carrier, airline_name="flydubai", flight_no=flight_no,
             origin=origin, destination=destination,
             departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=cabin_class,
         )
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:

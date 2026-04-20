@@ -420,7 +420,7 @@ class VolarisConnectorClient:
     async def _extract_from_dom(self, page, req: FlightSearchRequest) -> list[FlightOffer]:
         """Fall back to DOM scraping on the Navitaire Angular results page."""
         try:
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             # First check for JSON state in the page
             data = await page.evaluate("""() => {
@@ -513,13 +513,14 @@ class VolarisConnectorClient:
         if best_price is None or best_price <= 0:
             return None
 
+        _y4_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
         segments_raw = flight.get("segments") or flight.get("legs") or flight.get("flights") or []
         segments: list[FlightSegment] = []
         if segments_raw and isinstance(segments_raw, list):
             for seg in segments_raw:
-                segments.append(self._build_segment(seg, req.origin, req.destination))
+                segments.append(self._build_segment(seg, req.origin, req.destination, _y4_cabin))
         else:
-            segments.append(self._build_segment(flight, req.origin, req.destination))
+            segments.append(self._build_segment(flight, req.origin, req.destination, _y4_cabin))
 
         total_dur = 0
         if segments and segments[0].departure and segments[-1].arrival:
@@ -604,7 +605,7 @@ class VolarisConnectorClient:
                     pass
         return best if best < float("inf") else None
 
-    def _build_segment(self, seg: dict, default_origin: str, default_dest: str) -> FlightSegment:
+    def _build_segment(self, seg: dict, default_origin: str, default_dest: str, cabin_class: str = "economy") -> FlightSegment:
         desig = seg.get("designator") or {}
         dep_str = seg.get("departureDateTime") or seg.get("departure") or seg.get("departureDate") or seg.get("std") or desig.get("departure", "")
         arr_str = seg.get("arrivalDateTime") or seg.get("arrival") or seg.get("arrivalDate") or seg.get("sta") or desig.get("arrival", "")
@@ -618,7 +619,7 @@ class VolarisConnectorClient:
             airline="Y4", airline_name="Volaris", flight_no=flight_no,
             origin=origin, destination=destination,
             departure=self._parse_dt(dep_str), arrival=self._parse_dt(arr_str),
-            cabin_class="M",
+            cabin_class=cabin_class,
         )
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:

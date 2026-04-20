@@ -91,7 +91,7 @@ async def _get_browser():
     async with lock:
         if _browser and _browser.is_connected():
             return _browser
-        from connectors.browser import get_or_launch_cdp
+        from .browser import get_or_launch_cdp
         _user_data = os.path.join(os.environ.get("TEMP", "/tmp"), "chrome-cdp-vietjet")
         _browser, _chrome_proc = await get_or_launch_cdp(_CDP_PORT, _user_data)
         logger.info("VietJet: Chrome ready via CDP (port %d)", _CDP_PORT)
@@ -123,15 +123,18 @@ class VietJetConnectorClient:
 
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        # Try deep-link URL first, then form-fill fallback
+        # 2026: VietJet deep-link works for origin/dest but ignores date param
+        # Strategy: deep-link first (sets route), then navigate date slider
         for attempt in range(2):
-            use_form = attempt > 0
+            # First attempt: deep-link + date navigation
+            # Second attempt: form-fill fallback
+            use_form = attempt == 1
             result = await self._try_search(req, use_form=use_form)
             if result.total_results > 0:
                 return result
             if attempt == 0:
                 logger.info("VietJet: deep-link yielded 0 results, trying form-fill fallback")
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.5)
         return result
 
     async def _try_search(self, req: FlightSearchRequest, use_form: bool = False) -> FlightSearchResponse:
@@ -219,7 +222,7 @@ class VietJetConnectorClient:
                 # Form-fill approach
                 await self._do_form_search(page, req, t0)
             else:
-                # Deep-link URL approach
+                # Deep-link URL approach (2026: site ignores date param, need to navigate)
                 dep_str = req.date_from.strftime("%Y-%m-%d")
                 trip = "roundtrip" if is_rt else "oneway"
                 deep_url = (
@@ -234,6 +237,8 @@ class VietJetConnectorClient:
                 logger.info("VietJet: deep-link search %s->%s on %s (%s)", req.origin, req.destination, dep_str, trip)
                 await page.goto(deep_url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
                 await self._nuke_overlays(page)
+                # VietJet's new SPA ignores the date param - click a date cell to trigger search
+                await self._navigate_and_click_date(page, req.date_from)
 
             # Wait for search API responses
             remaining = max(self.timeout - (time.monotonic() - t0), 12)
@@ -337,6 +342,162 @@ class VietJetConnectorClient:
         # Click "Let's go"
         await self._nuke_overlays(page)
         await self._click_search(page)
+
+    # ------------------------------------------------------------------
+    # Navigate date slider and click target date (for select-flight page)
+    # ------------------------------------------------------------------
+
+    async def _navigate_and_click_date(self, page, target_date) -> bool:
+        """Navigate the horizontal date slider on select-flight page and click target date.
+        
+        The select-flight page (2026) has:
+        - A horizontal date strip starting from today
+        - A forward arrow button before the date cells (left side of viewport)
+        - Each date cell has two paragraphs: day name + "Month Dayth" (e.g., "August 15th")
+        - Clicking a date cell triggers the search-flight API
+        """
+        from datetime import date
+        
+        await asyncio.sleep(2.0)  # Wait for page to fully load
+        
+        today = date.today()
+        target = target_date if isinstance(target_date, date) else datetime.strptime(str(target_date), "%Y-%m-%d").date()
+        days_diff = (target - today).days
+        
+        if days_diff <= 0:
+            logger.warning("VietJet: target date %s is in the past", target)
+            return False
+        
+        logger.info("VietJet: navigating date slider %d days forward to %s", days_diff, target)
+        
+        # Target date text formats (e.g., "August 15th", "August 1st")
+        day = target.day
+        if day in (1, 21, 31):
+            suffix = "st"
+        elif day in (2, 22):
+            suffix = "nd"
+        elif day in (3, 23):
+            suffix = "rd"
+        else:
+            suffix = "th"
+        target_text = f"{target.strftime('%B')} {day}{suffix}"  # "August 15th"
+        
+        # Scroll the date slider forward until target date is visible
+        # Each scroll moves ~7 days, so calculate clicks needed
+        max_clicks = max((days_diff // 5), 2) + 10  # Extra buffer
+        
+        for click_num in range(min(max_clicks, 120)):
+            # Check if target date is already visible
+            try:
+                found = await page.evaluate("""(targetText) => {
+                    const paragraphs = document.querySelectorAll('p, [class*="MuiTypography"]');
+                    for (const p of paragraphs) {
+                        if (p.textContent && p.textContent.trim() === targetText) {
+                            const rect = p.getBoundingClientRect();
+                            if (rect.width > 0 && rect.left >= 0 && rect.right <= window.innerWidth) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }""", target_text)
+                
+                if found:
+                    logger.debug("VietJet: target date '%s' is now visible after %d clicks", target_text, click_num)
+                    break
+            except Exception:
+                pass
+            
+            # Click forward arrow to scroll dates
+            clicked_arrow = False
+            try:
+                # The forward arrow is a button with an img child at the left of the date slider
+                arrow = await page.evaluate("""() => {
+                    // Find all buttons with img children in the date area
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const img = btn.querySelector('img');
+                        if (img && btn.offsetHeight > 0) {
+                            const rect = btn.getBoundingClientRect();
+                            // Arrow buttons are typically on left/right edges
+                            if (rect.width > 0 && rect.width < 80) {
+                                // Click the right arrow (second button in the date nav area)
+                                const parent = btn.closest('[class*="jss"], [class*="MuiBox"]');
+                                if (parent) {
+                                    const btns = parent.querySelectorAll('button:has(img)');
+                                    if (btns.length >= 2) {
+                                        // Right arrow is the second one
+                                        btns[1].click();
+                                        return 'right';
+                                    } else if (btns.length === 1) {
+                                        btns[0].click();
+                                        return 'single';
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return null;
+                }""")
+                if arrow:
+                    clicked_arrow = True
+            except Exception:
+                pass
+            
+            if not clicked_arrow:
+                # Fallback: try various arrow selectors
+                for sel in [
+                    "[class*='jss'] button:has(img):last-of-type",
+                    "button:has(img[src*='arrow'])",
+                    "button:has(img[alt*='right'])",
+                    "[class*='MuiBox'] > div > button:last-child",
+                ]:
+                    try:
+                        arrow = page.locator(sel).first
+                        if await arrow.count() > 0:
+                            await arrow.click(timeout=500)
+                            clicked_arrow = True
+                            break
+                    except Exception:
+                        continue
+            
+            await asyncio.sleep(0.1)  # Small delay between arrow clicks
+        
+        await asyncio.sleep(0.3)
+        
+        # Now click the target date cell
+        try:
+            clicked = await page.evaluate("""(targetText) => {
+                // Find the paragraph with the exact date text
+                const paragraphs = document.querySelectorAll('p, [class*="MuiTypography"]');
+                for (const p of paragraphs) {
+                    if (p.textContent && p.textContent.trim() === targetText) {
+                        const rect = p.getBoundingClientRect();
+                        if (rect.width > 0 && rect.left >= 0) {
+                            // Click the parent cell (the clickable container)
+                            let cell = p.closest('[class*="jss"], [class*="MuiBox"]');
+                            if (cell && cell.classList.length > 0) {
+                                cell.click();
+                                return 'cell';
+                            }
+                            // Fallback: click the paragraph itself
+                            p.click();
+                            return 'paragraph';
+                        }
+                    }
+                }
+                return null;
+            }""", target_text)
+            
+            if clicked:
+                logger.info("VietJet: clicked target date %s (%s)", target_text, clicked)
+                await asyncio.sleep(3.0)  # Wait for search API to trigger
+                return True
+        except Exception as e:
+            logger.debug("VietJet: date click error: %s", e)
+        
+        logger.warning("VietJet: could not click target date %s", target_text)
+        return False
 
     # ------------------------------------------------------------------
     # Overlay / popup removal
@@ -870,6 +1031,7 @@ class VietJetConnectorClient:
 
         flight_no_raw = str(flt.get("flightNumber", ""))
         flight_no = f"{airline}{flight_no_raw}" if flight_no_raw and not flight_no_raw.startswith(airline) else flight_no_raw
+        _vj_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
 
         return FlightSegment(
             airline=airline,
@@ -879,7 +1041,7 @@ class VietJetConnectorClient:
             destination=arr_airport.get("code", req.destination) if isinstance(arr_airport, dict) else req.destination,
             departure=self._parse_dt(dep_time),
             arrival=self._parse_dt(arr_time),
-            cabin_class="economy",
+            cabin_class=_vj_cabin,
         )
 
     @staticmethod
