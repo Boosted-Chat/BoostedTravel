@@ -40,13 +40,14 @@ from ..models.flights import (
 from .browser import (
     inject_stealth_js,
     get_default_proxy,
-    proxy_is_configured,
     acquire_browser_slot,
     release_browser_slot,
     block_all_heavy_resources,
+    auto_block_if_proxied,
 )
 
 logger = logging.getLogger(__name__)
+_CONNECTOR_USER_DATA_DIR_ENV = "LETSFG_CONNECTOR_USER_DATA_DIR"
 
 # ── IATA → Wego city slug mapping ──
 # Wego URLs use format: /flights/{city}-{IATA}/{city}-{IATA}/{date}
@@ -218,16 +219,30 @@ async def _solve_cf_turnstile(page) -> bool:
         checkbox = cf_frame.locator('input[type="checkbox"]')
         if await checkbox.count() > 0:
             logger.info("WEGO: clicking Turnstile checkbox in iframe")
+            try:
+                await checkbox.hover(timeout=2000)
+                await asyncio.sleep(random.uniform(0.25, 0.6))
+            except Exception:
+                pass
             box = await checkbox.bounding_box()
             if box:
                 cx = box["x"] + box["width"] / 2
                 cy = box["y"] + box["height"] / 2
                 await _human_mouse_move(page, random.randint(50, 200), random.randint(50, 200), cx, cy)
                 await asyncio.sleep(random.uniform(0.15, 0.35))
-                await page.mouse.click(cx, cy)
+                await page.mouse.down()
+                await asyncio.sleep(random.uniform(0.08, 0.18))
+                await page.mouse.up()
                 await asyncio.sleep(3)
                 if await _cf_token_present(page):
                     return True
+            try:
+                await checkbox.click(force=True, timeout=2000)
+                await asyncio.sleep(2)
+                if await _cf_token_present(page):
+                    return True
+            except Exception:
+                pass
                 solved = True
     except Exception as e:
         logger.debug("WEGO: Turnstile iframe checkbox attempt: %s", e)
@@ -238,16 +253,30 @@ async def _solve_cf_turnstile(page) -> bool:
             iframe_el = page.locator('iframe[src*="challenges.cloudflare.com"]')
             if await iframe_el.count() > 0:
                 logger.info("WEGO: clicking Turnstile iframe element")
+                try:
+                    await iframe_el.first.hover(timeout=2000)
+                    await asyncio.sleep(random.uniform(0.25, 0.5))
+                except Exception:
+                    pass
                 box = await iframe_el.bounding_box()
                 if box and box["width"] > 0 and box["height"] > 0:
                     cx = box["x"] + box["width"] / 2
                     cy = box["y"] + box["height"] / 2
                     await _human_mouse_move(page, random.randint(50, 200), random.randint(50, 200), cx, cy)
                     await asyncio.sleep(random.uniform(0.1, 0.3))
-                    await page.mouse.click(cx, cy)
+                    await page.mouse.down()
+                    await asyncio.sleep(random.uniform(0.08, 0.18))
+                    await page.mouse.up()
                     await asyncio.sleep(3)
                     if await _cf_token_present(page):
                         return True
+                try:
+                    await iframe_el.first.click(force=True, timeout=2000)
+                    await asyncio.sleep(2)
+                    if await _cf_token_present(page):
+                        return True
+                except Exception:
+                    pass
                     solved = True
         except Exception as e:
             logger.debug("WEGO: Turnstile iframe click attempt: %s", e)
@@ -270,10 +299,19 @@ async def _solve_cf_turnstile(page) -> bool:
                         cy = box["y"] + box["height"] / 2
                         await _human_mouse_move(page, random.randint(50, 200), random.randint(50, 200), cx, cy)
                         await asyncio.sleep(random.uniform(0.1, 0.3))
-                        await page.mouse.click(cx, cy)
+                        await page.mouse.down()
+                        await asyncio.sleep(random.uniform(0.08, 0.18))
+                        await page.mouse.up()
                         await asyncio.sleep(3)
                         if await _cf_token_present(page):
                             return True
+                        try:
+                            await widget.first.click(force=True, timeout=2000)
+                            await asyncio.sleep(2)
+                            if await _cf_token_present(page):
+                                return True
+                        except Exception:
+                            pass
                         solved = True
                         break
         except Exception as e:
@@ -333,6 +371,63 @@ def _parse_dt(s: Any) -> datetime:
     return datetime(2000, 1, 1)
 
 
+def _build_search_urls(
+    req: FlightSearchRequest,
+    dt: datetime,
+    adults: int,
+    children: int,
+    infants: int,
+    cabin: str,
+) -> list[str]:
+    """Build candidate Wego search URLs.
+
+    Wego has used multiple result URL families over time. Try the
+    search-oriented routes first and fall back to the current SEO-like path.
+    """
+    date_str = dt.strftime("%Y-%m-%d")
+    origin_code = _wego_slug(req.origin)
+    dest_code = _wego_slug(req.destination)
+    query = (
+        f"adults={adults}&children={children}&infants={infants}"
+        f"&cabin={cabin}&sort=price"
+    )
+
+    candidates = [
+        f"https://www.wego.com/flights/search/{origin_code}/{dest_code}/{date_str}?{query}",
+        f"https://www.wego.com/en/flights/searches/{origin_code}-{dest_code}/{date_str}?{query}",
+        f"https://www.wego.com/flights/{origin_code}/{dest_code}/{date_str}?{query}",
+    ]
+
+    unique_candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def _looks_like_seo_page(
+    page_url: str,
+    title: str,
+    canonical_url: Optional[str],
+) -> bool:
+    text = " ".join(part for part in (page_url, canonical_url or "", title) if part).lower()
+    return (
+        "cheapest-flights-from" in text
+        or title.lower().startswith("cheap flights from")
+    )
+
+
+def _is_wego_result_response(url: str) -> bool:
+    url = url.lower()
+    return (
+        ("srv.wego.com" in url and any(k in url for k in ("search", "result", "results", "fare", "fares")))
+        or ("wego.com/api" in url and "flight" in url)
+        or ("wego.com" in url and "graphql" in url)
+    )
+
+
 class WegoConnectorClient:
     """Wego — ME/Asia metasearch, CDP Chrome + API interception."""
 
@@ -355,7 +450,6 @@ class WegoConnectorClient:
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
         dt = _to_datetime(req.date_from)
-        date_str = dt.strftime("%Y-%m-%d")
 
         adults = req.adults or 1
         children = req.children or 0
@@ -365,20 +459,13 @@ class WegoConnectorClient:
                      "C": "business", "F": "first"}
         cabin = cabin_map.get(req.cabin_class, "economy") if req.cabin_class else "economy"
 
-        # Wego URL format: /flights/{city-IATA}/{city-IATA}/{date}
-        origin_slug = _wego_slug(req.origin)
-        dest_slug = _wego_slug(req.destination)
-        search_url = (
-            f"https://www.wego.com/flights/{origin_slug}/{dest_slug}"
-            f"/{date_str}"
-            f"?adults={adults}&children={children}&infants={infants}"
-            f"&cabin={cabin}&sort=price"
-        )
+        search_urls = _build_search_urls(req, dt, adults, children, infants, cabin)
 
-        for attempt in range(3):
+        for attempt, search_url in enumerate(search_urls):
             try:
-                offers = await self._do_search(search_url, req, dt, attempt)
-                if offers is not None:
+                prewarm_url = search_urls[1] if attempt == 2 and len(search_urls) > 1 else None
+                offers = await self._do_search(search_url, req, dt, attempt, prewarm_url=prewarm_url)
+                if offers:
                     offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
                     elapsed = time.monotonic() - t0
                     logger.info(
@@ -396,13 +483,71 @@ class WegoConnectorClient:
                         offers=offers,
                         total_results=len(offers),
                     )
+                if offers == []:
+                    logger.info(
+                        "WEGO: candidate %d returned no offers, trying next route",
+                        attempt + 1,
+                    )
             except Exception as e:
                 logger.warning("WEGO attempt %d failed: %s", attempt, e)
 
         return self._empty(req)
 
     async def _do_search(
-        self, search_url: str, req: FlightSearchRequest, dt: datetime, attempt: int = 0,
+        self,
+        search_url: str,
+        req: FlightSearchRequest,
+        dt: datetime,
+        attempt: int = 0,
+        prewarm_url: Optional[str] = None,
+    ) -> list[FlightOffer] | None:
+        snapshot_user_data_dir = ""
+        if os.environ.get("LETSFG_WEGO_USE_SNAPSHOT_PROFILE", "1").strip().lower() in {"1", "true", "yes", "on"}:
+            snapshot_user_data_dir = os.environ.get(_CONNECTOR_USER_DATA_DIR_ENV, "").strip()
+
+        if snapshot_user_data_dir:
+            try:
+                offers = await self._do_search_once(
+                    search_url,
+                    req,
+                    dt,
+                    attempt=attempt,
+                    prewarm_url=prewarm_url,
+                    snapshot_user_data_dir=snapshot_user_data_dir,
+                    launch_mode="snapshot-profile",
+                )
+                if offers:
+                    return offers
+                logger.warning(
+                    "WEGO: snapshot-backed profile returned no offers for %s, falling back to fresh launch",
+                    search_url,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "WEGO: snapshot-backed profile failed for %s: %s; falling back to fresh launch",
+                    search_url,
+                    exc,
+                )
+
+        return await self._do_search_once(
+            search_url,
+            req,
+            dt,
+            attempt=attempt,
+            prewarm_url=prewarm_url,
+            snapshot_user_data_dir=None,
+            launch_mode="fresh",
+        )
+
+    async def _do_search_once(
+        self,
+        search_url: str,
+        req: FlightSearchRequest,
+        dt: datetime,
+        attempt: int = 0,
+        prewarm_url: Optional[str] = None,
+        snapshot_user_data_dir: Optional[str] = None,
+        launch_mode: str = "fresh",
     ) -> list[FlightOffer] | None:
         """Search using patchright with DOM text parsing."""
         from patchright.async_api import async_playwright
@@ -421,56 +566,116 @@ class WegoConnectorClient:
                 "headless": False,
                 "args": ["--window-position=-2400,-2400", "--window-size=1366,800"],
             }
-            if proxy_is_configured():
-                session_id = f"wego{int(time.time())}{attempt}"
-                launch_kwargs["proxy"] = {
-                    "server": "http://gate.decodo.com:10001",
-                    "username": f"{os.environ.get('DECODO_USER', '')}-session-{session_id}",
-                    "password": os.environ.get("DECODO_PASS", ""),
-                }
-            else:
-                proxy = get_default_proxy()
-                if proxy:
-                    launch_kwargs["proxy"] = proxy
+            proxy = get_default_proxy()
+            if proxy:
+                launch_kwargs["proxy"] = proxy
 
-            browser = await pw_instance.chromium.launch(**launch_kwargs)
-            context = await browser.new_context(
-                viewport={"width": 1366, "height": 800},
-                locale="en-US",
-            )
-            page = await context.new_page()
+            if snapshot_user_data_dir:
+                persistent_kwargs = {
+                    "user_data_dir": snapshot_user_data_dir,
+                    "headless": False,
+                    "viewport": {"width": 1366, "height": 800},
+                    "locale": "en-US",
+                    "args": ["--window-position=-2400,-2400", "--window-size=1366,800"],
+                }
+                if proxy:
+                    persistent_kwargs["proxy"] = proxy
+                logger.info(
+                    "WEGO: launch_mode=%s user_data_dir=%s",
+                    launch_mode,
+                    snapshot_user_data_dir,
+                )
+                context = await pw_instance.chromium.launch_persistent_context(**persistent_kwargs)
+            else:
+                logger.info("WEGO: launch_mode=%s", launch_mode)
+                browser = await pw_instance.chromium.launch(**launch_kwargs)
+                context = await browser.new_context(
+                    viewport={"width": 1366, "height": 800},
+                    locale="en-US",
+                )
+            page = context.pages[0] if context.pages else await context.new_page()
+            await auto_block_if_proxied(page)
 
             # ── API response interception ──
             # Capture Wego's flight data API responses as they stream in.
-            intercepted_data: list[dict] = []
+            intercepted_data: list[tuple[str, Any]] = []
+            intercepted_other_urls: list[str] = []
+            xhr_request_urls: list[str] = []
+            xhr_response_urls: list[str] = []
+
+            def _record_limited(items: list[str], value: str, limit: int = 12) -> None:
+                if len(items) < limit and value not in items:
+                    items.append(value)
+
+            async def _on_request(request):
+                try:
+                    resource_type = request.resource_type
+                    url = request.url
+                    if resource_type in {"fetch", "xhr"} and "wego" in url.lower():
+                        _record_limited(xhr_request_urls, f"{request.method} {url}")
+                except Exception:
+                    pass
 
             async def _on_response(response):
                 url = response.url
-                if any(kw in url for kw in (
-                    "srv.wego.com", "api/flights", "search/results",
-                    "api/v3/metasearch", "affiliate/flights",
-                    "api.wego.com", "flights/fares",
-                )):
-                    try:
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
+                url_lower = url.lower()
+                try:
+                    resource_type = response.request.resource_type
+                    ct = response.headers.get("content-type", "")
+                    if resource_type in {"fetch", "xhr"} and "wego" in url_lower:
+                        ct_short = ct.split(";", 1)[0]
+                        _record_limited(
+                            xhr_response_urls,
+                            f"{response.status} {resource_type} {ct_short} {url}",
+                        )
+                    if "json" in ct:
+                        if _is_wego_result_response(url_lower):
                             body = await response.json()
-                            intercepted_data.append(body)
+                            intercepted_data.append((url, body))
                             logger.debug("WEGO: intercepted API response from %s", url)
-                    except Exception:
-                        pass
+                        elif "wego" in url_lower and len(intercepted_other_urls) < 8:
+                            intercepted_other_urls.append(url)
+                except Exception:
+                    pass
 
+            page.on("request", _on_request)
             page.on("response", _on_response)
+
+            if prewarm_url:
+                logger.info("WEGO: prewarming session via %s", prewarm_url)
+                try:
+                    await page.goto(prewarm_url, wait_until="domcontentloaded", timeout=25000)
+                    await asyncio.sleep(4)
+                except Exception as prewarm_err:
+                    logger.info("WEGO: prewarm navigation failed: %s", prewarm_err)
+                intercepted_data.clear()
+                intercepted_other_urls.clear()
+                xhr_request_urls.clear()
+                xhr_response_urls.clear()
 
             logger.info("WEGO: navigating to %s", search_url)
             try:
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
             except Exception as nav_err:
                 err_str = str(nav_err)
-                if "ERR_HTTP_RESPONSE_CODE_FAILURE" in err_str or "ERR_TUNNEL" in err_str:
-                    logger.warning("WEGO: proxy may be blocked, retrying with different session")
-                    raise  # Will trigger retry with different proxy session
-                raise
+                if "ERR_TUNNEL" in err_str:
+                    logger.warning("WEGO: proxy tunnel failed, retrying with different session")
+                    raise
+                if "ERR_HTTP_RESPONSE_CODE_FAILURE" in err_str:
+                    logger.warning("WEGO: goto returned HTTP failure, continuing with loaded page")
+                    try:
+                        title = await page.title()
+                        body_text = (await page.text_content("body") or "").strip().replace("\n", " ")
+                        logger.info(
+                            "WEGO: failed goto page url=%s title=%s body=%s",
+                            page.url,
+                            title[:160],
+                            body_text[:320],
+                        )
+                    except Exception:
+                        pass
+                else:
+                    raise
 
             # ── Handle Cloudflare Turnstile ──
             # Patchright auto-solves most challenges but needs page focus.
@@ -486,6 +691,7 @@ class WegoConnectorClient:
                 # Check 1: title no longer shows challenge page
                 try:
                     title = (await page.title()).lower()
+                    body_text = (await page.text_content("body") or "").lower()
                 except Exception:
                     await asyncio.sleep(1)
                     continue
@@ -493,6 +699,12 @@ class WegoConnectorClient:
                     "just a moment", "checking", "challenge",
                     "attention required", "please wait",
                 ))
+                if not is_cf:
+                    is_cf = any(marker in body_text for marker in (
+                        "performing security verification",
+                        "website uses a security service",
+                        "verify you are not a bot",
+                    ))
                 if not is_cf:
                     if cf_wait > 0:
                         logger.info("WEGO: Cloudflare passed after ~%ds", cf_wait)
@@ -532,13 +744,21 @@ class WegoConnectorClient:
                 for cf_retry in range(12):
                     try:
                         title = (await page.title()).lower()
+                        body_text = (await page.text_content("body") or "").lower()
                     except Exception:
                         await asyncio.sleep(1)
                         continue
-                    if not any(t in title for t in (
+                    still_blocked = any(t in title for t in (
                         "just a moment", "challenge", "checking",
                         "attention required",
-                    )):
+                    ))
+                    if not still_blocked:
+                        still_blocked = any(marker in body_text for marker in (
+                            "performing security verification",
+                            "website uses a security service",
+                            "verify you are not a bot",
+                        ))
+                    if not still_blocked:
                         logger.info("WEGO: Cloudflare passed after reload + %ds", cf_retry)
                         cf_passed = True
                         break
@@ -554,22 +774,54 @@ class WegoConnectorClient:
             if not cf_passed:
                 logger.warning("WEGO: Cloudflare challenge NOT resolved — results may be empty")
 
-            # Wait for page to fully render and results to load
+            # Wait for page to fully render and for any late result calls to arrive.
             logger.info("WEGO: waiting for flight results")
             await asyncio.sleep(3)
-            
-            # Wait for network to settle
+
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
-                pass  # OK if times out - we'll work with what we have
-            
+                pass
+
             await asyncio.sleep(2)
-            
-            # Scroll to trigger lazy loading
+
             for _ in range(2):
                 await page.evaluate("window.scrollBy(0, 400)")
                 await asyncio.sleep(0.8)
+
+            deadline = time.monotonic() + 24
+            last_count = len(intercepted_data)
+            stable_ticks = 0
+            while time.monotonic() < deadline:
+                await asyncio.sleep(3)
+                current_count = len(intercepted_data)
+                if current_count > last_count:
+                    last_count = current_count
+                    stable_ticks = 0
+                else:
+                    stable_ticks += 1
+                    if stable_ticks >= 3 and intercepted_data:
+                        break
+
+            landing_title = ""
+            landing_canonical = None
+            looks_like_seo = False
+            try:
+                landing_title = await page.title()
+                canonical = page.locator('link[rel="canonical"]')
+                if await canonical.count() > 0:
+                    landing_canonical = await canonical.first.get_attribute("href")
+                looks_like_seo = _looks_like_seo_page(page.url, landing_title, landing_canonical)
+                logger.info(
+                    "WEGO: candidate %d landed url=%s title=%s canonical=%s seo=%s",
+                    attempt + 1,
+                    page.url,
+                    landing_title[:160],
+                    (landing_canonical or "")[:200],
+                    looks_like_seo,
+                )
+            except Exception:
+                pass
 
             # Get page HTML and try multiple extraction methods
             html = await page.content()
@@ -579,19 +831,76 @@ class WegoConnectorClient:
                 logger.info("WEGO: %d API responses intercepted, parsing...", len(intercepted_data))
                 seen: set[str] = set()
                 api_offers: list[FlightOffer] = []
-                for data in intercepted_data:
+                for idx, item in enumerate(intercepted_data, start=1):
                     try:
+                        source_url, data = item
+                        parsed_offers: list[FlightOffer] = []
                         if isinstance(data, dict):
-                            api_offers.extend(self._parse_response(data, req, dt, seen))
+                            parsed_offers.extend(self._parse_response(data, req, dt, seen))
                         elif isinstance(data, list):
                             # Some Wego endpoints return bare arrays
                             for item in data:
                                 if isinstance(item, dict):
-                                    api_offers.extend(self._parse_response(item, req, dt, seen))
+                                    parsed_offers.extend(self._parse_response(item, req, dt, seen))
+                        if parsed_offers:
+                            api_offers.extend(parsed_offers)
+                        elif idx <= 8:
+                            logger.info(
+                                "WEGO: intercepted response %d yielded no offers url=%s shape=%s",
+                                idx,
+                                source_url[:180],
+                                self._summarize_response_shape(data),
+                            )
                     except Exception as e:
                         logger.debug("WEGO: intercepted data parse error: %s", e)
                 if api_offers:
                     return api_offers
+
+            in_page_api_data = await self._fetch_search_api_in_page(page, req, dt)
+            if in_page_api_data:
+                logger.info("WEGO: %d in-page API responses fetched, parsing...", len(in_page_api_data))
+                seen: set[str] = set()
+                api_offers: list[FlightOffer] = []
+                for idx, item in enumerate(in_page_api_data, start=1):
+                    try:
+                        source_url, data = item
+                        parsed_offers: list[FlightOffer] = []
+                        if isinstance(data, dict):
+                            parsed_offers.extend(self._parse_response(data, req, dt, seen))
+                        elif isinstance(data, list):
+                            for row in data:
+                                if isinstance(row, dict):
+                                    parsed_offers.extend(self._parse_response(row, req, dt, seen))
+                        if parsed_offers:
+                            api_offers.extend(parsed_offers)
+                        else:
+                            logger.info(
+                                "WEGO: in-page API response %d yielded no offers url=%s shape=%s",
+                                idx,
+                                source_url[:180],
+                                self._summarize_response_shape(data),
+                            )
+                            if idx <= 3:
+                                self._log_wego_result_sample(source_url, data)
+                    except Exception as e:
+                        logger.debug("WEGO: in-page API parse error: %s", e)
+                if api_offers:
+                    return api_offers
+            elif intercepted_other_urls:
+                logger.info(
+                    "WEGO: no result payloads intercepted; saw other JSON urls=%s",
+                    " | ".join(intercepted_other_urls[:6]),
+                )
+            if xhr_request_urls:
+                logger.info(
+                    "WEGO: xhr/fetch requests seen=%s",
+                    " | ".join(xhr_request_urls[:10]),
+                )
+            if xhr_response_urls:
+                logger.info(
+                    "WEGO: xhr/fetch responses seen=%s",
+                    " | ".join(xhr_response_urls[:10]),
+                )
 
             # Method 1: Try DOM text parsing (most reliable for Wego)
             offers = await self._parse_dom_text(page, req, dt)
@@ -605,6 +914,12 @@ class WegoConnectorClient:
             
             # Method 3: Legacy DOM extraction
             offers = await self._extract_from_dom(page, req, dt)
+            if not offers and looks_like_seo:
+                logger.info(
+                    "WEGO: candidate %d produced no offers on SEO-like page, trying next route",
+                    attempt + 1,
+                )
+                return None
             return offers
 
         finally:
@@ -844,6 +1159,8 @@ class WegoConnectorClient:
         
         if not chunks:
             logger.warning("WEGO: no RSC chunks found in HTML")
+            snippet = re.sub(r"\s+", " ", html[:500])
+            logger.info("WEGO: HTML prefix=%s", snippet)
             return []
         
         # Concatenate and unescape
@@ -1061,6 +1378,211 @@ class WegoConnectorClient:
         
         return offers
 
+    async def _fetch_search_api_in_page(
+        self, page, req: FlightSearchRequest, dt: datetime,
+    ) -> list[tuple[str, Any]]:
+        """Try Wego search APIs from the page context using the live browser session."""
+        cabin_map = {
+            "M": "economy",
+            "W": "premium_economy",
+            "C": "business",
+            "F": "first",
+        }
+        cabin = cabin_map.get(req.cabin_class, "economy") if req.cabin_class else "economy"
+        adults = req.adults or 1
+        children = req.children or 0
+        infants = req.infants or 0
+        date_str = dt.strftime("%Y-%m-%d")
+        departure_city_code = _AIRPORT_TO_CITY.get(req.origin.upper(), req.origin.upper())
+        arrival_city_code = _AIRPORT_TO_CITY.get(req.destination.upper(), req.destination.upper())
+
+        attempts = [
+            (
+                "https://srv.wego.com/v3/metasearch/flights/searches",
+                {
+                    "search": {
+                        "cabin": cabin,
+                        "adultsCount": adults,
+                        "childrenCount": children,
+                        "infantsCount": infants,
+                        "locale": "en",
+                        "siteCode": "US",
+                        "currencyCode": "USD",
+                        "deviceType": "DESKTOP",
+                        "appType": "WEB_APP",
+                        "legs": [
+                            {
+                                "departureAirportCode": req.origin,
+                                "arrivalAirportCode": req.destination,
+                                "departureCityCode": departure_city_code,
+                                "arrivalCityCode": arrival_city_code,
+                                "outboundDate": date_str,
+                            }
+                        ],
+                    },
+                },
+            ),
+        ]
+
+        results: list[tuple[str, Any]] = []
+        for url, payload in attempts:
+            try:
+                response = await page.evaluate(
+                    """async ({ url, payload }) => {
+                        try {
+                            const resp = await fetch(url, {
+                                method: 'POST',
+                                credentials: 'include',
+                                headers: {
+                                    'accept': 'application/json',
+                                    'content-type': 'application/json'
+                                },
+                                body: JSON.stringify(payload),
+                            });
+                            const text = await resp.text();
+                            return {
+                                ok: resp.ok,
+                                status: resp.status,
+                                contentType: resp.headers.get('content-type') || '',
+                                text,
+                            };
+                        } catch (error) {
+                            return { error: String(error) };
+                        }
+                    }""",
+                    {"url": url, "payload": payload},
+                )
+            except Exception as e:
+                logger.info("WEGO: in-page API fetch failed url=%s err=%s", url, e)
+                continue
+
+            if not isinstance(response, dict):
+                continue
+
+            if response.get("error"):
+                logger.info("WEGO: in-page API error url=%s err=%s", url, response.get("error"))
+                continue
+
+            status = response.get("status")
+            content_type = str(response.get("contentType") or "")
+            body_text = str(response.get("text") or "")
+            logger.info(
+                "WEGO: in-page API status=%s ct=%s url=%s",
+                status,
+                content_type.split(";", 1)[0],
+                url,
+            )
+            if status != 200 or "json" not in content_type.lower() or not body_text:
+                if body_text:
+                    logger.info("WEGO: in-page API body preview url=%s body=%s", url, body_text[:180])
+                continue
+
+            try:
+                data = json.loads(body_text)
+            except Exception as e:
+                logger.info("WEGO: in-page API JSON decode failed url=%s err=%s", url, e)
+                continue
+
+            results.append((url, data))
+
+            search_id = None
+            if isinstance(data, dict):
+                search_id = (
+                    data.get("searchId")
+                    or data.get("search_id")
+                    or data.get("id")
+                )
+                if not search_id:
+                    search_node = data.get("search")
+                    if isinstance(search_node, dict):
+                        search_id = (
+                            search_node.get("id")
+                            or search_node.get("searchId")
+                            or search_node.get("search_id")
+                        )
+                    logger.info(
+                        "WEGO: in-page search object preview=%s",
+                        json.dumps(search_node)[:220],
+                    )
+
+            has_results = False
+            if isinstance(data, dict):
+                has_results = bool(data.get("fares") or data.get("trips") or data.get("results"))
+            if not search_id or has_results:
+                continue
+
+            results_urls = [
+                f"https://srv.wego.com/v3/metasearch/flights/searches/{search_id}",
+                f"https://srv.wego.com/v3/metasearch/flights/searches/{search_id}/results",
+                f"https://srv.wego.com/v3/metasearch/flights/searches/{search_id}/fares",
+                f"https://srv.wego.com/v3/metasearch/flights/results/{search_id}",
+            ]
+            for poll_index in range(4):
+                await asyncio.sleep(2)
+                found_results = False
+                for results_url in results_urls:
+                    try:
+                        poll_response = await page.evaluate(
+                            """async (url) => {
+                                try {
+                                    const resp = await fetch(url, {
+                                        method: 'GET',
+                                        credentials: 'include',
+                                        headers: { 'accept': 'application/json' },
+                                    });
+                                    const text = await resp.text();
+                                    return {
+                                        status: resp.status,
+                                        contentType: resp.headers.get('content-type') || '',
+                                        text,
+                                    };
+                                } catch (error) {
+                                    return { error: String(error) };
+                                }
+                            }""",
+                            results_url,
+                        )
+                    except Exception as e:
+                        logger.info("WEGO: in-page results poll failed url=%s err=%s", results_url, e)
+                        continue
+
+                    if not isinstance(poll_response, dict):
+                        continue
+                    if poll_response.get("error"):
+                        logger.info(
+                            "WEGO: in-page results poll error url=%s err=%s",
+                            results_url,
+                            poll_response.get("error"),
+                        )
+                        continue
+
+                    poll_status = poll_response.get("status")
+                    poll_ct = str(poll_response.get("contentType") or "")
+                    poll_text = str(poll_response.get("text") or "")
+                    logger.info(
+                        "WEGO: in-page results poll %d status=%s ct=%s url=%s",
+                        poll_index + 1,
+                        poll_status,
+                        poll_ct.split(";", 1)[0],
+                        results_url,
+                    )
+                    if poll_status != 200 or "json" not in poll_ct.lower() or not poll_text:
+                        continue
+                    try:
+                        poll_data = json.loads(poll_text)
+                    except Exception as e:
+                        logger.info("WEGO: in-page results poll JSON decode failed url=%s err=%s", results_url, e)
+                        continue
+
+                    results.append((results_url, poll_data))
+                    if isinstance(poll_data, dict) and (poll_data.get("fares") or poll_data.get("trips") or poll_data.get("results")):
+                        found_results = True
+                        break
+                if found_results:
+                    break
+
+        return results
+
     # ------------------------------------------------------------------
     # Legacy Response parsing (kept for backwards compatibility)
     # ------------------------------------------------------------------
@@ -1070,32 +1592,167 @@ class WegoConnectorClient:
     ) -> list[FlightOffer]:
         """Parse Wego metasearch API response data."""
         offers: list[FlightOffer] = []
+        graph_fares: list[dict] = []
 
-        # Wego responses can nest results under various keys
-        fares = (
-            data.get("fares") or data.get("trips") or data.get("results")
-            or data.get("itineraries") or data.get("flights") or []
-        )
+        fare_keys = {
+            "amount", "avgPrice", "avgPriceUsd", "price", "priceUsd",
+            "totalAmount",
+        }
+        route_keys = {
+            "airlineCode", "airlineCodes", "arrivalAirportCode",
+            "arrivalCityCode", "departureAirportCode", "departureCityCode",
+            "destination", "legs", "origin", "outboundAirlineCodes",
+            "segments", "slices",
+        }
+        fares: list[dict] = []
 
-        # GraphQL responses
-        if "data" in data and isinstance(data["data"], dict):
-            gql = data["data"]
-            fares = fares or (
-                gql.get("flightSearch", {}).get("fares")
-                or gql.get("flightSearch", {}).get("results")
-                or gql.get("flights", {}).get("results")
-                or []
-            )
+        gql = data.get("data") if isinstance(data.get("data"), dict) else {}
+        flight_search = gql.get("flightSearch") if isinstance(gql.get("flightSearch"), dict) else {}
+        flights = gql.get("flights") if isinstance(gql.get("flights"), dict) else {}
+
+        def collect_graph_fares(root: Any) -> None:
+            if not isinstance(root, dict):
+                return
+
+            fare_nodes = root.get("fares")
+            trip_nodes = root.get("trips")
+            leg_nodes = root.get("legs")
+            if not (
+                isinstance(fare_nodes, list)
+                and isinstance(trip_nodes, list)
+                and isinstance(leg_nodes, list)
+            ):
+                return
+
+            trip_map = {
+                str(item.get("id")): item
+                for item in trip_nodes
+                if isinstance(item, dict) and item.get("id")
+            }
+            leg_map = {
+                str(item.get("id")): item
+                for item in leg_nodes
+                if isinstance(item, dict) and item.get("id")
+            }
+
+            for fare in fare_nodes:
+                if not isinstance(fare, dict):
+                    continue
+
+                raw_trip_ids = fare.get("tripIds") or fare.get("tripId") or fare.get("flightIds") or fare.get("flightId")
+                if isinstance(raw_trip_ids, list):
+                    trip_ids = [str(value) for value in raw_trip_ids if value]
+                elif raw_trip_ids:
+                    trip_ids = [str(raw_trip_ids)]
+                else:
+                    trip_ids = []
+
+                resolved_legs: list[dict] = []
+                for trip_id in trip_ids:
+                    trip = trip_map.get(trip_id)
+                    if not isinstance(trip, dict):
+                        continue
+                    for leg_id in trip.get("legIds") or []:
+                        leg = leg_map.get(str(leg_id))
+                        if isinstance(leg, dict):
+                            resolved_legs.append(leg)
+
+                if not resolved_legs:
+                    continue
+
+                graph_fare = dict(fare)
+                graph_fare["legs"] = resolved_legs
+                graph_fare["tripIds"] = trip_ids
+                graph_fares.append(graph_fare)
+
+        def collect_fares(container: Any) -> None:
+            if not container:
+                return
+            if isinstance(container, list):
+                for item in container:
+                    collect_fares(item)
+                return
+            if not isinstance(container, dict):
+                return
+
+            keys = set(container.keys())
+            if (fare_keys & keys) and (route_keys & keys):
+                fares.append(container)
+                return
+
+            for value in container.values():
+                if isinstance(value, (list, dict)):
+                    collect_fares(value)
+
+        seen_graph_roots: set[int] = set()
+        for root in (
+            data,
+            data.get("search"),
+            gql,
+            gql.get("search"),
+            gql.get("results"),
+            flight_search,
+            flight_search.get("search"),
+            flights,
+            flights.get("search"),
+        ):
+            if isinstance(root, dict) and id(root) not in seen_graph_roots:
+                seen_graph_roots.add(id(root))
+                collect_graph_fares(root)
+
+        for container in (
+            data.get("fares"),
+            data.get("trips"),
+            data.get("results"),
+            data.get("itineraries"),
+            data.get("flights"),
+            data.get("faresByAirlines"),
+            data.get("faresByMonth"),
+            data.get("faresByDay"),
+        ):
+            collect_fares(container)
+        for container in (
+            gql.get("faresByAirlines"),
+            gql.get("faresByMonth"),
+            gql.get("faresByDay"),
+            flight_search.get("fares"),
+            flight_search.get("results"),
+            flight_search.get("faresByAirlines"),
+            flight_search.get("faresByMonth"),
+            flight_search.get("faresByDay"),
+            flights.get("results"),
+            flights.get("faresByAirlines"),
+            flights.get("faresByMonth"),
+            flights.get("faresByDay"),
+        ):
+            collect_fares(container)
 
         # Lookup tables (Wego often sends airlines/airports separately)
         airlines_map = {}
-        for a in data.get("airlines", []):
-            if isinstance(a, dict):
-                code = a.get("code") or a.get("iata") or ""
-                airlines_map[code] = a.get("name") or code
+        for payload in (
+            data.get("airlines"),
+            gql.get("airlines"),
+            flight_search.get("airlines"),
+            flights.get("airlines"),
+        ):
+            if isinstance(payload, list):
+                for a in payload:
+                    if isinstance(a, dict):
+                        code = a.get("code") or a.get("iata") or ""
+                        airlines_map[code] = a.get("name") or code
+            elif isinstance(payload, dict):
+                for code, name in payload.items():
+                    if isinstance(name, dict):
+                        airlines_map[str(code)] = name.get("name") or str(code)
+                    else:
+                        airlines_map[str(code)] = str(name)
 
-        for fare in fares:
+        date_key = dt.strftime("%Y-%m-%d")
+        for fare in graph_fares + fares:
             try:
+                fare_date = fare.get("departureDate") or fare.get("date") or fare.get("departure_date")
+                if fare_date and str(fare_date)[:10] != date_key:
+                    continue
                 offer = self._parse_fare(fare, req, dt, seen, airlines_map)
                 if offer:
                     offers.append(offer)
@@ -1103,6 +1760,66 @@ class WegoConnectorClient:
                 logger.debug("WEGO: parse fare error: %s", e)
 
         return offers
+
+    @staticmethod
+    def _summarize_response_shape(payload: Any) -> str:
+        """Return a compact payload shape summary for live parser diagnostics."""
+        def describe(value: Any) -> str:
+            if isinstance(value, list):
+                if value and isinstance(value[0], dict):
+                    first_keys = ",".join(list(value[0].keys())[:6])
+                    return f"list[{len(value)}]:{first_keys}"
+                return f"list[{len(value)}]"
+            if isinstance(value, dict):
+                return f"dict:{','.join(list(value.keys())[:8])}"
+            return type(value).__name__
+
+        if isinstance(payload, list):
+            return describe(payload)
+        if not isinstance(payload, dict):
+            return type(payload).__name__
+
+        parts = [f"top={','.join(list(payload.keys())[:10])}"]
+        for key in (
+            "data", "results", "fares", "trips", "itineraries", "flights",
+            "faresByAirlines", "faresByMonth", "faresByDay",
+        ):
+            if key in payload:
+                parts.append(f"{key}={describe(payload.get(key))}")
+
+        data_node = payload.get("data")
+        if isinstance(data_node, dict):
+            for key in ("flightSearch", "flights", "search", "results"):
+                if key in data_node:
+                    parts.append(f"data.{key}={describe(data_node.get(key))}")
+
+        return "; ".join(parts)
+
+    @staticmethod
+    def _log_wego_result_sample(source_url: str, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+
+        def _preview(value: Any) -> str:
+            try:
+                return json.dumps(value)[:400]
+            except Exception:
+                return str(value)[:400]
+
+        fares = payload.get("fares")
+        trips = payload.get("trips")
+        legs = payload.get("legs")
+        if isinstance(payload.get("data"), dict):
+            fares = fares or payload["data"].get("fares")
+            trips = trips or payload["data"].get("trips")
+            legs = legs or payload["data"].get("legs")
+
+        if isinstance(fares, list) and fares:
+            logger.info("WEGO: sample fare url=%s data=%s", source_url[:180], _preview(fares[0]))
+        if isinstance(trips, list) and trips:
+            logger.info("WEGO: sample trip url=%s data=%s", source_url[:180], _preview(trips[0]))
+        if isinstance(legs, list) and legs:
+            logger.info("WEGO: sample leg url=%s data=%s", source_url[:180], _preview(legs[0]))
 
     def _parse_fare(
         self, fare: dict, req: FlightSearchRequest, dt: datetime,
@@ -1112,11 +1829,14 @@ class WegoConnectorClient:
         price_obj = fare.get("price") or fare
         if isinstance(price_obj, dict):
             price = (
-                price_obj.get("amount") or price_obj.get("totalAmount")
-                or price_obj.get("price") or 0
+                price_obj.get("amountWithFraction") or price_obj.get("totalAmountWithFraction")
+                or price_obj.get("amount") or price_obj.get("totalAmount")
+                or price_obj.get("priceUsd") or price_obj.get("avgPriceUsd")
+                or price_obj.get("price") or price_obj.get("avgPrice") or 0
             )
             currency = (
-                price_obj.get("currencyCode") or price_obj.get("currency") or "USD"
+                price_obj.get("currencyCode") or price_obj.get("currency")
+                or fare.get("currency") or "USD"
             )
         else:
             try:
@@ -1144,13 +1864,20 @@ class WegoConnectorClient:
             for sd in seg_items:
                 airline_code = (
                     sd.get("airlineCode") or sd.get("operatingCarrier")
-                    or sd.get("marketingCarrier") or sd.get("airline") or ""
+                    or sd.get("marketingCarrier") or sd.get("operatingAirlineCode")
+                    or sd.get("airline") or ""
                 )
+                if not airline_code:
+                    raw_codes = sd.get("outboundAirlineCodes") or sd.get("airlineCodes") or []
+                    if isinstance(raw_codes, list) and raw_codes:
+                        airline_code = str(raw_codes[0])
+                    elif isinstance(raw_codes, str):
+                        airline_code = raw_codes.split(",")[0].strip()
                 airline_name = (
                     sd.get("airlineName") or airlines_map.get(airline_code, "")
                     or airline_code
                 )
-                fno = sd.get("flightNumber") or sd.get("flightNo") or ""
+                fno = sd.get("flightNumber") or sd.get("flightNo") or sd.get("designatorCode") or ""
                 if airline_code and fno and not fno.startswith(airline_code):
                     fno = f"{airline_code}{fno}"
 
@@ -1164,14 +1891,21 @@ class WegoConnectorClient:
                 )
                 dep_apt = (
                     sd.get("departureAirportCode") or sd.get("departureCode")
-                    or sd.get("origin") or req.origin
+                    or sd.get("departureCityCode") or sd.get("origin") or req.origin
                 )
                 arr_apt = (
                     sd.get("arrivalAirportCode") or sd.get("arrivalCode")
-                    or sd.get("destination") or req.destination
+                    or sd.get("arrivalCityCode") or sd.get("destination") or req.destination
                 )
-                dur = sd.get("durationMinutes") or sd.get("duration") or 0
-                dur_s = int(dur) * 60 if isinstance(dur, (int, float)) and dur > 0 else 0
+                dur = (
+                    sd.get("durationMinutes") or sd.get("durationTimeMinutes")
+                    or sd.get("flightDuration") or sd.get("tripDuration")
+                    or sd.get("duration") or 0
+                )
+                try:
+                    dur_s = int(float(dur)) * 60 if dur else 0
+                except (TypeError, ValueError):
+                    dur_s = 0
 
                 _wego_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
                 segments.append(FlightSegment(
@@ -1206,10 +1940,16 @@ class WegoConnectorClient:
             s.airline_name for s in segments if s.airline_name
         ))
 
+        stops_override = fare.get("stopsCount") or fare.get("stopoversCount")
+        try:
+            stopovers = max(0, int(stops_override)) if stops_override not in (None, "") else max(0, len(segments) - 1)
+        except (TypeError, ValueError):
+            stopovers = max(0, len(segments) - 1)
+
         route = FlightRoute(
             segments=segments,
             total_duration_seconds=total_dur,
-            stopovers=max(0, len(segments) - 1),
+            stopovers=stopovers,
         )
 
         fid = hashlib.md5(dedup.encode()).hexdigest()[:12]
@@ -1223,8 +1963,10 @@ class WegoConnectorClient:
             airlines=names_set or airlines_set,
             owner_airline=airlines_set[0] if airlines_set else "",
             booking_url=(
-                f"https://www.wego.com/flights/{req.origin}/{req.destination}"
-                f"/{dt:%Y-%m-%d}?adults={req.adults or 1}"
+                fare.get("handoffUrl") or fare.get("bookingUrl") or (
+                    f"https://www.wego.com/flights/{req.origin}/{req.destination}"
+                    f"/{dt:%Y-%m-%d}?adults={req.adults or 1}"
+                )
             ),
             is_locked=False,
             source="wego_meta",
