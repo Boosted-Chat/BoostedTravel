@@ -96,8 +96,7 @@ export default async function Home({ params, searchParams }: { params: Promise<{
   // ?q= support: agents (and humans) can navigate directly to /?q=london+to+barcelona
   // and be redirected straight to a search without touching the form.
   if (q?.trim()) {
-    // Demo mode: go to demo-loading. Production: call /api/search, get search_id, redirect.
-    redirect(`/results/demo-loading`)
+    redirect(`/results?q=${encodeURIComponent(q.trim())}`)
   }
 
   const [stats, t] = await Promise.all([

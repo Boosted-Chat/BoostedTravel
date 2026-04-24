@@ -138,7 +138,7 @@ export async function generateMetadata({ params }: { params: Promise<{ searchId:
   }
 }
 
-export default async function ResultsPage({ params, searchParams }: { params: Promise<{ searchId: string }>; searchParams: Promise<{ sort?: string; filter?: string }> }) {
+export default async function ResultsPage({ params, searchParams }: { params: Promise<{ searchId: string }>; searchParams: Promise<{ sort?: string; filter?: string; started?: string }> }) {
   const { searchId } = await params
   const sp = await searchParams
   const result = await getSearchResults(searchId)
@@ -244,9 +244,10 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
       )}
 
       {/* Meta refresh for agents while searching (disabled for demo-loading) */}
-      {isSearching && searchId !== 'demo-loading' && (
-        <meta httpEquiv="refresh" content={`15;url=/results/${searchId}`} />
-      )}
+      {isSearching && searchId !== 'demo-loading' && (() => {
+        const anchor = searched_at || sp?.started || new Date().toISOString()
+        return <meta httpEquiv="refresh" content={`15;url=/results/${searchId}?started=${encodeURIComponent(anchor)}`} />
+      })()}
 
       <main className={`res-page${isSearching ? ' res-page--searching' : status === 'completed' ? ' res-page--completed' : ''}`}>
         <section className={`res-hero${isSearching ? ' res-hero--searching' : status === 'completed' ? ' res-hero--results' : ''}`}>
@@ -299,6 +300,7 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
                     destinationLabel={parsed.destination_name || parsed.destination}
                     destinationCode={parsed.destination}
                     progress={progress}
+                    searchedAt={searched_at || sp?.started}
                   />
                 </div>
               </>

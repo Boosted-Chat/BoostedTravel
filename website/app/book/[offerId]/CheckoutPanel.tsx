@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback } from 'react'
-import Image from 'next/image'
+import { getAirlineLogoUrl } from '../../airlineLogos'
 import type { Offer } from './page'
 
 interface Props {
@@ -158,13 +158,12 @@ function AirlineLogo({ code, name }: { code: string; name: string }) {
   }
   return (
     <div className="ck-airline-logo">
-      <Image
-        src={`https://images.kiwi.com/airlines/64/${code}.png`}
+      <img
+        src={getAirlineLogoUrl(code)}
         alt={name}
         width={40}
         height={40}
         onError={() => setFailed(true)}
-        unoptimized
       />
     </div>
   )

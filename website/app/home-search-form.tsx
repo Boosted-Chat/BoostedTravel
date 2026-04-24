@@ -482,7 +482,7 @@ function getSuggestion(query: string, locale: string): string {
 }
 
 // Set to true to skip the API call and go straight to the loading UI demo
-const DEMO_LOADING = true
+const DEMO_LOADING = false
 
 interface HomeSearchFormProps {
   initialQuery?: string
@@ -555,30 +555,15 @@ export default function HomeSearchForm({
     setQuery(initialQuery)
   }, [initialQuery])
 
-  const handleSearch = async (event: FormEvent) => {
+  const handleSearch = (event: FormEvent) => {
     event.preventDefault()
     if (!query.trim()) return
-
     setIsLoading(true)
-
     if (DEMO_LOADING) {
       router.push('/results/demo-loading')
       return
     }
-
-    try {
-      const response = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim() }),
-      })
-      if (!response.ok) throw new Error('Search failed')
-      const data = await response.json()
-      router.push(`/results/${data.search_id}`)
-    } catch (error) {
-      console.error('Search error:', error)
-      setIsLoading(false)
-    }
+    router.push(`/results?q=${encodeURIComponent(query.trim())}`)
   }
 
   // Update suggestion when query changes

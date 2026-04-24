@@ -16,6 +16,18 @@ interface FlightSegment {
   layover_minutes: number
 }
 
+interface InboundLeg {
+  origin: string
+  destination: string
+  departure_time: string
+  arrival_time: string
+  duration_minutes: number
+  stops: number
+  airline?: string
+  airline_code?: string
+  segments?: FlightSegment[]
+}
+
 interface FlightOffer {
   id: string
   price: number
@@ -31,6 +43,7 @@ interface FlightOffer {
   duration_minutes: number
   stops: number
   segments?: FlightSegment[]
+  inbound?: InboundLeg
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -405,31 +418,89 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
                     <div className="rf-airline-name">{offer.airline}</div>
                   </div>
 
-                  <div className="rf-route">
-                    <div className="rf-endpoint">
-                      <span className="rf-time">{fmtTime(offer.departure_time)}</span>
-                      <span className="rf-iata">{offer.origin}</span>
-                    </div>
-                    <div className="rf-path">
-                      <span className="rf-duration">{fmtDuration(offer.duration_minutes)}</span>
-                      <div className="rf-path-line">
-                        <span className="rf-path-dot" />
-                        <span className="rf-path-track">
-                          {offer.stops > 0 && viaCode && (
-                            <span className="rf-path-via">{viaCode}</span>
-                          )}
-                        </span>
-                        <span className="rf-path-dot" />
+                  {offer.inbound ? (
+                    <div className="rf-legs">
+                      <div className="rf-route">
+                        <div className="rf-endpoint">
+                          <span className="rf-time">{fmtTime(offer.departure_time)}</span>
+                          <span className="rf-iata">{offer.origin}</span>
+                        </div>
+                        <div className="rf-path">
+                          <span className="rf-duration">{fmtDuration(offer.duration_minutes)}</span>
+                          <div className="rf-path-line">
+                            <span className="rf-path-dot" />
+                            <span className="rf-path-track">
+                              {offer.stops > 0 && viaCode && (
+                                <span className="rf-path-via">{viaCode}</span>
+                              )}
+                            </span>
+                            <span className="rf-path-dot" />
+                          </div>
+                          <span className={`rf-stops${offer.stops === 0 ? ' rf-stops--direct' : ''}`}>
+                            {stopsLabel}
+                          </span>
+                        </div>
+                        <div className="rf-endpoint rf-endpoint--arr">
+                          <span className="rf-time">{fmtTime(offer.arrival_time)}</span>
+                          <span className="rf-iata">{offer.destination}</span>
+                        </div>
                       </div>
-                      <span className={`rf-stops${offer.stops === 0 ? ' rf-stops--direct' : ''}`}>
-                        {stopsLabel}
-                      </span>
+
+                      <div className="rf-leg-sep" aria-hidden="true">
+                        <span className="rf-leg-sep-line" />
+                        <span className="rf-leg-sep-label">Return</span>
+                        <span className="rf-leg-sep-line" />
+                      </div>
+
+                      <div className="rf-route">
+                        <div className="rf-endpoint">
+                          <span className="rf-time">{fmtTime(offer.inbound.departure_time)}</span>
+                          <span className="rf-iata">{offer.inbound.origin}</span>
+                        </div>
+                        <div className="rf-path">
+                          <span className="rf-duration">{fmtDuration(offer.inbound.duration_minutes)}</span>
+                          <div className="rf-path-line">
+                            <span className="rf-path-dot" />
+                            <span className="rf-path-track" />
+                            <span className="rf-path-dot" />
+                          </div>
+                          <span className={`rf-stops${offer.inbound.stops === 0 ? ' rf-stops--direct' : ''}`}>
+                            {offer.inbound.stops === 0 ? 'Direct' : `${offer.inbound.stops} stop${offer.inbound.stops > 1 ? 's' : ''}`}
+                          </span>
+                        </div>
+                        <div className="rf-endpoint rf-endpoint--arr">
+                          <span className="rf-time">{fmtTime(offer.inbound.arrival_time)}</span>
+                          <span className="rf-iata">{offer.inbound.destination}</span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="rf-endpoint rf-endpoint--arr">
-                      <span className="rf-time">{fmtTime(offer.arrival_time)}</span>
-                      <span className="rf-iata">{offer.destination}</span>
+                  ) : (
+                    <div className="rf-route">
+                      <div className="rf-endpoint">
+                        <span className="rf-time">{fmtTime(offer.departure_time)}</span>
+                        <span className="rf-iata">{offer.origin}</span>
+                      </div>
+                      <div className="rf-path">
+                        <span className="rf-duration">{fmtDuration(offer.duration_minutes)}</span>
+                        <div className="rf-path-line">
+                          <span className="rf-path-dot" />
+                          <span className="rf-path-track">
+                            {offer.stops > 0 && viaCode && (
+                              <span className="rf-path-via">{viaCode}</span>
+                            )}
+                          </span>
+                          <span className="rf-path-dot" />
+                        </div>
+                        <span className={`rf-stops${offer.stops === 0 ? ' rf-stops--direct' : ''}`}>
+                          {stopsLabel}
+                        </span>
+                      </div>
+                      <div className="rf-endpoint rf-endpoint--arr">
+                        <span className="rf-time">{fmtTime(offer.arrival_time)}</span>
+                        <span className="rf-iata">{offer.destination}</span>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="rf-price-wrap">
                     <span className="rf-price">{offer.currency}{offer.price}</span>

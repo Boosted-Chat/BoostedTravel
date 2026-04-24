@@ -2158,6 +2158,8 @@ input {
 }
 
 .res-page--searching {
+  height: 100dvh;
+  overflow: hidden;
   background: linear-gradient(180deg, #edf7fb 0%, #f4fafc 72%, #ffffff 94%);
 }
 
@@ -2264,7 +2266,9 @@ input {
 }
 
 .res-hero--searching {
-  flex: 1 0 auto;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   align-items: stretch;
   padding-bottom: 8px;
@@ -2511,6 +2515,7 @@ input {
 
 .res-search-footer {
   width: 100%;
+  flex-shrink: 0;
   margin: auto 0 0;
   padding: 18px 0 20px;
   background: #ffffff;
@@ -2928,6 +2933,34 @@ input {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+/* Round-trip: stacks two .rf-route elements with a separator */
+.rf-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rf-leg-sep {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.rf-leg-sep-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(20, 45, 60, 0.09);
+}
+
+.rf-leg-sep-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(20, 45, 60, 0.32);
 }
 
 .rf-endpoint {

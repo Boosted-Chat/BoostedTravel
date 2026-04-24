@@ -1,4 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getCachedOffer, cacheOffers } from '../../../../lib/offer-cache'
+
+const FSW_URL = process.env.FSW_URL || 'https://flight-search-worker-qryvus4jia-uc.a.run.app'
+const FSW_SECRET = process.env.FSW_SECRET || ''
+
+function normalizeWebOffer(raw: any) {
+  const ob = raw.outbound || {}
+  const segs: any[] = ob.segments || []
+  const first = segs[0] || {}
+  const last = segs[segs.length - 1] || {}
+  const origin = (first.origin || raw.origin || '').toUpperCase()
+  const destination = (last.destination || raw.destination || '').toUpperCase()
+  const departure = first.departure || first.departure_time || raw.departure_time || ''
+  const arrival = last.arrival || last.arrival_time || raw.arrival_time || ''
+  let durationMins = 0
+  if (departure && arrival) {
+    durationMins = Math.round((new Date(arrival).getTime() - new Date(departure).getTime()) / 60000)
+  }
+  const airlines: string[] = raw.airlines || []
+  const airlineName = airlines[0] || first.airline || first.carrier_name || raw.airline || 'Unknown'
+  const flightNo: string = first.flight_no || first.flight_number || ''
+  const airlineCode = raw.airline_code || flightNo.replace(/\d.*/, '').toUpperCase().slice(0, 2) || '??'
+  return {
+    id: raw.id,
+    price: Math.round((raw.price || 0) * 100) / 100,
+    currency: raw.currency || 'EUR',
+    airline: airlineName,
+    airline_code: airlineCode,
+    origin,
+    origin_name: raw.origin_name || first.origin_name || origin,
+    destination,
+    destination_name: raw.destination_name || last.destination_name || destination,
+    departure_time: departure,
+    arrival_time: arrival,
+    duration_minutes: durationMins,
+    stops: ob.stopovers ?? Math.max(0, segs.length - 1),
+    flight_number: flightNo,
+    booking_url: raw.booking_url,
+  }
+}
 
 // Mock offer store — in production this would be Redis/DB
 // Generates a deterministic offer for any offerId
@@ -98,7 +138,7 @@ const HIGH_VALUE_DEMO = {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ offerId: string }> }
 ) {
   const { offerId } = await params
@@ -110,5 +150,54 @@ export async function GET(
     return NextResponse.json(HIGH_VALUE_DEMO)
   }
 
+  // 1. Check module-level cache populated by /api/results/[searchId]
+  //    This avoids a second FSW round-trip that could land on a different
+  //    Cloud Run instance (which would have no in-memory search state).
+  const cached = getCachedOffer(offerId)
+  if (cached) {
+    return NextResponse.json(cached)
+  }
+
+  // 2. Real offer: try to look up from FSW in-memory store
+  if (offerId.startsWith('wo_') || offerId.startsWith('ws_')) {
+    try {
+      const res = await fetch(`${FSW_URL}/web-offer/${offerId}`, {
+        headers: { 'Authorization': `Bearer ${FSW_SECRET}` },
+        signal: AbortSignal.timeout(5_000),
+        cache: 'no-store',
+      })
+      if (res.ok) {
+        const raw = await res.json()
+        return NextResponse.json(normalizeWebOffer(raw))
+      }
+    } catch (err) {
+      console.error('Offer fetch error:', err)
+    }
+
+    // 3. FSW direct lookup failed — try fetching the full search result by
+    //    searchId (the ?from= param) and finding the offer there.
+    const from = request.nextUrl.searchParams.get('from')
+    if (from && from.startsWith('ws_')) {
+      try {
+        const res = await fetch(`${FSW_URL}/web-status/${from}`, {
+          headers: { 'Authorization': `Bearer ${FSW_SECRET}` },
+          signal: AbortSignal.timeout(6_000),
+          cache: 'no-store',
+        })
+        if (res.ok) {
+          const data = await res.json()
+          const offers: any[] = data.offers || []
+          // Cache these for future lookups
+          if (offers.length > 0) cacheOffers(offers)
+          const match = offers.find((o: any) => o.id === offerId)
+          if (match) return NextResponse.json(normalizeWebOffer(match))
+        }
+      } catch (err) {
+        console.error('Offer search-fallback error:', err)
+      }
+    }
+  }
+
+  // 4. Last resort: deterministic mock (only for demo/dev)
   return NextResponse.json(generateOffer(offerId))
 }

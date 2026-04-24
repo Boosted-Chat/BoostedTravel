@@ -1,8 +1,8 @@
 /**
  * Airline & OTA logo utilities for all LetsFG connectors.
  *
- * Airlines  → Kiwi CDN by IATA code:  https://images.kiwi.com/airlines/64/{IATA}.png
- * OTAs      → Google favicon service:  https://www.google.com/s2/favicons?domain={domain}&sz=64
+ * Airlines  → avs.io CDN by IATA code:  https://pics.avs.io/100/100/{IATA}.png
+ * OTAs      → Google favicon service:    https://www.google.com/s2/favicons?domain={domain}&sz=64
  */
 
 // ── Airlines: connector name → IATA code ──────────────────────────────────────
@@ -234,11 +234,71 @@ export const OTA_DOMAINS: Record<string, string> = {
   yatra:            'yatra.com',
 }
 
+// ── IATA code → airline display name ─────────────────────────────────────────
+// Used when FSW connectors return IATA codes in airlines[] instead of full names.
+export const IATA_TO_NAME: Record<string, string> = {
+  // Europe
+  A3: 'Aegean Airlines', EI: 'Aer Lingus', AR: 'Aerolíneas Argentinas',
+  G9: 'Air Arabia', AF: 'Air France', AI: 'Air India', IX: 'Air India Express',
+  MK: 'Air Mauritius', NZ: 'Air New Zealand', JU: 'Air Serbia',
+  HM: 'Air Seychelles', TS: 'Air Transat', AC: 'Air Canada', CA: 'Air China',
+  UX: 'Air Europa', NF: 'Air Vanuatu', QP: 'Akasa Air', AS: 'Alaska Airlines',
+  G4: 'Allegiant Air', AA: 'American Airlines', DM: 'Arajet', OZ: 'Asiana Airlines',
+  OS: 'Austrian', XP: 'Avelo Airlines', AV: 'Avianca', J2: 'Azerbaijan Airlines',
+  S4: 'Azores Airlines', AD: 'Azul', PG: 'Bangkok Airways', ID: 'Batik Air',
+  BG: 'Biman Bangladesh', MX: 'Breeze Airways', BA: 'British Airways',
+  SN: 'Brussels Airlines', BW: 'Caribbean Airlines', CX: 'Cathay Pacific',
+  '5J': 'Cebu Pacific', CI: 'China Airlines', MU: 'China Eastern',
+  CZ: 'China Southern', QG: 'Citilink', DE: 'Condor', CM: 'Copa Airlines',
+  CY: 'Cyprus Airways', DL: 'Delta Air Lines', '4Y': 'Discover Airlines',
+  U2: 'easyJet', MS: 'EgyptAir', LY: 'El Al', EK: 'Emirates',
+  ET: 'Ethiopian Airlines', EY: 'Etihad Airways', EW: 'Eurowings',
+  BR: 'EVA Air', FJ: 'Fiji Airways', AY: 'Finnair', F8: 'Flair Airlines',
+  F3: 'Flyadeal', KC: 'FlyArystan', FO: 'Flybondi', FZ: 'flydubai',
+  XY: 'flynas', FA: 'FlySafair', F9: 'Frontier Airlines', GA: 'Garuda Indonesia',
+  G3: 'GOL', GF: 'Gulf Air', HU: 'Hainan Airlines', HA: 'Hawaiian Airlines',
+  UO: 'HK Express', IB: 'Iberia', I2: 'Iberia Express', FI: 'Icelandair',
+  '6E': 'IndiGo', JJ: 'LATAM Brasil', JL: 'Japan Airlines', J9: 'Jazeera Airways',
+  '7C': 'Jeju Air', LS: 'Jet2', JA: 'JetSMART', JQ: 'Jetstar', LJ: 'Jin Air',
+  KQ: 'Kenya Airways', KL: 'KLM', KE: 'Korean Air', KU: 'Kuwait Airways',
+  LA: 'LATAM Airlines', VU: 'Level', FC: 'Link Airways', JT: 'Lion Air',
+  LO: 'LOT Polish Airlines', '8L': 'Lucky Air', LH: 'Lufthansa',
+  MH: 'Malaysia Airlines', ME: 'Middle East Airlines', NH: 'ANA',
+  DD: 'Nok Air', DY: 'Norwegian', OA: 'Olympic Air', WY: 'Oman Air',
+  MM: 'Peach Aviation', PC: 'Pegasus Airlines', PR: 'Philippine Airlines',
+  PK: 'PIA', PD: 'Porter Airlines', QF: 'Qantas', QR: 'Qatar Airways',
+  ZL: 'Rex Airlines', AT: 'Royal Air Maroc', RJ: 'Royal Jordanian',
+  WB: 'Rwandair', FR: 'Ryanair', RK: 'Ryanair UK', SA: 'South African Airways',
+  OV: 'SalamAir', SK: 'SAS', SV: 'Saudia', TR: 'Scoot',
+  SQ: 'Singapore Airlines', H2: 'Sky Airline', GQ: 'Sky Express',
+  BC: 'Skymark', QS: 'SmartWings', WN: 'Southwest Airlines',
+  SG: 'SpiceJet', NK: 'Spirit Airlines', IJ: 'Spring Airlines',
+  UL: 'SriLankan Airlines', JX: 'Starlux', SY: 'Sun Country Airlines',
+  XQ: 'SunExpress', LX: 'Swiss', TP: 'TAP Air Portugal', TG: 'Thai Airways',
+  HV: 'Transavia', TK: 'Turkish Airlines', TW: "T'way Air",
+  UA: 'United Airlines', VJ: 'VietJet Air', VN: 'Vietnam Airlines',
+  VS: 'Virgin Atlantic', VA: 'Virgin Australia', VB: 'VivaAerobus',
+  Y4: 'Volaris', V7: 'Volotea', VY: 'Vueling', WS: 'WestJet',
+  P5: 'Wingo', W6: 'Wizz Air', W9: 'Wizz Air Malta', ZG: 'Zipair',
+  // Common numeric-prefixed codes
+  '2W': 'World2Fly', '4U': 'Germanwings', '5O': 'ASL Airlines France',
+}
+
+/** Look up airline display name from IATA code. Returns null if unknown. */
+export function getAirlineNameFromCode(iata: string): string | null {
+  return IATA_TO_NAME[iata.toUpperCase()] ?? null
+}
+
+/** Return true if the string looks like an airline IATA code (2 chars: letters/digits). */
+export function looksLikeIataCode(s: string): boolean {
+  return /^[A-Z0-9]{2}$/i.test(s.trim())
+}
+
 // ── URL builders ──────────────────────────────────────────────────────────────
 
 /** Return a logo URL for a given IATA code (e.g. "FR", "W6"). */
 export function getLogoByIata(iata: string): string {
-  return `https://images.kiwi.com/airlines/64/${iata}.png`
+  return `https://pics.avs.io/100/100/${iata}.png`
 }
 
 /** Return a favicon URL for a given OTA domain. */

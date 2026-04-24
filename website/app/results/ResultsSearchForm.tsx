@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-const DEMO_LOADING = true
+const DEMO_LOADING = false
 
 function SearchIcon() {
   return (
@@ -31,33 +31,15 @@ export default function ResultsSearchForm({ initialQuery = '' }: { initialQuery?
     setQuery(initialQuery)
   }, [initialQuery])
 
-  const handleSearch = async (event: FormEvent) => {
+  const handleSearch = (event: FormEvent) => {
     event.preventDefault()
     if (!query.trim()) return
-
     setIsLoading(true)
-
     if (DEMO_LOADING) {
       router.push('/results/demo-loading')
       return
     }
-
-    try {
-      const response = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim() }),
-      })
-
-      if (!response.ok) {
-        throw new Error('Search failed')
-      }
-
-      const data = await response.json()
-      router.push(`/results/${data.search_id}`)
-    } catch {
-      setIsLoading(false)
-    }
+    router.push(`/results?q=${encodeURIComponent(query.trim())}`)
   }
 
   return (

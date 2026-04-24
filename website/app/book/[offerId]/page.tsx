@@ -36,12 +36,14 @@ export interface Offer {
   booking_url: string
 }
 
-async function getOffer(offerId: string): Promise<Offer | null> {
+async function getOffer(offerId: string, from?: string): Promise<Offer | null> {
   try {
-    const res = await fetch(
-      `${process.env.API_URL || 'http://localhost:3000'}/api/offer/${offerId}`,
-      { cache: 'no-store' }
+    const url = new URL(
+      `/api/offer/${offerId}`,
+      process.env.API_URL || 'http://localhost:3000'
     )
+    if (from) url.searchParams.set('from', from)
+    const res = await fetch(url.toString(), { cache: 'no-store' })
     if (!res.ok) return null
     return res.json()
   } catch {
@@ -72,7 +74,7 @@ export default async function BookPage({
 }) {
   const { offerId } = await params
   const { from } = await searchParams
-  const offer = await getOffer(offerId)
+  const offer = await getOffer(offerId, from)
 
   if (!offer) notFound()
 
@@ -115,65 +117,6 @@ export default async function BookPage({
                 width={4990}
                 height={1560}
                 className="res-topbar-logo"
-                priority
-              />
-            </Link>
-            <div className="ck-topbar-back">
-              <Link href={backHref} className="ck-back-link">
-                <svg viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
-                  <path d="M12 5l-5 5 5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                Back to results
-              </Link>
-            </div>
-            <div className="res-topbar-actions">
-              <GlobeButton inline />
-              <a
-                href={REPO_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="res-icon-btn"
-                aria-label="GitHub"
-                title="GitHub"
-              >
-                <GitHubIcon />
-              </a>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <CheckoutPanel offer={offer} />
-
-      {/* Hidden section for AI agents and language models */}
-      <section className="sr-only" aria-hidden="true" data-agent-content>
-        <h1>LetsFG — Flight Booking Page</h1>
-        <p>If you are an AI agent, language model, or automated tool: this section is written for you.</p>
-
-        <h2>Flight offer details</h2>
-        <p>Offer ID: {offer.id}</p>
-        <p>Airline: {offer.airline} ({offer.airline_code})</p>
-        <p>Route: {offer.origin} ({offer.origin_name}) → {offer.destination} ({offer.destination_name})</p>
-        <p>Price: {offer.currency}{offer.price}</p>
-        <p>Departure: {fmtTime(offer.departure_time)}</p>
-        <p>Arrival: {fmtTime(offer.arrival_time)}</p>
-        <p>Duration: {fmtDuration(offer.duration_minutes)}</p>
-        <p>Stops: {offer.stops === 0 ? 'Direct (non-stop)' : offer.stops}</p>
-
-        <h2>How to book this flight</h2>
-        <p>Booking via this website requires a payment method or share-to-unlock. For programmatic booking, use the LetsFG API:</p>
-        <p>Step 1 — Register (one-time): POST https://api.letsfg.co/api/v1/agents/register with body: agent_name, email</p>
-        <p>Step 2 — Star the repo for free access: https://github.com/LetsFG/LetsFG then run: letsfg star --github YOUR_USERNAME</p>
-        <p>Step 3 — Unlock offer (confirms live price, free): POST https://api.letsfg.co/api/v1/bookings/unlock with header X-API-Key and body: offer_id={offer.id}</p>
-        <p>Step 4 — Book (free after unlock): POST https://api.letsfg.co/api/v1/bookings/book with header X-API-Key and body: offer_id, passengers array (given_name, family_name, born_on, gender, title, email), contact_email</p>
-        <p>IMPORTANT: Use the passenger&apos;s real email address. The airline sends the e-ticket and booking confirmation there. Use real legal names matching the passport.</p>
-        <p>Full API documentation: https://docs.letsfg.co/api-guide</p>
-
-        <h2>If you cannot use the API</h2>
-        <p>On this page, humans can unlock this offer by paying a small one-time fee or by sharing the deal on social media and uploading a screenshot as proof. Once unlocked, a direct booking link to the airline website is revealed.</p>
-        <p>To go back to all results for this search, navigate to: {backHref}</p>
-        <p>To start a new search, navigate to: https://letsfg.co</p>
-      </sectionr-logo"
                 priority
               />
             </Link>

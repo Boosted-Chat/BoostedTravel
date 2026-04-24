@@ -1,251 +1,68 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { recordLocalSearch } from '../../lib/stats'
+import { parseNLQuery } from '../../lib/searchParsing'
 
-// In-memory store for demo (would be Redis/DB in production)
-const searches = new Map<string, SearchData>()
+const FSW_URL = process.env.FSW_URL || 'https://flight-search-worker-qryvus4jia-uc.a.run.app'
+const FSW_SECRET = process.env.FSW_SECRET || ''
 
-interface SearchData {
-  search_id: string
-  query: string
-  parsed: {
-    origin?: string
-    origin_name?: string
-    destination?: string
-    destination_name?: string
-    date?: string
-  }
-  status: 'searching' | 'completed' | 'expired'
-  progress: {
-    checked: number
-    total: number
-    found: number
-  }
-  offers: any[]
-  created_at: number
-}
-
-// Generate a random search ID
-function generateSearchId(): string {
-  return 'srch_' + Math.random().toString(36).substring(2, 15)
-}
-
-// Simple NL query parser (would be LLM-powered in production)
-function parseQuery(query: string) {
-  const q = query.toLowerCase()
-  
-  // Common patterns
-  const patterns = {
-    // "london to barcelona" or "london → barcelona"
-    route: /(\w+(?:\s+\w+)?)\s*(?:to|→|->|–)\s*(\w+(?:\s+\w+)?)/i,
-    // "next friday", "in june", etc
-    date: /(next\s+\w+|in\s+\w+|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*)/i,
-  }
-  
-  // City to IATA mapping (simplified)
-  const cityToIata: Record<string, { code: string, name: string }> = {
-    'london': { code: 'LON', name: 'London' },
-    'barcelona': { code: 'BCN', name: 'Barcelona' },
-    'new york': { code: 'NYC', name: 'New York' },
-    'nyc': { code: 'NYC', name: 'New York' },
-    'paris': { code: 'PAR', name: 'Paris' },
-    'tokyo': { code: 'TYO', name: 'Tokyo' },
-    'berlin': { code: 'BER', name: 'Berlin' },
-    'rome': { code: 'ROM', name: 'Rome' },
-    'bali': { code: 'DPS', name: 'Bali' },
-    'madrid': { code: 'MAD', name: 'Madrid' },
-    'amsterdam': { code: 'AMS', name: 'Amsterdam' },
-    'dubai': { code: 'DXB', name: 'Dubai' },
-    'singapore': { code: 'SIN', name: 'Singapore' },
-    'bangkok': { code: 'BKK', name: 'Bangkok' },
-    'los angeles': { code: 'LAX', name: 'Los Angeles' },
-    'miami': { code: 'MIA', name: 'Miami' },
-  }
-  
-  const parsed: any = {}
-  
-  // Extract route
-  const routeMatch = q.match(patterns.route)
-  if (routeMatch) {
-    const originStr = routeMatch[1].trim()
-    const destStr = routeMatch[2].trim()
-    
-    const origin = cityToIata[originStr] || { code: originStr.toUpperCase().slice(0, 3), name: originStr }
-    const dest = cityToIata[destStr] || { code: destStr.toUpperCase().slice(0, 3), name: destStr }
-    
-    parsed.origin = origin.code
-    parsed.origin_name = origin.name
-    parsed.destination = dest.code
-    parsed.destination_name = dest.name
-  }
-  
-  // Extract date
-  const dateMatch = q.match(patterns.date)
-  if (dateMatch) {
-    // For demo, just use a future date
-    const today = new Date()
-    today.setDate(today.getDate() + 7)
-    parsed.date = today.toISOString().split('T')[0]
-  } else {
-    // Default to 1 week from now
-    const today = new Date()
-    today.setDate(today.getDate() + 7)
-    parsed.date = today.toISOString().split('T')[0]
-  }
-  
-  return parsed
-}
-
-// Simulate flight search (would call LetsFG API in production)
-async function simulateSearch(searchId: string) {
-  const search = searches.get(searchId)
-  if (!search) return
-
-  // Realistic connector count: the real engine filters 180 connectors down to
-  // route-relevant ones via airline_routes.py. Typical range: 25–120.
-  const airlinesChecked = 25 + Math.floor(Math.random() * 96)
-
-  // Simulate progress updates
-  for (let i = 0; i < 10; i++) {
-    await new Promise(r => setTimeout(r, 500)) // 500ms per batch
-    
-    const s = searches.get(searchId)
-    if (!s) return
-    
-    s.progress.checked = Math.min(Math.floor((i + 1) * airlinesChecked / 10), airlinesChecked)
-    s.progress.found = Math.floor(Math.random() * 5) + s.progress.found
-    searches.set(searchId, s)
-  }
-  
-  // Generate mock results
-  const mockOffers = generateMockOffers(search.parsed)
-  
-  search.status = 'completed'
-  search.progress.checked = airlinesChecked
-  search.progress.total = airlinesChecked
-  search.progress.found = mockOffers.length
-  search.offers = mockOffers
-  searches.set(searchId, search)
-
-  // Record search + savings vs Google Flights
-  const cheapestOffer = mockOffers[0]
-  if (cheapestOffer) {
-    const savingsUsd = cheapestOffer.google_flights_price - cheapestOffer.price
-    // Update local in-memory stats (instant)
-    recordLocalSearch(Math.max(0, savingsUsd), airlinesChecked)
-    // Also sync to backend API (fire-and-forget, works once deployed)
-    recordSearchStats(savingsUsd).catch(() => {/* best-effort */})
-  }
-  
-  // Set expiry (15 minutes)
-  setTimeout(() => {
-    const s = searches.get(searchId)
-    if (s) {
-      s.status = 'expired'
-      searches.set(searchId, s)
-    }
-  }, 15 * 60 * 1000)
-}
-
-async function recordSearchStats(savingsUsd: number) {
-  const apiBase = process.env.LETSFG_API_URL || 'https://api.letsfg.co'
-  await fetch(`${apiBase}/api/v1/analytics/stats/record-search`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ savings_usd: Math.max(0, savingsUsd) }),
-    signal: AbortSignal.timeout(3000),
-  })
-}
-
-function generateMockOffers(parsed: any) {
-  const airlines = [
-    { name: 'Ryanair', code: 'FR' },
-    { name: 'Wizz Air', code: 'W6' },
-    { name: 'EasyJet', code: 'U2' },
-    { name: 'Vueling', code: 'VY' },
-    { name: 'British Airways', code: 'BA' },
-    { name: 'Iberia', code: 'IB' },
-    { name: 'Air France', code: 'AF' },
-    { name: 'Lufthansa', code: 'LH' },
-  ]
-  
-  const basePrice = 29 + Math.floor(Math.random() * 50)
-  // Google Flights reference price: 8–22% higher than our cheapest
-  // Reflects the typical savings vs booking through an OTA/aggregator
-  const googleFlightsPremiumPct = 0.08 + Math.random() * 0.14
-  const googleFlightsPrice = Math.round(basePrice * (1 + googleFlightsPremiumPct))
-  
-  return airlines.slice(0, 5 + Math.floor(Math.random() * 10)).map((airline, i) => {
-    const depHour = 6 + Math.floor(Math.random() * 14)
-    const duration = 90 + Math.floor(Math.random() * 180)
-    
-    const depDate = new Date(parsed.date || Date.now())
-    depDate.setHours(depHour, Math.floor(Math.random() * 60))
-    
-    const arrDate = new Date(depDate)
-    arrDate.setMinutes(arrDate.getMinutes() + duration)
-    
-    return {
-      id: `off_${Math.random().toString(36).substring(2, 10)}`,
-      price: basePrice + i * 15 + Math.floor(Math.random() * 20),
-      google_flights_price: googleFlightsPrice + i * 12,
-      currency: '€',
-      airline: airline.name,
-      airline_code: airline.code,
-      origin: parsed.origin || 'LON',
-      origin_name: parsed.origin_name || 'London',
-      destination: parsed.destination || 'BCN',
-      destination_name: parsed.destination_name || 'Barcelona',
-      departure_time: depDate.toISOString(),
-      arrival_time: arrDate.toISOString(),
-      duration_minutes: duration,
-      stops: Math.random() > 0.7 ? 1 : 0,
-    }
-  }).sort((a, b) => a.price - b.price)
-}
+// ── POST /api/search ─────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { query } = body
-    
-    if (!query || typeof query !== 'string') {
-      return NextResponse.json(
-        { error: 'Query is required' },
-        { status: 400 }
-      )
+
+    let origin: string | undefined
+    let originName: string | undefined
+    let destination: string | undefined
+    let destinationName: string | undefined
+    let dateFrom: string | undefined
+    let returnDate: string | undefined
+    const adults = Math.max(1, parseInt(body.adults ?? '1', 10) || 1)
+    const currency = (body.currency || 'EUR').toUpperCase()
+
+    if (body.origin && body.destination && body.date_from) {
+      origin = (body.origin as string).toUpperCase().trim()
+      originName = body.origin_name || origin
+      destination = (body.destination as string).toUpperCase().trim()
+      destinationName = body.destination_name || destination
+      dateFrom = body.date_from
+      returnDate = body.return_date || undefined
+    } else if (body.query) {
+      const parsed = parseNLQuery(body.query)
+      origin = parsed.origin
+      originName = parsed.origin_name
+      destination = parsed.destination
+      destinationName = parsed.destination_name
+      dateFrom = parsed.date
+      returnDate = parsed.return_date || undefined
+    } else {
+      return NextResponse.json({ error: 'Provide either query or origin/destination/date_from' }, { status: 400 })
     }
-    
-    // Parse the natural language query
-    const parsed = parseQuery(query)
-    
-    // Generate search ID
-    const search_id = generateSearchId()
-    
-    // Store search data
-    const searchData: SearchData = {
-      search_id,
-      query,
-      parsed,
-      status: 'searching',
-      progress: { checked: 0, total: 180, found: 0 },
-      offers: [],
-      created_at: Date.now(),
+
+    if (!origin || !destination) {
+      return NextResponse.json({ error: 'Could not determine origin or destination.' }, { status: 400 })
     }
-    searches.set(search_id, searchData)
-    
-    // Start background search (don't await)
-    simulateSearch(search_id)
-    
-    return NextResponse.json({
-      search_id,
-      status: 'searching',
-      parsed,
+
+    recordLocalSearch(0)
+
+    const fswRes = await fetch(${FSW_URL}/web-search, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': Bearer  },
+      body: JSON.stringify({ origin, destination, date_from: dateFrom, return_date: returnDate, adults, currency, limit: 30, mode: 'fast' }),
+      signal: AbortSignal.timeout(10_000),
     })
+
+    if (!fswRes.ok) {
+      const err = await fswRes.text()
+      console.error('FSW web-search error:', fswRes.status, err)
+      return NextResponse.json({ error: 'Search service unavailable' }, { status: 502 })
+    }
+
+    const { search_id } = await fswRes.json()
+
+    return NextResponse.json({ search_id, status: 'searching', parsed: { origin, origin_name: originName, destination, destination_name: destinationName, date: dateFrom, return_date: returnDate } })
   } catch (error) {
     console.error('Search error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
