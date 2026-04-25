@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useMemo } from 'react'
+import { useTranslations } from 'next-intl'
 import { getAirlineLogoUrl } from '../../airlineLogos'
 import type { Offer } from './page'
 
@@ -23,53 +24,8 @@ interface Platform {
   instructions: string[]
 }
 
-const PLATFORMS: Platform[] = [
-  {
-    id: 'instagram',
-    label: 'Instagram',
-    instructions: [
-      'Share this deal on your Instagram (post, story, or DM a friend)',
-      'Take a screenshot showing you shared it',
-      'Upload the screenshot below',
-    ],
-  },
-  {
-    id: 'tiktok',
-    label: 'TikTok',
-    instructions: [
-      'Share this deal on TikTok (video, story, or send to a friend)',
-      'Take a screenshot showing you shared it',
-      'Upload the screenshot below',
-    ],
-  },
-  {
-    id: 'twitter',
-    label: 'Twitter / X',
-    instructions: [
-      'Share this deal on Twitter/X (tweet or DM a friend)',
-      'Take a screenshot showing you shared it',
-      'Upload the screenshot below',
-    ],
-  },
-  {
-    id: 'facebook',
-    label: 'Facebook',
-    instructions: [
-      'Share this deal on Facebook (post, story, or message a friend)',
-      'Take a screenshot showing you shared it',
-      'Upload the screenshot below',
-    ],
-  },
-  {
-    id: 'message',
-    label: 'WhatsApp / iMessage',
-    instructions: [
-      'Send this deal to a friend via WhatsApp, iMessage, or any messenger',
-      'Take a screenshot of the conversation showing you sent it',
-      'Upload the screenshot below',
-    ],
-  },
-]
+const PLATFORMS: Platform[] = []  // replaced by getPlatforms(t) inside component
+
 
 const PLATFORM_ICONS: Record<string, React.ReactNode> = {
   tiktok: (
@@ -170,6 +126,34 @@ function AirlineLogo({ code, name }: { code: string; name: string }) {
 }
 
 export default function CheckoutPanel({ offer }: Props) {
+  const t = useTranslations('Checkout')
+  const platforms = useMemo<Platform[]>(() => [
+    {
+      id: 'instagram',
+      label: t('platform_instagram'),
+      instructions: [t('instagram_step1'), t('instagram_step2'), t('instagram_step3')],
+    },
+    {
+      id: 'tiktok',
+      label: t('platform_tiktok'),
+      instructions: [t('tiktok_step1'), t('tiktok_step2'), t('tiktok_step3')],
+    },
+    {
+      id: 'twitter',
+      label: t('platform_twitter'),
+      instructions: [t('twitter_step1'), t('twitter_step2'), t('twitter_step3')],
+    },
+    {
+      id: 'facebook',
+      label: t('platform_facebook'),
+      instructions: [t('facebook_step1'), t('facebook_step2'), t('facebook_step3')],
+    },
+    {
+      id: 'message',
+      label: t('platform_message'),
+      instructions: [t('message_step1'), t('message_step2'), t('message_step3')],
+    },
+  ], [t])
   const unlockFee = Math.max(3, offer.price * 0.01)
   const showShareOption = unlockFee < 20 // only when 1% cut < $20 (ticket < $2000)
 
@@ -234,7 +218,7 @@ export default function CheckoutPanel({ offer }: Props) {
             </div>
             <div className="ck-flight-price-badge">
               <span className="ck-flight-price">{offer.currency}{offer.price}</span>
-              <span className="ck-flight-price-label">per person</span>
+              <span className="ck-flight-price-label">{t('perPerson')}</span>
             </div>
           </div>
 
@@ -270,9 +254,9 @@ export default function CheckoutPanel({ offer }: Props) {
           <div className="ck-flight-meta">
             <span>{fmtDate(offer.departure_time)}</span>
             <span className="ck-meta-dot">·</span>
-            <span>1 passenger</span>
+            <span>{t('onePassenger')}</span>
             <span className="ck-meta-dot">·</span>
-            <span>Economy</span>
+            <span>{t('economy')}</span>
           </div>
         </div>
 
@@ -282,10 +266,10 @@ export default function CheckoutPanel({ offer }: Props) {
             <span className="ck-unlocked-check"><CheckIcon /></span>
             <div>
               <div className="ck-unlocked-title">
-                Deal unlocked{step.via === 'share' ? ' — thanks for sharing!' : '!'}
+                {step.via === 'share' ? t('dealUnlockedShare') : t('dealUnlocked')}
               </div>
               <div className="ck-unlocked-sub">
-                Your booking link is ready. Click below to go to the airline.
+                {t('bookingLinkReady')}
               </div>
             </div>
           </div>
@@ -301,14 +285,14 @@ export default function CheckoutPanel({ offer }: Props) {
                 {isUnlocked ? <CheckIcon /> : '1'}
               </span>
               <span className="ck-step-title">
-                {isUnlocked ? 'Deal unlocked' : 'Unlock this deal'}
+                {isUnlocked ? t('dealUnlockedStep') : t('unlockThisDeal')}
               </span>
             </div>
 
             {!isUnlocked && (
               <div className="ck-unlock-body">
                 <p className="ck-unlock-desc">
-                  Pay a small fee once to get the booking link. After that, <strong>every flight from this search is unlocked</strong> — so you can come back and pick a different one for free. Works for this search only.
+                  {t.rich('unlockDesc', { strong: (chunks) => <strong>{chunks}</strong> })}
                 </p>
 
                 {/* Pay button */}
@@ -320,35 +304,35 @@ export default function CheckoutPanel({ offer }: Props) {
                   {step.type === 'paying' ? (
                     <>
                       <span className="ck-spinner" aria-hidden="true" />
-                      Processing...
+                      {t('processing')}
                     </>
                   ) : (
                     <>
                       <LockIcon />
-                      Unlock for {fmtFee(unlockFee, offer.currency)}
+                      {t('unlockFor', { fee: fmtFee(unlockFee, offer.currency) })}
                     </>
                   )}
                 </button>
 
                 <div className="ck-fee-note">
-                  One-time
+                  {t('oneTime')}
                 </div>
 
                 {/* Share to unlock (only if fee < $20) */}
                 {showShareOption && step.type !== 'paying' && (
                   <>
                     <div className="ck-or-divider">
-                      <span>or share to unlock for free</span>
+                      <span>{t('shareToUnlock')}</span>
                     </div>
 
                     {/* Platform select */}
                     {(step.type === 'locked' || step.type === 'share-select' || step.type === 'share-rejected') && (
                       <div className="ck-share-intro">
                         <p className="ck-share-desc">
-                          Share this deal anywhere — post it, send it to a friend, or DM someone. Just upload a screenshot to show us, and you&apos;re in.
+                          {t('shareDesc')}
                         </p>
                         <div className="ck-platform-grid">
-                          {PLATFORMS.map(p => (
+                          {platforms.map(p => (
                             <button
                               key={p.id}
                               className="ck-platform-btn"
@@ -361,7 +345,7 @@ export default function CheckoutPanel({ offer }: Props) {
                         </div>
                         {step.type === 'share-rejected' && (
                           <div className="ck-share-rejected">
-                            <span>⚠</span> Screenshot not valid — please try again with a clear screenshot.
+                            <span>⚠</span> {t('screenshotInvalid')}
                           </div>
                         )}
                       </div>
@@ -374,7 +358,7 @@ export default function CheckoutPanel({ offer }: Props) {
                           <span className="ck-platform-icon">{PLATFORM_ICONS[step.platform.id]}</span>
                           <span className="ck-share-platform-name">{step.platform.label}</span>
                           <button className="ck-share-back" onClick={() => setStep({ type: 'share-select' })}>
-                            Change
+                            {t('change')}
                           </button>
                         </div>
                         <ol className="ck-share-steps">
@@ -390,7 +374,7 @@ export default function CheckoutPanel({ offer }: Props) {
                           onKeyDown={e => e.key === 'Enter' && fileInputRef.current?.click()}
                           role="button"
                           tabIndex={0}
-                          aria-label="Upload screenshot"
+                          aria-label={t('uploadAriaLabel')}
                         >
                           {previewUrl ? (
                             // eslint-disable-next-line @next/next/no-img-element
@@ -400,8 +384,8 @@ export default function CheckoutPanel({ offer }: Props) {
                               <svg viewBox="0 0 24 24" fill="none" width="28" height="28" aria-hidden="true">
                                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                               </svg>
-                              <span>Drop screenshot here or <u>browse</u></span>
-                              <span className="ck-upload-hint">PNG, JPG, HEIC · max 10MB</span>
+                              <span>{t('uploadLabel')}</span>
+                              <span className="ck-upload-hint">{t('uploadHint')}</span>
                             </div>
                           )}
                         </div>
@@ -420,7 +404,7 @@ export default function CheckoutPanel({ offer }: Props) {
                           onClick={handleVerify}
                           disabled={!uploadedFile}
                         >
-                          Submit for verification
+                          {t('submitVerification')}
                         </button>
                       </div>
                     )}
@@ -430,8 +414,8 @@ export default function CheckoutPanel({ offer }: Props) {
                       <div className="ck-share-verifying">
                         <span className="ck-spinner ck-spinner--lg" aria-hidden="true" />
                         <div>
-                          <div className="ck-verifying-title">Checking your screenshot...</div>
-                          <div className="ck-verifying-sub">Our AI is reviewing your share. This takes a few seconds.</div>
+                          <div className="ck-verifying-title">{t('verifyingTitle')}</div>
+                          <div className="ck-verifying-sub">{t('verifySub')}</div>
                         </div>
                       </div>
                     )}
@@ -447,46 +431,46 @@ export default function CheckoutPanel({ offer }: Props) {
           <div className={`ck-step${isUnlocked ? '' : ' ck-step--locked-section'}`}>
             <div className="ck-step-label">
               <span className={`ck-step-num${isUnlocked ? ' ck-step-num--active' : ''}`}>2</span>
-              <span className="ck-step-title">Book your ticket</span>
+              <span className="ck-step-title">{t('bookTicket')}</span>
             </div>
 
             <div className="ck-book-body">
               <div className="ck-book-price-row">
                 <span className="ck-book-price">{offer.currency}{offer.price}</span>
-                <span className="ck-book-price-note">Direct airline price · no markup</span>
+                <span className="ck-book-price-note">{t('directAirlinePrice')}</span>
               </div>
 
               {isUnlocked ? (
-                <a
+                  <a
                   href={offer.booking_url}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="ck-book-btn ck-book-btn--active"
                 >
-                  Book on {offer.airline}
+                  {t('bookOn', { airline: offer.airline })}
                   <ArrowIcon />
                 </a>
               ) : (
                 <>
                   <button className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
                     <LockIcon />
-                    Book on {offer.airline}
+                    {t('bookOn', { airline: offer.airline })}
                   </button>
                   <div className="ck-book-locked-note">
-                    Unlock first to reveal the booking link
+                    {t('unlockFirst')}
                   </div>
                 </>
               )}
 
               <div className="ck-guarantee-row">
                 <span className="ck-guarantee-item">
-                  <CheckIcon /> Raw airline price
+                  <CheckIcon /> {t('rawAirlinePrice')}
                 </span>
                 <span className="ck-guarantee-item">
-                  <CheckIcon /> Secure checkout
+                  <CheckIcon /> {t('secureCheckout')}
                 </span>
                 <span className="ck-guarantee-item">
-                  <CheckIcon /> No hidden fees
+                  <CheckIcon /> {t('noHiddenFees')}
                 </span>
               </div>
             </div>

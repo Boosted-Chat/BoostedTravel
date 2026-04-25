@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslations } from 'next-intl'
 
 interface Props {
   originLabel?: string
@@ -664,6 +665,7 @@ export default function SearchingTasks({
   searchedAt,
 }: Props) {
   const TOTAL = progress?.total || 198
+  const t = useTranslations('SearchingTasks')
   const originName = originLabel || originCode || 'Origin'
   const destinationName = destinationLabel || destinationCode || 'Destination'
 
@@ -721,45 +723,45 @@ export default function SearchingTasks({
 
     return [
       {
-        title: 'Searching',
-        hint: `Checking ${currentAirline}`,
+        title: t('step_searching'),
+        hint: t('step_searchingHint', { airline: currentAirline }),
         state: resolveState(0),
       },
       {
-        title: 'Comparing prices',
-        hint: 'Ranking fares & scoring deals',
+        title: t('step_comparing'),
+        hint: t('step_comparingHint'),
         state: resolveState(1),
       },
       {
-        title: 'Sorting results',
-        hint: 'Finding the best options',
+        title: t('step_sorting'),
+        hint: t('step_sortingHint'),
         state: resolveState(2),
       },
       {
-        title: 'Almost there',
-        hint: 'Finalizing your top flights',
+        title: t('step_almost'),
+        hint: t('step_almostHint'),
         state: resolveState(3),
       },
     ]
-  }, [currentAirline, phaseIndex])
+  }, [currentAirline, phaseIndex, t])
 
   return (
     <div className="st-card">
       <div className="st-body">
         <div className="st-header-row">
-          <span className="st-pill">Searching the skies</span>
+          <span className="st-pill">{t('pill')}</span>
         </div>
 
         <div className="st-copy">
           <h2 className="st-title">
-            Finding the <span className="st-title-accent">best path</span> for your trip
+            {t('titlePre')}<span className="st-title-accent">{t('titleAccent')}</span>{t('titlePost')}
           </h2>
           <p className="st-subtitle">
-            Scanning airlines, OTAs, and hidden combinations all at once.
+            {t('subtitle')}
           </p>
         </div>
 
-        <div className="st-scene" aria-label={`Searching flights from ${originName} to ${destinationName}`}>
+        <div className="st-scene" aria-label={t('sceneLabel', { origin: originName, destination: destinationName })}>
           <div className="st-city st-city--origin">
             <div className="st-city-meta">
               <span className="st-city-name">{originName}</span>
@@ -805,9 +807,9 @@ export default function SearchingTasks({
                 fill="#ff8a1d"
               />
             </svg>
-            Checked {simChecked} of {TOTAL} sites
+            {t('footerChecked', { checked: simChecked, total: TOTAL })}
           </span>
-          <span className="st-footer-eta">This usually takes 90–150 seconds</span>
+          <span className="st-footer-eta">{t('footerEta')}</span>
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useCallback } from 'react'
+import { useTranslations } from 'next-intl'
 import { getAirlineLogoUrl } from '../../airlineLogos'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -158,6 +159,7 @@ interface Props {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, searchId }: Props) {
+  const t = useTranslations('ResultsPanel')
   // ── Filter state ──────────────────────────────────────────────────────────
   const [sort, setSort] = useState<'price' | 'duration'>('price')
   const [stopsFilter, setStopsFilter] = useState<string[]>([])          // [] = all
@@ -243,10 +245,10 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
   const fmt = (p: number) => `${currency}${Math.round(p)}`
 
   const stopsOptions = [
-    { key: '0', label: 'Direct' },
-    { key: '1', label: '1 stop' },
-    { key: '2plus', label: '2+ stops' },
-  ] as const
+    { key: '0', label: t('direct') },
+    { key: '1', label: t('oneStop') },
+    { key: '2plus', label: t('twoPlus') },
+  ]
 
   return (
     <div className="rf-layout">
@@ -264,23 +266,23 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
           <svg viewBox="0 0 20 20" fill="none" width="15" height="15" aria-hidden="true">
             <path d="M3 5h14M6 10h8M9 15h2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
           </svg>
-          Filters{hasActiveFilters ? ' ·' : ''}
+          {t('filterTitle')}{hasActiveFilters ? ' ·' : ''}
         </button>
         <div className="rf-mobile-sort">
-          <span className="rf-bar-label">Sort:</span>
-          <button className={`rf-chip${sort === 'price' ? ' rf-chip--on' : ''}`} onClick={() => { setSort('price'); setVisibleCount(20) }}>Price</button>
-          <button className={`rf-chip${sort === 'duration' ? ' rf-chip--on' : ''}`} onClick={() => { setSort('duration'); setVisibleCount(20) }}>Duration</button>
+          <span className="rf-bar-label">{t('sort')}</span>
+          <button className={`rf-chip${sort === 'price' ? ' rf-chip--on' : ''}`} onClick={() => { setSort('price'); setVisibleCount(20) }}>{t('sortPrice')}</button>
+          <button className={`rf-chip${sort === 'duration' ? ' rf-chip--on' : ''}`} onClick={() => { setSort('duration'); setVisibleCount(20) }}>{t('sortDuration')}</button>
         </div>
       </div>
       {/* ── Filter sidebar ─────────────────────────────────────────────────── */}
       <aside className={`rf-filters${mobileFiltersOpen ? ' rf-filters--mobile-open' : ''}`}>
         <div className="rf-filters-header">
-          <span className="rf-filters-title">Filters</span>
+          <span className="rf-filters-title">{t('filterTitle')}</span>
           <div className="rf-filters-header-actions">
             {hasActiveFilters && (
-              <button className="rf-filters-clear" onClick={clearAll}>Clear all</button>
+              <button className="rf-filters-clear" onClick={clearAll}>{t('clearAll')}</button>
             )}
-            <button className="rf-filters-close" onClick={() => setMobileFiltersOpen(false)} aria-label="Close filters">
+            <button className="rf-filters-close" onClick={() => setMobileFiltersOpen(false)} aria-label={t('closeFilters')}>
               <svg viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
                 <path d="M5 5l10 10M15 5l-10 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
@@ -290,7 +292,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
 
         {/* Stops */}
         <div className="rf-filter-section">
-          <div className="rf-filter-heading"><span>Stops</span></div>
+          <div className="rf-filter-heading"><span>{t('stops')}</span></div>
           {stopsOptions.map(({ key, label }) => {
             const stat = stopsStats[key]
             if (!stat || stat.count === 0) return null
@@ -308,7 +310,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
 
         {/* Price range */}
         <div className="rf-filter-section">
-          <div className="rf-filter-heading"><span>Price range</span></div>
+          <div className="rf-filter-heading"><span>{t('priceRange')}</span></div>
           <DualRange
             min={priceMin} max={priceMax}
             low={priceRange[0]} high={priceRange[1]}
@@ -319,8 +321,8 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
 
         {/* Departure time */}
         <div className="rf-filter-section">
-          <div className="rf-filter-heading"><span>Departure time</span></div>
-          <div className="rf-filter-sub">outbound</div>
+          <div className="rf-filter-heading"><span>{t('departureTime')}</span></div>
+          <div className="rf-filter-sub">{t('outbound')}</div>
           <DualRange
             min={0} max={1439}
             low={depRange[0]} high={depRange[1]}
@@ -331,7 +333,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
 
         {/* Return/arrival time */}
         <div className="rf-filter-section">
-          <div className="rf-filter-heading"><span>Return time</span></div>
+          <div className="rf-filter-heading"><span>{t('returnTime')}</span></div>
           <DualRange
             min={0} max={1439}
             low={retRange[0]} high={retRange[1]}
@@ -344,7 +346,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
         <div className="rf-filter-section">
           <button className="rf-filter-heading rf-filter-heading--btn"
             onClick={() => setAirlinesOpen(o => !o)}>
-            <span>Airlines</span>
+            <span>{t('airlines')}</span>
             <ChevronIcon open={airlinesOpen} />
           </button>
           {airlinesOpen && airlineOptions.map(({ airline, minPrice }) => {
@@ -363,7 +365,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
         {/* Amenities placeholder */}
         <div className="rf-filter-section rf-filter-section--last">
           <div className="rf-filter-heading rf-filter-heading--muted">
-            <span>Amenities</span>
+            <span>{t('amenities')}</span>
           </div>
         </div>
       </aside>
@@ -374,27 +376,27 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
         <div className="rf-bar">
           <div className="rf-bar-meta">
             <span className="rf-bar-count">
-              {displayOffers.length} flight{displayOffers.length !== 1 ? 's' : ''}
+              {displayOffers.length === 1 ? t('flightSingular', { count: 1 }) : t('flightPlural', { count: displayOffers.length })}
             </span>
             {displayOffers[0] && (
               <span className="rf-bar-from">
-                from {displayOffers[0].currency}{displayOffers[0].price}
+                {t('fromPrice', { price: `${displayOffers[0].currency}${displayOffers[0].price}` })}
               </span>
             )}
           </div>
           <div className="rf-bar-controls">
-            <span className="rf-bar-label">Sort:</span>
+            <span className="rf-bar-label">{t('sort')}</span>
             <button
               className={`rf-chip${sort === 'price' ? ' rf-chip--on' : ''}`}
               onClick={() => { setSort('price'); setVisibleCount(20) }}
             >
-              Price
+              {t('sortPrice')}
             </button>
             <button
               className={`rf-chip${sort === 'duration' ? ' rf-chip--on' : ''}`}
               onClick={() => { setSort('duration'); setVisibleCount(20) }}
             >
-              Duration
+              {t('sortDuration')}
             </button>
           </div>
         </div>
@@ -405,7 +407,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
             const isExpanded = expandedId === offer.id
             const viaCode = offer.segments?.[0]?.destination
             const stopsLabel = offer.stops === 0
-              ? 'Direct'
+              ? t('direct')
               : viaCode
                 ? `${offer.stops} stop · via ${viaCode}`
                 : `${offer.stops} stop${offer.stops > 1 ? 's' : ''}`
@@ -448,7 +450,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
 
                       <div className="rf-leg-sep" aria-hidden="true">
                         <span className="rf-leg-sep-line" />
-                        <span className="rf-leg-sep-label">Return</span>
+                        <span className="rf-leg-sep-label">{t('returnLeg')}</span>
                         <span className="rf-leg-sep-line" />
                       </div>
 
@@ -465,7 +467,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
                             <span className="rf-path-dot" />
                           </div>
                           <span className={`rf-stops${offer.inbound.stops === 0 ? ' rf-stops--direct' : ''}`}>
-                            {offer.inbound.stops === 0 ? 'Direct' : `${offer.inbound.stops} stop${offer.inbound.stops > 1 ? 's' : ''}`}
+                            {offer.inbound.stops === 0 ? t('direct') : `${offer.inbound.stops} stop${offer.inbound.stops > 1 ? 's' : ''}`}
                           </span>
                         </div>
                         <div className="rf-endpoint rf-endpoint--arr">
@@ -504,11 +506,11 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
 
                   <div className="rf-price-wrap">
                     <span className="rf-price">{offer.currency}{offer.price}</span>
-                    <span className="rf-price-sub">per person</span>
+                    <span className="rf-price-sub">{t('perPerson')}</span>
                   </div>
 
                   <a href={`/book/${offer.id}${searchId ? `?from=${searchId}` : ''}`} className="rf-book-btn">
-                    Select
+                    {t('select')}
                     <ArrowIcon />
                   </a>
                 </div>
@@ -519,7 +521,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
                       className="rf-details-btn"
                       onClick={() => setExpandedId(isExpanded ? null : offer.id)}
                     >
-                      {isExpanded ? 'Hide details' : 'Flight details'}
+                      {isExpanded ? t('hideDetails') : t('flightDetails')}
                       <ChevronIcon open={isExpanded} />
                     </button>
 
@@ -533,13 +535,13 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
                               <div className="rf-layover">
                                 <span className="rf-layover-icon" aria-hidden="true" />
                                 <span className="rf-layover-text">
-                                  {fmtDuration(offer.segments![si - 1].layover_minutes)} layover in {offer.segments![si - 1].destination_name}
+                                  {t('layover', { duration: fmtDuration(offer.segments![si - 1].layover_minutes), city: offer.segments![si - 1].destination_name })}
                                 </span>
                               </div>
                             )}
                             <div className="rf-leg">
                               <div className="rf-leg-header">
-                                <span className="rf-leg-num">Leg {si + 1}</span>
+                                <span className="rf-leg-num">{t('leg', { number: si + 1 })}</span>
                                 <span className="rf-leg-flight">{seg.flight_number} · {offer.airline}</span>
                               </div>
                               <div className="rf-leg-body">
@@ -573,7 +575,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
             )
           })}
           {displayOffers.length === 0 && (
-            <div className="rf-empty">No flights match your filters.</div>
+            <div className="rf-empty">{t('noFlights')}</div>
           )}
           {displayOffers.length > visibleCount && (
             <div className="rf-load-more">
@@ -581,8 +583,8 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
                 className="rf-load-more-btn"
                 onClick={() => setVisibleCount(c => c + 20)}
               >
-                Show {Math.min(20, displayOffers.length - visibleCount)} more flights
-                <span className="rf-load-more-total">({displayOffers.length - visibleCount} remaining)</span>
+                {t('showMore', { count: Math.min(20, displayOffers.length - visibleCount) })}
+                <span className="rf-load-more-total">{t('remaining', { count: displayOffers.length - visibleCount })}</span>
               </button>
             </div>
           )}

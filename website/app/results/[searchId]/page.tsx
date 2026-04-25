@@ -2,6 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
+import { getTranslations } from 'next-intl/server'
 import GlobeButton from '../../globe-button'
 import ResultsSearchForm from '../ResultsSearchForm'
 import SearchingTasks from './SearchingTasks'
@@ -142,6 +143,7 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
   const { searchId } = await params
   const sp = await searchParams
   const result = await getSearchResults(searchId)
+  const t = await getTranslations('Results')
   
   if (!result) {
     notFound()
@@ -165,6 +167,7 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
     ? `${routeLabel}${parsed.date ? ` · ${parsed.date}` : ''}`
     : query
   const travelerCount = parsed.passengers || 1
+  const travelerLabel = `${travelerCount} ${travelerCount === 1 ? t('traveler') : t('travelers')}`
   const fmtDate = (iso: string) => {
     try {
       return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -172,7 +175,7 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
   }
   const detailBits = [
     parsed.date ? (parsed.return_date ? `${fmtDate(parsed.date)} – ${fmtDate(parsed.return_date)}` : fmtDate(parsed.date)) : null,
-    `${travelerCount} traveler${travelerCount === 1 ? '' : 's'}`,
+    travelerLabel,
     parsed.cabin ? parsed.cabin : null,
   ].filter(Boolean)
   const detailSummary = detailBits.join(' · ')
@@ -306,13 +309,13 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
               </>
             ) : status === 'completed' ? (
               <div className="res-meta-bar">
-                <span className="res-meta-label">Search results</span>
+                <span className="res-meta-label">{t('searchResults')}</span>
                 {routeLabel && (<><span className="res-meta-sep">·</span><span className="res-meta-route">{routeLabel}</span></>)}
                 {detailSummary && (<><span className="res-meta-sep">·</span><span className="res-meta-detail">{detailSummary}</span></>)}
               </div>
             ) : (
               <div className="res-hero-copy">
-                <p className="res-hero-kicker">Search expired</p>
+                <p className="res-hero-kicker">{t('searchExpired')}</p>
                 {routeLabel ? <h1 className="res-hero-route">{routeLabel}</h1> : null}
                 {detailSummary ? <p className="res-hero-summary">{detailSummary}</p> : null}
                 <p className="res-hero-status">{statusLabel}</p>
@@ -328,10 +331,10 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
                   </svg>
                 </div>
                 <div className="res-notice-text">
-                  <p className="res-notice-title">Search expired</p>
-                  <p className="res-notice-sub">Prices change fast. Start a fresh search for current fares.</p>
+                  <p className="res-notice-title">{t('expiredNoticeTitle')}</p>
+                  <p className="res-notice-sub">{t('expiredNoticeSub')}</p>
                 </div>
-                <Link href="/en" className="res-notice-btn">Search again</Link>
+                <Link href="/en" className="res-notice-btn">{t('searchAgain')}</Link>
               </div>
             )}
           </div>
@@ -349,10 +352,10 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
 
         <footer className="res-search-footer" aria-label="LetsFG footer">
           <div className="res-search-footer-inner">
-            <span className="res-search-footer-copy">LetsFG © 2026</span>
+            <span className="res-search-footer-copy">{t('copyright')}</span>
             <div className="res-search-footer-links">
-              <a href="/privacy" className="res-search-footer-link">Privacy</a>
-              <a href="/terms" className="res-search-footer-link">Terms</a>
+              <a href="/privacy" className="res-search-footer-link">{t('privacy')}</a>
+              <a href="/terms" className="res-search-footer-link">{t('terms')}</a>
               <span className="res-search-footer-sep" aria-hidden="true" />
               <a href={INSTAGRAM_URL} className="res-search-footer-social" target="_blank" rel="noreferrer" aria-label="Instagram">
                 <InstagramIcon />

@@ -2,6 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
+import { getTranslations } from 'next-intl/server'
 import GlobeButton from '../../globe-button'
 import CheckoutPanel from './CheckoutPanel'
 
@@ -75,6 +76,7 @@ export default async function BookPage({
   const { offerId } = await params
   const { from } = await searchParams
   const offer = await getOffer(offerId, from)
+  const t = await getTranslations('Checkout')
 
   if (!offer) notFound()
 
@@ -125,7 +127,7 @@ export default async function BookPage({
                 <svg viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
                   <path d="M12 5l-5 5 5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Back to results
+                {t('backToResults')}
               </Link>
             </div>
             <div className="res-topbar-actions">

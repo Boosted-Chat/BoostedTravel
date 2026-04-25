@@ -78,7 +78,7 @@ export default function GlobeButton({ inline = false }: { inline?: boolean } = {
               role="option"
               aria-selected={lang.code === currentLocale}
               className={`lp-lang-option${lang.code === currentLocale ? ' lp-lang-option--active' : ''}`}
-              onClick={() => { router.push(`/${lang.code}`); setOpen(false) }}
+              onClick={() => { document.cookie = `LETSFG_LOCALE=${lang.code}; path=/; max-age=31536000; SameSite=Lax`; router.push(`/${lang.code}`); setOpen(false) }}
               type="button"
             >
               <span className="lp-lang-flag" aria-hidden="true">{lang.flag}</span>
