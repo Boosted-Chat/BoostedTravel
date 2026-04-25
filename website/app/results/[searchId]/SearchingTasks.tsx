@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 
 interface Props {
@@ -657,6 +657,40 @@ function StepIcon({ state }: { state: StepState }) {
   )
 }
 
+// ── Module-level persistence ────────────────────────────────────────────────
+// These Maps live outside the component and survive React remounts.
+// When router.refresh() causes RSC reconciliation that remounts SearchingTasks,
+// useState initializers re-run but these Maps retain their values.
+const _epochMap = new Map<string, number>() // searchId → search-start ms
+const _simFloor = new Map<string, number>() // searchId → highest simChecked displayed
+
+function resolveEpochMs(
+  searchId: string | undefined,
+  searchedAt: string | undefined,
+): number {
+  const now = Date.now()
+  // 1. Module map — fastest, survives remounts without touching the DOM
+  if (searchId && _epochMap.has(searchId)) return _epochMap.get(searchId)!
+  // 2. sessionStorage — survives Ctrl+R hard reloads (client-only, try-catch for SSR safety)
+  if (searchId && typeof window !== 'undefined') {
+    try {
+      const v = sessionStorage.getItem(`lfg_st_${searchId}`)
+      if (v) {
+        const ms = new Date(v).getTime()
+        if (!isNaN(ms)) { _epochMap.set(searchId, ms); return ms }
+      }
+    } catch { /* sessionStorage unavailable */ }
+  }
+  // 3. searchedAt from server
+  if (searchedAt) {
+    const ms = new Date(searchedAt).getTime()
+    if (!isNaN(ms)) { if (searchId) _epochMap.set(searchId, ms); return ms }
+  }
+  // 4. Now (first load with no timing info)
+  if (searchId) _epochMap.set(searchId, now)
+  return now
+}
+
 export default function SearchingTasks({
   searchId,
   originLabel,
@@ -671,72 +705,41 @@ export default function SearchingTasks({
   const originName = originLabel || originCode || 'Origin'
   const destinationName = destinationLabel || destinationCode || 'Destination'
 
-  const [elapsed, setElapsed] = useState<number>(() => {
-    // Priority 1: sessionStorage — correct even after RSC-triggered remounts
-    if (searchId) {
-      const stored = sessionStorage.getItem(`lfg_st_${searchId}`)
-      if (stored) {
-        const ms = new Date(stored).getTime()
-        if (!isNaN(ms)) return Math.max(0, (Date.now() - ms) / 1000)
-      }
-    }
-    // Priority 2: searchedAt prop from server (first load, before SS is populated)
-    if (searchedAt) {
-      const ms = new Date(searchedAt).getTime()
-      if (!isNaN(ms)) return Math.max(0, (Date.now() - ms) / 1000)
-    }
-    return 0
-  })
+  // resolveEpochMs reads from _epochMap first (survives remounts), then sessionStorage (survives
+  // hard reloads), then searchedAt prop — so elapsed is always correct from frame 0.
+  const [elapsed, setElapsed] = useState<number>(() =>
+    Math.max(0, (Date.now() - resolveEpochMs(searchId, searchedAt)) / 1000)
+  )
   const [airlineIdx, setAirlineIdx] = useState(0)
-  // Never let the displayed counter go backward (survives remounts because it reads from SS)
-  const simCheckedFloor = useRef(0)
 
-  // Advance elapsed anchored to the real search start time.
-  // Also persists startedAt in sessionStorage so state survives manual browser refreshes.
+  // Keep elapsed ticking and persist the epoch to sessionStorage (for hard-reload recovery).
+  // resolveEpochMs already populated _epochMap, so here we just kick off the interval.
   useEffect(() => {
-    const SS_KEY = searchId ? `lfg_st_${searchId}` : null
-    let epochMs: number
-
-    if (searchedAt) {
-      epochMs = new Date(searchedAt).getTime()
-      // Authoritative server-provided time — always save/overwrite
-      if (SS_KEY) sessionStorage.setItem(SS_KEY, searchedAt)
-    } else if (SS_KEY) {
-      const stored = sessionStorage.getItem(SS_KEY)
-      if (stored) {
-        epochMs = new Date(stored).getTime()
-      } else {
-        // First load, no server time — record now as best estimate
-        epochMs = Date.now()
-        sessionStorage.setItem(SS_KEY, new Date(epochMs).toISOString())
-      }
-    } else {
-      epochMs = Date.now()
+    const epochMs = resolveEpochMs(searchId, searchedAt)
+    // Write to sessionStorage so Ctrl+R reloads also recover correctly
+    if (searchId && typeof window !== 'undefined') {
+      try { sessionStorage.setItem(`lfg_st_${searchId}`, new Date(epochMs).toISOString()) } catch { /* ignore */ }
     }
-
-    // Correct elapsed immediately (important after a manual refresh)
     setElapsed(Math.max(0, (Date.now() - epochMs) / 1000))
-
-    const id = setInterval(() => {
-      setElapsed((Date.now() - epochMs) / 1000)
-    }, 100)
+    const id = setInterval(() => setElapsed((Date.now() - epochMs) / 1000), 100)
     return () => clearInterval(id)
   }, [searchedAt, searchId])
 
   // Simulated counter: real progress when available, otherwise easeOutCubic over 130s.
-  // simCheckedFloor ensures the number never visually drops (e.g. on RSC remount or stale progress).
+  // _simFloor (module-level) ensures the number never drops, even across React remounts.
   const simChecked = useMemo(() => {
     const real = progress?.checked
     const tNorm = Math.min(elapsed / 130, 1)
     const eased = 1 - Math.pow(1 - tNorm, 3)
     const simVal = Math.round(eased * TOTAL)
-    // Use whichever is larger: real FSW count or simulated, never exceed TOTAL
     const next = real !== undefined && real > 0
       ? Math.min(Math.max(real, simVal), TOTAL)
       : simVal
-    simCheckedFloor.current = Math.max(simCheckedFloor.current, next)
-    return simCheckedFloor.current
-  }, [elapsed, progress, TOTAL])
+    const floor = searchId ? (_simFloor.get(searchId) ?? 0) : 0
+    const result = Math.max(floor, next)
+    if (searchId) _simFloor.set(searchId, result)
+    return result
+  }, [elapsed, progress, TOTAL, searchId])
 
   // Phase driven by elapsed time, spread across typical 90–150s search
   // 0→Searching (0–30s) · 1→Comparing (30–75s) · 2→Sorting (75–120s) · 3→Almost there (120s+)
