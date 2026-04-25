@@ -2149,6 +2149,13 @@ input {
 
 /* ─── Results page ───────────────────────────────────────────────────────── */
 
+/* Override the dark landing-page body background whenever a results page is
+   mounted. Kicks in as soon as loading.tsx renders (before page.tsx finishes),
+   preventing the black + orange/yellow blurred-dots flash on navigation. */
+body:has(.res-page) {
+  background: #ffffff;
+}
+
 .res-page {
   min-height: 100dvh;
   background: #ffffff;
