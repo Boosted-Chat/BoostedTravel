@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { getAirlineLogoUrl } from '../../airlineLogos'
+import { withFee } from '../../../lib/pricing'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface FlightSegment {
@@ -532,7 +533,7 @@ export default function ResultsPanel({ allOffers, currency, priceMin, priceMax, 
                   )}
 
                   <div className="rf-price-wrap">
-                    <span className="rf-price">{offer.currency}{offer.price}</span>
+                    <span className="rf-price">{offer.currency}{Math.round(withFee(offer.price, offer.currency))}</span>
                     <span className="rf-price-sub">{t('perPerson')}</span>
                   </div>
 

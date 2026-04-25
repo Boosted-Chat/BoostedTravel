@@ -13,6 +13,7 @@ const REPO_URL = 'https://github.com/LetsFG/LetsFG'
 const INSTAGRAM_URL = 'https://www.instagram.com/letsfg_'
 const TIKTOK_URL = 'https://www.tiktok.com/@letsfg_'
 const X_URL = 'https://x.com/LetsFG_'
+const SESSION_RESULT_CACHE_LIMIT = 500
 
 function GitHubIcon() {
   return (
@@ -153,7 +154,7 @@ export default function SearchPageClient({
     try {
       sessionStorage.setItem(CACHE_KEY, JSON.stringify({
         status: 'completed',
-        offers: offers.slice(0, 150), // cap size; 150 offers ≈ 150 KB
+        offers: offers.slice(0, SESSION_RESULT_CACHE_LIMIT),
       }))
     } catch { /* storage full or unavailable */ }
   }, [status, searchId, offers, CACHE_KEY])

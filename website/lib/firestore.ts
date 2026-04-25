@@ -81,3 +81,62 @@ export async function loadSearchResult(
     return null
   }
 }
+
+// ── Search unlocks ────────────────────────────────────────────────────────────
+
+const UNLOCK_COLLECTION = 'search_unlocks'
+const UNLOCK_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours — generous window for the user to revisit
+
+function unlockKey(uid: string, searchId: string): string {
+  return `${uid}|${searchId}`
+}
+
+/**
+ * Record that a user has unlocked a search. Stored in Firestore only.
+ * If Firestore is unavailable (not on Cloud Run), the write is a no-op —
+ * the user will need to pay again. No in-memory fallback.
+ */
+export async function saveUnlock(uid: string, searchId: string): Promise<void> {
+  const db = getDb()
+  if (!db) return // not on Cloud Run — no-op, no bypass
+
+  try {
+    await db.collection(UNLOCK_COLLECTION).doc(unlockKey(uid, searchId)).set({
+      uid,
+      search_id: searchId,
+      expires_at: new Date(Date.now() + UNLOCK_TTL_MS),
+      created_at: new Date(),
+    })
+  } catch (err) {
+    console.error('[firestore] saveUnlock failed:', (err as Error).message)
+    // Do NOT fall back to any in-memory store — if we can't write the unlock,
+    // the payment confirmation will fail on the next /api/unlock-status check.
+    throw err
+  }
+}
+
+/**
+ * Check whether a user has a valid unlock for a given search.
+ * Returns true only if Firestore confirms a valid, unexpired record.
+ * Returns false on any error or if Firestore is unavailable.
+ */
+export async function checkUnlock(uid: string, searchId: string): Promise<boolean> {
+  const db = getDb()
+  if (!db) return false // not on Cloud Run — never grant access
+
+  try {
+    const snap = await db.collection(UNLOCK_COLLECTION).doc(unlockKey(uid, searchId)).get()
+    if (!snap.exists) return false
+    const data = snap.data()!
+    const expiresAt: Date | undefined = data.expires_at?.toDate?.()
+    if (!expiresAt || expiresAt < new Date()) {
+      snap.ref.delete().catch(() => {})
+      return false
+    }
+    return true
+  } catch (err) {
+    console.warn('[firestore] checkUnlock failed:', (err as Error).message)
+    return false // fail closed — deny access on any Firestore error
+  }
+}
+

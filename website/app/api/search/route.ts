@@ -4,6 +4,7 @@ import { parseNLQuery } from '../../lib/searchParsing'
 
 const FSW_URL = process.env.FSW_URL || 'https://flight-search-worker-qryvus4jia-uc.a.run.app'
 const FSW_SECRET = process.env.FSW_SECRET || ''
+const WEBSITE_SEARCH_LIMIT = 500
 
 // ── POST /api/search ─────────────────────────────────────────────────────────
 
@@ -45,10 +46,10 @@ export async function POST(request: NextRequest) {
 
     recordLocalSearch(0)
 
-    const fswRes = await fetch(${FSW_URL}/web-search, {
+    const fswRes = await fetch(`${FSW_URL}/web-search`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': Bearer  },
-      body: JSON.stringify({ origin, destination, date_from: dateFrom, return_date: returnDate, adults, currency, limit: 200 }),
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${FSW_SECRET}` },
+      body: JSON.stringify({ origin, destination, date_from: dateFrom, return_date: returnDate, adults, currency, limit: WEBSITE_SEARCH_LIMIT }),
       signal: AbortSignal.timeout(10_000),
     })
 

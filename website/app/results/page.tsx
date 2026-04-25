@@ -12,6 +12,7 @@ import { IATA_TO_NAME, getAirlineNameFromCode, looksLikeIataCode } from '../airl
 const FSW_URL = process.env.FSW_URL || 'https://flight-search-worker-qryvus4jia-uc.a.run.app'
 const FSW_SECRET = process.env.FSW_SECRET || ''
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://letsfg.co'
+const WEBSITE_SEARCH_LIMIT = 500
 
 const REPO_URL = 'https://github.com/LetsFG/LetsFG'
 const INSTAGRAM_URL = 'https://www.instagram.com/letsfg_'
@@ -62,6 +63,7 @@ interface RawSegment {
   flight_no?: string
   flight_number?: string
   airline?: string
+  airline_name?: string
   carrier_name?: string
 }
 
@@ -115,6 +117,37 @@ function resolveAirline(raw: RawOffer, first: RawSegment): { airlineName: string
   return { airlineName, airlineCode }
 }
 
+function normalizeSegments(segments: RawSegment[], fallbackAirlineName: string, fallbackAirlineCode: string) {
+  return segments.map((s: RawSegment, index: number) => {
+    const sDep = s.departure || ''
+    const sArr = s.arrival || ''
+    const sDur = sDep && sArr
+      ? Math.round((new Date(sArr).getTime() - new Date(sDep).getTime()) / 60000)
+      : 0
+    const nextSeg = segments[index + 1]
+    const nextDep = nextSeg?.departure || ''
+    const layoverMins = sArr && nextDep
+      ? Math.max(0, Math.round((new Date(nextDep).getTime() - new Date(sArr).getTime()) / 60000))
+      : 0
+    const originCode = (s.origin || '').toUpperCase()
+    const destinationCode = (s.destination || '').toUpperCase()
+
+    return {
+      airline: s.airline || s.carrier_name || fallbackAirlineName,
+      airline_code: extractIataFromFlightNo(s.flight_no || '') || fallbackAirlineCode,
+      flight_number: s.flight_no || s.flight_number || '',
+      origin: originCode,
+      origin_name: IATA_TO_NAME[originCode] || originCode,
+      destination: destinationCode,
+      destination_name: IATA_TO_NAME[destinationCode] || destinationCode,
+      departure_time: sDep,
+      arrival_time: sArr,
+      duration_minutes: sDur,
+      layover_minutes: layoverMins,
+    }
+  })
+}
+
 function normalizeOffer(raw: RawOffer, idx: number) {
   const ob = raw.outbound || { segments: [], stopovers: 0 }
   const segs = ob.segments || []
@@ -133,26 +166,8 @@ function normalizeOffer(raw: RawOffer, idx: number) {
 
   const { airlineName, airlineCode } = resolveAirline(raw, first)
   const id = raw.id || `wo_${idx}_${Math.random().toString(36).slice(2, 8)}`
+  const normSegs = normalizeSegments(segs, airlineName, airlineCode)
 
-  const normSegs = segs.map((s: RawSegment) => {
-    const sDep = s.departure || ''
-    const sArr = s.arrival || ''
-    const sDur = sDep && sArr
-      ? Math.round((new Date(sArr).getTime() - new Date(sDep).getTime()) / 60000)
-      : 0
-    return {
-      airline: s.airline || s.carrier_name || airlineName,
-      airline_code: extractIataFromFlightNo(s.flight_no || '') || airlineCode,
-      flight_number: s.flight_no || s.flight_number || '',
-      origin: (s.origin || '').toUpperCase(),
-      destination: (s.destination || '').toUpperCase(),
-      departure_time: sDep,
-      arrival_time: sArr,
-      duration_minutes: sDur,
-    }
-  })
-
-  // Normalize inbound leg if present (round-trip)
   let inbound: {
     origin: string; destination: string; departure_time: string; arrival_time: string
     duration_minutes: number; stops: number; airline?: string; airline_code?: string
@@ -169,22 +184,14 @@ function normalizeOffer(raw: RawOffer, idx: number) {
     if (ibDep && ibArr) {
       ibDurMins = Math.round((new Date(ibArr).getTime() - new Date(ibDep).getTime()) / 60000)
     }
-    // Pydantic-serialized combos use `airline` = IATA code, `airline_name` = display name
     const ibAirlineName = ibFirst.airline_name || ibFirst.carrier_name
       || (ibFirst.airline && !looksLikeIataCode(ibFirst.airline) ? ibFirst.airline : null)
       || (ibFirst.airline ? (getAirlineNameFromCode(ibFirst.airline.toUpperCase()) || ibFirst.airline) : null)
       || airlineName
     const ibAirlineCode = (ibFirst.airline && looksLikeIataCode(ibFirst.airline) ? ibFirst.airline.toUpperCase() : '')
       || extractIataFromFlightNo(ibFirst.flight_no || '') || airlineCode
-    const ibNormSegs = ibSegs.map((s: RawSegment) => ({
-      airline: s.airline || s.carrier_name || ibAirlineName,
-      airline_code: extractIataFromFlightNo(s.flight_no || '') || ibAirlineCode,
-      flight_number: s.flight_no || s.flight_number || '',
-      origin: (s.origin || '').toUpperCase(),
-      destination: (s.destination || '').toUpperCase(),
-      departure_time: s.departure || '',
-      arrival_time: s.arrival || '',
-    }))
+    const ibNormSegs = normalizeSegments(ibSegs, ibAirlineName, ibAirlineCode)
+
     inbound = {
       origin: (ibFirst.origin || '').toUpperCase(),
       destination: (ibLast.destination || '').toUpperCase(),
@@ -237,7 +244,7 @@ async function startFSWSearch(parsed: ReturnType<typeof parseNLQuery>): Promise<
         return_date: parsed.return_date,
         adults: 1,
         currency: 'EUR',
-        limit: 200,
+        limit: WEBSITE_SEARCH_LIMIT,
         ...(parsed.stops !== undefined ? { max_stops: parsed.stops } : {}),
         ...(parsed.cabin ? { cabin: parsed.cabin } : {}),
       }),

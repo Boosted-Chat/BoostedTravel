@@ -76,10 +76,12 @@ LETSFG_BASE_URL = os.environ.get("LETSFG_BASE_URL", "https://api.letsfg.co")
 CALLBACK_SECRET = os.environ.get("CALLBACK_SECRET", "")
 CONNECTOR_WORKER_URL = os.environ.get("CONNECTOR_WORKER_URL", "")
 CONNECTOR_WORKER_SECRET = os.environ.get("CONNECTOR_WORKER_SECRET", "")
-FANOUT_TIMEOUT = float(os.environ.get("FANOUT_TIMEOUT", "180"))
+MAX_FANOUT_TIMEOUT = 180.0
+FANOUT_TIMEOUT = min(float(os.environ.get("FANOUT_TIMEOUT", "180")), MAX_FANOUT_TIMEOUT)
 FANOUT_MAX_PARALLEL = max(1, int(os.environ.get("FANOUT_MAX_PARALLEL", "20")))
 FANOUT_MAX_RETRIES = max(0, int(os.environ.get("FANOUT_MAX_RETRIES", "3")))
 FANOUT_RAMP_DELAY_SECONDS = max(0.0, float(os.environ.get("FANOUT_RAMP_DELAY_SECONDS", "0.05")))
+FANOUT_PER_CONNECTOR_LIMIT = max(1, int(os.environ.get("FANOUT_PER_CONNECTOR_LIMIT", "100")))
 
 
 # ── Currency normalization ──────────────────────────────────────────────────
@@ -342,6 +344,7 @@ FAST_CONNECTORS: list[tuple[str, float, str | None]] = [
 RT_CAPABLE_CONNECTORS: set[str] = {
     "skyscanner_meta", "kayak_meta", "cheapflights_meta", "momondo_meta",
     "kiwi_connector", "tripcom_ota", "opodo_ota", "edreams_ota",
+    "serpapi_google",
 }
 
 
@@ -595,7 +598,7 @@ async def _run_round_trip(
                         len(return_offers), len(combo_ret))
 
         combos_json = _build_round_trip_combos(
-            combo_out, combo_ret, currency,
+            combo_out, combo_ret, currency, max_combos=limit,
         )
         logger.info("Combo engine: %d cross-airline offers", len(combos_json))
     except Exception as exc:
@@ -647,6 +650,7 @@ def _build_round_trip_combos(
     outbound_offers_json: list[dict],
     return_offers_json: list[dict],
     currency: str,
+    max_combos: int | None = None,
 ) -> list[dict]:
     """Convert JSON offers to FlightOffer models, run combo engine, return JSON.
 
@@ -684,7 +688,20 @@ def _build_round_trip_combos(
     if not out_models or not ret_models:
         return []
 
-    combos = combo_engine.build_combos(out_models, ret_models, currency)
+    if max_combos is None:
+        combos = combo_engine.build_combos(out_models, ret_models, currency)
+    else:
+        try:
+            combos = combo_engine.build_combos(out_models, ret_models, currency, max_combos=max_combos)
+        except TypeError:
+            original_max_combos = getattr(combo_engine, "_MAX_COMBOS", None)
+            if original_max_combos is not None:
+                combo_engine._MAX_COMBOS = max(original_max_combos, max_combos)
+            try:
+                combos = combo_engine.build_combos(out_models, ret_models, currency)
+            finally:
+                if original_max_combos is not None:
+                    combo_engine._MAX_COMBOS = original_max_combos
 
     return [c.model_dump(mode="json") for c in combos]
 
@@ -840,6 +857,7 @@ async def _search_local(
             "date_from": date_from,
             "adults": adults,
             "currency": currency,
+            "limit": min(limit, FANOUT_PER_CONNECTOR_LIMIT),
             "sibling_pairs": sibling_pairs,
             "all_pairs": all_pairs,
         }
@@ -1028,7 +1046,11 @@ async def _call_connector(
                 continue
             resp.raise_for_status()
             data = resp.json()
-            n_offers = len(data.get("offers", []))
+            offers = list(data.get("offers", []))
+            if len(offers) > FANOUT_PER_CONNECTOR_LIMIT:
+                offers = offers[:FANOUT_PER_CONNECTOR_LIMIT]
+                data["offers"] = offers
+            n_offers = len(offers)
             if n_offers:
                 logger.info("+ %s: %d offers in %.1fs%s",
                             connector_id, n_offers,
@@ -1230,23 +1252,38 @@ def _filter_route_mismatch(
     return filtered
 
 
-def _deduplicate(offers: list[dict]) -> list[dict]:
-    """Remove exact duplicate offers (same source + airline + flight + price).
+def _route_signature(route: dict | None) -> str:
+    """Build a stable signature for a route using all segment timings and flights."""
+    segments = (route or {}).get("segments") or []
+    parts: list[str] = []
+    for segment in segments:
+        parts.append("~".join([
+            str(segment.get("flight_no") or segment.get("flight_number") or ""),
+            str(segment.get("origin") or "").upper(),
+            str(segment.get("destination") or "").upper(),
+            str(segment.get("departure") or ""),
+            str(segment.get("arrival") or ""),
+        ]))
+    return "||".join(parts)
 
-    Different sources for the same flight are KEPT — they may have different
-    booking fees, baggage policies, or checkout prices. Users should see all
-    booking options available.
+
+def _deduplicate(offers: list[dict]) -> list[dict]:
+    """Remove exact duplicate offers while preserving distinct itineraries.
+
+    Different sources for the same flight are KEPT. Within a source, we only
+    collapse offers when the full priced itinerary matches, including the
+    outbound and inbound segment signatures.
     """
     seen: set[str] = set()
     unique: list[dict] = []
     for offer in offers:
-        segments = (offer.get("outbound") or {}).get("segments") or []
-        flight_no = segments[0].get("flight_no", "") if segments else ""
+        outbound_sig = _route_signature(offer.get("outbound"))
+        inbound_sig = _route_signature(offer.get("inbound"))
         airlines = tuple(sorted(offer.get("airlines") or []))
         price = offer.get("price", 0)
+        currency = offer.get("currency", "")
         source = offer.get("source", "")
-        # Include source so same flight from different OTAs/airlines are kept
-        key = f"{source}|{airlines}|{flight_no}|{price}"
+        key = f"{source}|{currency}|{price}|{airlines}|{outbound_sig}|{inbound_sig}"
         h = hashlib.md5(key.encode()).hexdigest()
         if h not in seen:
             seen.add(h)

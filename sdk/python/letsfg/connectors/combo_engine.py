@@ -54,6 +54,7 @@ def build_combos(
     outbound_offers: list[FlightOffer],
     return_offers: list[FlightOffer],
     target_currency: str,
+    max_combos: int = _MAX_COMBOS,
 ) -> list[FlightOffer]:
     """
     Build round-trip offers from one-way outbound + one-way return legs.
@@ -66,6 +67,7 @@ def build_combos(
     """
     if not outbound_offers or not return_offers:
         return []
+    combo_limit = max(1, max_combos)
 
     # Deduplicate legs per direction PER SOURCE — keeps each source's version
     # of the same flight so cross-source combos always have both sides.
@@ -231,7 +233,7 @@ def build_combos(
 
     # ── Phase 1: Same-airline round-trips (processed first — higher quality) ──
     for ob, rt in same_source_pairs:
-        if len(combos) >= _MAX_COMBOS:
+        if len(combos) >= combo_limit:
             break
         ob_key = _leg_key(ob.outbound)
         rt_key = _leg_key(rt.outbound)
@@ -244,7 +246,7 @@ def build_combos(
 
     # ── Phase 2: Cross-airline virtual interlining ──
     for ob, rt in cross_source_pairs:
-        if len(combos) >= _MAX_COMBOS:
+        if len(combos) >= combo_limit:
             break
         ob_key = _leg_key(ob.outbound)
         rt_key = _leg_key(rt.outbound)

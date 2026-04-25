@@ -1,22 +1,26 @@
 'use client'
 
-import { useState, useRef, useCallback, useMemo } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { getAirlineLogoUrl } from '../../airlineLogos'
+import { calculateFee, withFee } from '../../../lib/pricing'
 import type { Offer } from './page'
 
 interface Props {
   offer: Offer
+  searchId: string | null
 }
 
 type CheckoutStep =
+  | { type: 'checking' }           // checking unlock status on mount
+  | { type: 'verifying-payment' }  // verifying Stripe session after redirect
   | { type: 'locked' }
-  | { type: 'paying' }
+  | { type: 'paying' }             // waiting for Stripe redirect
   | { type: 'share-select' }
   | { type: 'share-upload'; platform: Platform }
   | { type: 'share-verifying'; platform: Platform }
   | { type: 'share-rejected'; platform: Platform }
-  | { type: 'unlocked'; via: 'payment' | 'share' }
+  | { type: 'unlocked'; via: 'payment' | 'share' | 'existing' }
 
 interface Platform {
   id: string
@@ -125,7 +129,7 @@ function AirlineLogo({ code, name }: { code: string; name: string }) {
   )
 }
 
-export default function CheckoutPanel({ offer }: Props) {
+export default function CheckoutPanel({ offer, searchId }: Props) {
   const t = useTranslations('Checkout')
   const platforms = useMemo<Platform[]>(() => [
     {
@@ -154,23 +158,88 @@ export default function CheckoutPanel({ offer }: Props) {
       instructions: [t('message_step1'), t('message_step2'), t('message_step3')],
     },
   ], [t])
-  const unlockFee = Math.max(3, offer.price * 0.01)
-  const unlockFee = Math.max(3, offer.price * 0.01)
-  const showShareOption = unlockFee < 20 // only when 1% cut < $20 (ticket < $2000)
+  const fee = calculateFee(offer.price, offer.currency)
+  const showShareOption = fee < 20 // only when fee < ~$20 (ticket < ~$2000)
 
-  const [step, setStep] = useState<CheckoutStep>({ type: 'locked' })
+  // Start in 'checking' — we always verify unlock status on mount.
+  const [step, setStep] = useState<CheckoutStep>({ type: 'checking' })
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const isUnlocked = step.type === 'unlocked'
-  const isLocked = !isUnlocked
+  const isLoading = step.type === 'checking' || step.type === 'verifying-payment'
 
-  const handlePay = useCallback(() => {
+  // ── On mount: verify payment redirect OR check stored unlock ────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const stripeSession = params.get('stripe_session')
+
+    if (stripeSession) {
+      // Returned from Stripe — verify the payment server-side
+      setStep({ type: 'verifying-payment' })
+      fetch('/api/checkout/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stripeSessionId: stripeSession }),
+      })
+        .then(r => r.json())
+        .then((data: { unlocked: boolean }) => {
+          if (data.unlocked) {
+            setStep({ type: 'unlocked', via: 'payment' })
+            // Clean the stripe_session param from the URL without a reload
+            const url = new URL(window.location.href)
+            url.searchParams.delete('stripe_session')
+            window.history.replaceState({}, '', url.toString())
+          } else {
+            setStep({ type: 'locked' })
+          }
+        })
+        .catch(() => setStep({ type: 'locked' }))
+      return
+    }
+
+    if (!searchId) {
+      setStep({ type: 'locked' })
+      return
+    }
+
+    // Server-side unlock check — always authoritative
+    fetch(`/api/unlock-status?searchId=${encodeURIComponent(searchId)}`)
+      .then(r => r.json())
+      .then((data: { unlocked: boolean }) => {
+        setStep(data.unlocked
+          ? { type: 'unlocked', via: 'existing' }
+          : { type: 'locked' }
+        )
+      })
+      .catch(() => setStep({ type: 'locked' }))
+  }, [searchId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Pay via Stripe ───────────────────────────────────────────────────────
+  const handlePay = useCallback(async () => {
     setStep({ type: 'paying' })
-    // Simulate payment
-    setTimeout(() => setStep({ type: 'unlocked', via: 'payment' }), 2200)
-  }, [])
+    try {
+      const res = await fetch('/api/checkout/create-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offerId: offer.id,
+          searchId: searchId ?? '',
+          price: offer.price,
+          currency: offer.currency,
+        }),
+      })
+      const data = await res.json()
+      if (data.url) {
+        window.location.href = data.url
+      } else {
+        setStep({ type: 'locked' })
+      }
+    } catch {
+      setStep({ type: 'locked' })
+    }
+  }, [offer, searchId])
 
   const handleSelectPlatform = useCallback((platform: Platform) => {
     setStep({ type: 'share-upload', platform })
@@ -218,7 +287,7 @@ export default function CheckoutPanel({ offer }: Props) {
               <span className="ck-flight-num">{offer.flight_number}</span>
             </div>
             <div className="ck-flight-price-badge">
-              <span className="ck-flight-price">{offer.currency}{offer.price}</span>
+              <span className="ck-flight-price">{offer.currency}{Math.round(withFee(offer.price, offer.currency))}</span>
               <span className="ck-flight-price-label">{t('perPerson')}</span>
             </div>
           </div>
@@ -262,12 +331,25 @@ export default function CheckoutPanel({ offer }: Props) {
         </div>
 
         {/* ── Unlocked success banner ─────────────────────────────────────── */}
+        {isLoading && (
+          <div className="ck-checking-banner">
+            <span className="ck-spinner ck-spinner--sm" aria-hidden="true" />
+            <span className="ck-checking-text">
+              {step.type === 'verifying-payment' ? t('verifyingPayment') : t('checkingUnlock')}
+            </span>
+          </div>
+        )}
+
         {isUnlocked && (
           <div className="ck-unlocked-banner">
             <span className="ck-unlocked-check"><CheckIcon /></span>
             <div>
               <div className="ck-unlocked-title">
-                {step.via === 'share' ? t('dealUnlockedShare') : t('dealUnlocked')}
+                {step.via === 'share'
+                  ? t('dealUnlockedShare')
+                  : step.via === 'existing'
+                  ? t('dealUnlockedExisting')
+                  : t('dealUnlocked')}
               </div>
               <div className="ck-unlocked-sub">
                 {t('bookingLinkReady')}
@@ -280,7 +362,7 @@ export default function CheckoutPanel({ offer }: Props) {
         <div className="ck-checkout-card">
 
           {/* ── STEP 1: Unlock ──────────────────────────────────────────── */}
-          <div className={`ck-step${isUnlocked ? ' ck-step--done' : ''}`}>
+          <div className={`ck-step${isUnlocked ? ' ck-step--done' : ''}${isLoading ? ' ck-step--loading' : ''}`}>
             <div className="ck-step-label">
               <span className={`ck-step-num${isUnlocked ? ' ck-step-num--done' : ''}`}>
                 {isUnlocked ? <CheckIcon /> : '1'}
@@ -290,7 +372,7 @@ export default function CheckoutPanel({ offer }: Props) {
               </span>
             </div>
 
-            {!isUnlocked && (
+            {!isUnlocked && !isLoading && (
               <div className="ck-unlock-body">
                 <p className="ck-unlock-desc">
                   {t.rich('unlockDesc', { strong: (chunks) => <strong>{chunks}</strong> })}
@@ -310,7 +392,7 @@ export default function CheckoutPanel({ offer }: Props) {
                   ) : (
                     <>
                       <LockIcon />
-                      {t('unlockFor', { fee: fmtFee(unlockFee, offer.currency) })}
+                      {t('unlockFor', { fee: fmtFee(fee, offer.currency) })}
                     </>
                   )}
                 </button>
@@ -436,9 +518,19 @@ export default function CheckoutPanel({ offer }: Props) {
             </div>
 
             <div className="ck-book-body">
-              <div className="ck-book-price-row">
-                <span className="ck-book-price">{offer.currency}{offer.price}</span>
-                <span className="ck-book-price-note">{t('directAirlinePrice')}</span>
+              <div className="ck-price-breakdown">
+                <div className="ck-price-row">
+                  <span className="ck-price-label">{t('airlineTicket')}</span>
+                  <span className="ck-price-value">{offer.currency}{offer.price}</span>
+                </div>
+                <div className="ck-price-row">
+                  <span className="ck-price-label">{t('letsfgFee')}</span>
+                  <span className="ck-price-value">{fmtFee(calculateFee(offer.price, offer.currency), offer.currency)}</span>
+                </div>
+                <div className="ck-price-row ck-price-row--total">
+                  <span className="ck-price-label">{t('total')}</span>
+                  <span className="ck-price-value">{offer.currency}{Math.round(withFee(offer.price, offer.currency))}</span>
+                </div>
               </div>
 
               {isUnlocked ? (

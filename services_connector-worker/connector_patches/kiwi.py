@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 import httpx
 
-from ..models.flights import (
+from letsfg.models.flights import (
     FlightOffer,
     FlightRoute,
     FlightSearchRequest,
@@ -306,7 +306,7 @@ class KiwiConnectorClient:
             },
             "filter": {
                 "transportTypes": ["FLIGHT"],
-                "limit": min(req.limit or 100, 100),
+                "limit": min(req.limit or 200, 200),
                 "enableSelfTransfer": True,
                 "enableThrowAwayTicketing": True,
                 "enableTrueHiddenCity": True,

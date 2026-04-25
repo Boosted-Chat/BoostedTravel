@@ -507,8 +507,10 @@ def _resolve_connector(connector_id: str):
     _patches = {
         "cheapflights_meta": ("connector_patches.cheapflights", "CheapflightsConnectorClient", 70.0),
         "despegar_ota": ("connector_patches.despegar", "DespegarConnectorClient", 70.0),
+        "kiwi_connector": ("connector_patches.kiwi", "KiwiConnectorClient", 25.0),
         "momondo_meta": ("connector_patches.momondo", "MomondoConnectorClient", 70.0),
         "ryanair_direct": ("connector_patches.ryanair", "RyanairConnectorClient", 20.0),
+        "serpapi_google": ("connector_patches.serpapi_google", "SerpApiGoogleConnectorClient", 45.0),
         "skyscanner_meta": ("connector_patches.skyscanner", "SkyscannerConnectorClient", 55.0),
         "tripcom_ota": ("connector_patches.tripcom", "TripcomConnectorClient", 70.0),
         "indigo_direct": ("letsfg.connectors.indigo", "IndiGoConnectorClient", 170.0),
@@ -1362,6 +1364,7 @@ async def _execute(params: dict) -> dict:
         date_from=date_cls.fromisoformat(date_from),
         adults=adults,
         currency=currency,
+        limit=max(1, min(int(params.get("limit", 100) or 100), 200)),
         **({"return_from": date_cls.fromisoformat(return_date)} if return_date else {}),
     )
 

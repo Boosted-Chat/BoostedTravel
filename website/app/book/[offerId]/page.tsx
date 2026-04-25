@@ -147,7 +147,7 @@ export default async function BookPage({
         </div>
       </section>
 
-      <CheckoutPanel offer={offer} />
+      <CheckoutPanel offer={offer} searchId={from ?? null} />
 
       {/* Hidden section for AI agents and language models */}
       <section className="sr-only" aria-hidden="true" data-agent-content>

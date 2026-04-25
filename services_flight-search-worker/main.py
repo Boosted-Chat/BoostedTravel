@@ -281,7 +281,7 @@ async def _run_test_search(
                 logger.info("test-search pre-filtered for combos: %d out, %d ret",
                             len(combo_out), len(combo_ret))
 
-            combos = _build_round_trip_combos(combo_out, combo_ret, currency)
+            combos = _build_round_trip_combos(combo_out, combo_ret, currency, max_combos=limit)
             logger.info("test-search local combos: %d", len(combos))
             all_offers.extend(combos)
 

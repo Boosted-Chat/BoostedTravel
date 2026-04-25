@@ -5220,6 +5220,28 @@ body.results-body {
   opacity: 0.4;
 }
 
+/* ── Checking / verifying banner ───────────────────────────────────── */
+.ck-checking-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(20, 45, 60, 0.04);
+  border: 1px solid rgba(20, 45, 60, 0.1);
+  border-radius: 14px;
+  padding: 12px 16px;
+}
+
+.ck-checking-text {
+  font-size: 0.85rem;
+  color: rgba(20, 45, 60, 0.6);
+  font-weight: 500;
+}
+
+.ck-spinner--sm {
+  width: 16px;
+  height: 16px;
+}
+
 /* ── Unlocked banner ───────────────────────────────────────────────── */
 .ck-unlocked-banner {
   display: flex;
@@ -5629,6 +5651,54 @@ body.results-body {
 
 .ck-book-body {
   padding-left: 36px;
+}
+
+/* ── Price breakdown table ─────────────────────────────────────────── */
+.ck-price-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  background: rgba(20, 45, 60, 0.04);
+  border-radius: 10px;
+}
+
+.ck-price-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ck-price-label {
+  font-size: 0.82rem;
+  color: rgba(20, 45, 60, 0.55);
+  font-weight: 500;
+}
+
+.ck-price-value {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #142d3c;
+}
+
+.ck-price-row--total {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(20, 45, 60, 0.12);
+}
+
+.ck-price-row--total .ck-price-label {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #142d3c;
+}
+
+.ck-price-row--total .ck-price-value {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #142d3c;
 }
 
 .ck-book-price-row {
