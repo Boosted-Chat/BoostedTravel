@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 
 interface Props {
@@ -671,10 +671,25 @@ export default function SearchingTasks({
   const originName = originLabel || originCode || 'Origin'
   const destinationName = destinationLabel || destinationCode || 'Destination'
 
-  const [elapsed, setElapsed] = useState(() =>
-    searchedAt ? Math.max(0, (Date.now() - new Date(searchedAt).getTime()) / 1000) : 0
-  )
+  const [elapsed, setElapsed] = useState<number>(() => {
+    // Priority 1: sessionStorage — correct even after RSC-triggered remounts
+    if (searchId) {
+      const stored = sessionStorage.getItem(`lfg_st_${searchId}`)
+      if (stored) {
+        const ms = new Date(stored).getTime()
+        if (!isNaN(ms)) return Math.max(0, (Date.now() - ms) / 1000)
+      }
+    }
+    // Priority 2: searchedAt prop from server (first load, before SS is populated)
+    if (searchedAt) {
+      const ms = new Date(searchedAt).getTime()
+      if (!isNaN(ms)) return Math.max(0, (Date.now() - ms) / 1000)
+    }
+    return 0
+  })
   const [airlineIdx, setAirlineIdx] = useState(0)
+  // Never let the displayed counter go backward (survives remounts because it reads from SS)
+  const simCheckedFloor = useRef(0)
 
   // Advance elapsed anchored to the real search start time.
   // Also persists startedAt in sessionStorage so state survives manual browser refreshes.
@@ -708,15 +723,19 @@ export default function SearchingTasks({
     return () => clearInterval(id)
   }, [searchedAt, searchId])
 
-  // Simulated counter: real progress when available, otherwise easeOutCubic over 130s
+  // Simulated counter: real progress when available, otherwise easeOutCubic over 130s.
+  // simCheckedFloor ensures the number never visually drops (e.g. on RSC remount or stale progress).
   const simChecked = useMemo(() => {
     const real = progress?.checked
-    const t = Math.min(elapsed / 130, 1)
-    const eased = 1 - Math.pow(1 - t, 3)
+    const tNorm = Math.min(elapsed / 130, 1)
+    const eased = 1 - Math.pow(1 - tNorm, 3)
     const simVal = Math.round(eased * TOTAL)
     // Use whichever is larger: real FSW count or simulated, never exceed TOTAL
-    if (real !== undefined && real > 0) return Math.min(Math.max(real, simVal), TOTAL)
-    return simVal
+    const next = real !== undefined && real > 0
+      ? Math.min(Math.max(real, simVal), TOTAL)
+      : simVal
+    simCheckedFloor.current = Math.max(simCheckedFloor.current, next)
+    return simCheckedFloor.current
   }, [elapsed, progress, TOTAL])
 
   // Phase driven by elapsed time, spread across typical 90–150s search
