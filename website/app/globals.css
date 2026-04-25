@@ -2156,6 +2156,15 @@ body:has(.res-page) {
   background: #ffffff;
 }
 
+/* results/layout.tsx uses className="results-body" — hard-codes white
+   background on the <body> itself so there's never a dark flash between
+   route transitions, even during the React Suspense gap before any
+   .res-page element reaches the DOM. */
+body.results-body {
+  background: #ffffff;
+  color: #0f0f0f;
+}
+
 .res-page {
   min-height: 100dvh;
   background: #ffffff;
@@ -2286,9 +2295,8 @@ body:has(.res-page) {
   inset: 0;
   background:
     linear-gradient(180deg, rgba(11, 71, 107, 0.2) 0%, rgba(11, 71, 107, 0.06) 18%, rgba(255, 255, 255, 0) 34%),
-    url('/chatgpt-sky-bg.png');
-  background-size: cover;
-  background-position: center 44%;
+    url('/chatgpt-sky-bg.png') center 44% / cover,
+    #acd8f0; /* sky-blue shown before the image loads — no dark flash */
 }
 
 .res-hero-backdrop::before {
@@ -2307,9 +2315,8 @@ body:has(.res-page) {
 .res-hero--searching .res-hero-backdrop {
   background:
     linear-gradient(180deg, rgba(11, 71, 107, 0.22) 0%, rgba(11, 71, 107, 0.1) 24%, rgba(11, 71, 107, 0.06) 100%),
-    url('/chatgpt-sky-bg.png');
-  background-size: cover;
-  background-position: center 46%;
+    url('/chatgpt-sky-bg.png') center 46% / cover,
+    #acd8f0;
 }
 
 .res-hero-inner {

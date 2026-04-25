@@ -27,7 +27,7 @@ export default async function ResultsLayout({ children }: { children: ReactNode 
   const messages = await getMessages()
   return (
     <html lang={locale} className={`${lexend.variable} ${jetbrainsMono.variable} ${caveat.variable}`}>
-      <body>
+      <body className="results-body">
         <NextIntlClientProvider locale={locale} messages={messages}>
           {children}
         </NextIntlClientProvider>
