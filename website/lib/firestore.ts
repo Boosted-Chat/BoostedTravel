@@ -21,6 +21,9 @@ let _db: Firestore | null = null
 let _initFailed = false
 
 function getDb(): Firestore | null {
+  // Only run on Cloud Run — K_SERVICE is set automatically by the platform.
+  // Never initialise locally to avoid accidental credential exposure.
+  if (!process.env.K_SERVICE) return null
   if (_initFailed) return null
   if (_db) return _db
   try {
@@ -28,9 +31,7 @@ function getDb(): Firestore | null {
     _db = getFirestore('default')
     return _db
   } catch (err) {
-    // No credentials in local dev without gcloud ADC — silently fall back to
-    // the in-memory cache. Firestore is only used on Cloud Run.
-    console.warn('[firestore] init skipped:', (err as Error).message)
+    console.warn('[firestore] init failed:', (err as Error).message)
     _initFailed = true
     return null
   }
