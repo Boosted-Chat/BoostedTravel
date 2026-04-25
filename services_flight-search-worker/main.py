@@ -157,16 +157,26 @@ async def _run_test_search(
     adults: int, currency: str, limit: int, max_stops: int | None,
     cabin_class: str | None = None,
 ) -> dict:
-    """Run API + local search in parallel, merge results.
+        """Run API + local search in parallel, merge results.
 
-    For round-trip:
-      - API gets ONE call with return_from → native round-trip offers
-        (airlines price outbound+return together = much cheaper)
-      - Local connectors still fire two one-way calls → combined into combos
-      - Both streams are merged and sorted by price
-    """
-    import time as _time
-    from search_worker import _search_api, _search_local, _deduplicate, _filter_by_stops, _filter_route_mismatch, _get_valid_airports
+        For round-trip:
+            - API gets ONE call with return_from → native round-trip offers
+                (airlines price outbound+return together = much cheaper)
+            - Only non-RT-capable local connectors feed the combo engine as
+                separate outbound/return legs
+            - RT-capable connectors get their own dedicated round-trip fan-out
+            - Both streams are merged and sorted by price
+        """
+        import time as _time
+        from search_worker import (
+                RT_CAPABLE_CONNECTORS,
+                _deduplicate,
+                _filter_by_stops,
+                _filter_route_mismatch,
+                _get_valid_airports,
+                _search_api,
+                _search_local,
+        )
 
     LETSFG_API_KEY = os.environ.get("LETSFG_API_KEY", "")
     t0 = _time.monotonic()
@@ -179,23 +189,28 @@ async def _run_test_search(
     # API search (Duffel/Amadeus/Sabre) — native round-trip when return_date set
     if LETSFG_API_KEY:
         api_tasks.append(_search_api(
-            origin, destination, date_from, adults, currency, limit,
+            origin, destination, date_from, adults, currency, limit * 2,
             max_stopovers=max_stops, return_date=return_date,
             cabin_class=cabin_class,
         ))
         api_labels.append("api_rt" if return_date else "api_out")
 
-    # Local connector fan-out — one-way for combo engine
-    local_tasks.append(_search_local(origin, destination, date_from, adults, currency, limit,
-                                     cabin_class=cabin_class))
+    # Local connector fan-out — non-RT-capable legs for the combo engine
+    combo_leg_excludes = RT_CAPABLE_CONNECTORS if return_date else None
+    local_tasks.append(_search_local(
+        origin, destination, date_from, adults, currency, limit * 2,
+        cabin_class=cabin_class, exclude_connectors=combo_leg_excludes,
+    ))
     local_labels.append("local_out")
     if return_date:
-        local_tasks.append(_search_local(destination, origin, return_date, adults, currency, limit,
-                                         cabin_class=cabin_class))
-        local_labels.append("local_ret")
-        # Native RT fan-out — aggregators (Skyscanner, Kayak, etc.) do round-trip in one call
         local_tasks.append(_search_local(
-            origin, destination, date_from, adults, currency, limit,
+            destination, origin, return_date, adults, currency, limit * 2,
+            cabin_class=cabin_class, exclude_connectors=combo_leg_excludes,
+        ))
+        local_labels.append("local_ret")
+        # RT-capable connectors return complete itineraries in one worker call.
+        local_tasks.append(_search_local(
+            origin, destination, date_from, adults, currency, limit * 2,
             return_date=return_date, only_rt_capable=True,
             cabin_class=cabin_class,
         ))

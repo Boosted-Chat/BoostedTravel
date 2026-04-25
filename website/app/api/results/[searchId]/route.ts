@@ -1,5 +1,5 @@
 ﻿import { NextRequest, NextResponse } from 'next/server'
-import { cacheOffers } from '../../../../lib/offer-cache'
+import { cacheOffers, cacheSearchResult, getCachedSearchResult } from '../../../../lib/offer-cache'
 
 const FSW_URL = process.env.FSW_URL || 'https://flight-search-worker-qryvus4jia-uc.a.run.app'
 const FSW_SECRET = process.env.FSW_SECRET || ''
@@ -234,8 +234,20 @@ export async function GET(
       signal: AbortSignal.timeout(8_000),
       cache: 'no-store',
     })
-    if (res.status === 404) return NextResponse.json({ error: 'Search not found' }, { status: 404 })
-    if (!res.ok) return NextResponse.json({ error: 'Search service error' }, { status: 502 })
+
+    // FSW has expired / forgotten this search — serve from our own cache
+    if (res.status === 404) {
+      const cached = getCachedSearchResult(searchId)
+      if (cached) return NextResponse.json(cached)
+      return NextResponse.json({ error: 'Search not found' }, { status: 404 })
+    }
+
+    if (!res.ok) {
+      // On other FSW errors also try the cache before giving up
+      const cached = getCachedSearchResult(searchId)
+      if (cached) return NextResponse.json(cached)
+      return NextResponse.json({ error: 'Search service error' }, { status: 502 })
+    }
 
     const data = await res.json()
     const rawOffers: any[] = data.offers || []
@@ -249,7 +261,7 @@ export async function GET(
 
     const now = new Date()
     const createdAgo = data.elapsed_seconds ? data.elapsed_seconds * 1000 : 0
-    return NextResponse.json({
+    const result = {
       search_id: searchId,
       status: data.status,
       parsed: {
@@ -262,7 +274,14 @@ export async function GET(
       elapsed_seconds: data.elapsed_seconds,
       searched_at: new Date(now.getTime() - createdAgo).toISOString(),
       expires_at: new Date(now.getTime() + (data.expires_in_seconds ?? 1200) * 1000).toISOString(),
-    })
+    }
+
+    // Persist completed results for 30 min so the URL stays usable after FSW expiry
+    if (data.status === 'completed' && normalized.length > 0) {
+      cacheSearchResult(searchId, result as Record<string, unknown>)
+    }
+
+    return NextResponse.json(result)
   } catch (err) {
     console.error('Results poll error:', err)
     return NextResponse.json({ error: 'Failed to fetch search status' }, { status: 502 })
