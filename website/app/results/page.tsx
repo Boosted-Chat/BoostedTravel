@@ -238,7 +238,6 @@ async function startFSWSearch(parsed: ReturnType<typeof parseNLQuery>): Promise<
         adults: 1,
         currency: 'EUR',
         limit: 200,
-        mode: 'fast',
         ...(parsed.stops !== undefined ? { max_stops: parsed.stops } : {}),
         ...(parsed.cabin ? { cabin: parsed.cabin } : {}),
       }),
