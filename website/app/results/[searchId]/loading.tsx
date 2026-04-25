@@ -1,15 +1,21 @@
+'use client'
+
+import { Suspense } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
+import GlobeButton from '../../globe-button'
+import SearchingTasks from './SearchingTasks'
 
 /**
- * Shown by Next.js App Router immediately while page.tsx is fetching search
- * data server-side. Replaces the body's dark landing-page background with the
- * searching sky gradient so there's never a black flash on navigation.
+ * Shown immediately by Next.js while page.tsx runs its server-side polling
+ * loop (pollUntilDone). Humans see the full searching animation; once the
+ * server finishes, the page swaps in with completed results.
  *
- * We deliberately avoid SearchingTasks here (needs route params we don't have)
- * and show a minimal branded skeleton instead.
+ * We can't read path params or searchParams here, so SearchingTasks renders
+ * with no origin/destination — it still shows the full plane animation and
+ * counter with generic labels.
  */
-export default function Loading() {
+function LoadingInner() {
   return (
     <main className="res-page res-page--searching">
       <section className="res-hero res-hero--searching">
@@ -26,9 +32,23 @@ export default function Loading() {
                 priority
               />
             </Link>
+            <div className="res-topbar-actions">
+              <GlobeButton inline />
+            </div>
+          </div>
+          <div className="res-searching-stage">
+            <SearchingTasks />
           </div>
         </div>
       </section>
     </main>
+  )
+}
+
+export default function Loading() {
+  return (
+    <Suspense>
+      <LoadingInner />
+    </Suspense>
   )
 }
