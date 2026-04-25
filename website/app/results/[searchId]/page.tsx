@@ -63,7 +63,7 @@ async function getSearchResults(searchId: string): Promise<SearchResult | null> 
 // stays as a fallback but is never needed for a completed search.
 async function pollUntilDone(
   searchId: string,
-  maxWaitMs = 8 * 60 * 1000, // 8 min — covers full-mode searches (2–6 min)
+  maxWaitMs = 270_000, // 270 s — Cloud Run website service is set to 300 s timeout
 ): Promise<SearchResult | null> {
   const deadline = Date.now() + maxWaitMs
   while (true) {
