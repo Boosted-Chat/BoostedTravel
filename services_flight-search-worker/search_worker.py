@@ -341,7 +341,7 @@ FAST_CONNECTORS: list[tuple[str, float, str | None]] = [
 # These get a single RT call instead of two one-way calls in round-trip mode.
 RT_CAPABLE_CONNECTORS: set[str] = {
     "skyscanner_meta", "kayak_meta", "cheapflights_meta", "momondo_meta",
-    "kiwi_connector",
+    "kiwi_connector", "tripcom_ota", "opodo_ota", "edreams_ota",
 }
 
 
@@ -530,9 +530,17 @@ async def _run_round_trip(
     rt_aggregator_offers: list[dict] = []
     try:
         # One-way fan-outs for combo engine (direct airlines only, exclude RT-capable)
-        out_local_task = _search_local(origin, destination, date_from, adults, currency, limit * 2, children=children)
-        ret_local_task = _search_local(destination, origin, return_date, adults, currency, limit * 2, children=children)
-        # Native RT fan-out for aggregators (Skyscanner, Kayak, CheapFlights, Momondo, Kiwi)
+        combo_leg_excludes = RT_CAPABLE_CONNECTORS
+        out_local_task = _search_local(
+            origin, destination, date_from, adults, currency, limit * 2,
+            children=children, exclude_connectors=combo_leg_excludes,
+        )
+        ret_local_task = _search_local(
+            destination, origin, return_date, adults, currency, limit * 2,
+            children=children, exclude_connectors=combo_leg_excludes,
+        )
+        # Native RT fan-out for connectors that already support complete
+        # round-trip pricing instead of separate one-way leg searches.
         rt_local_task = _search_local(
             origin, destination, date_from, adults, currency, limit * 2,
             return_date=return_date, only_rt_capable=True, children=children,
@@ -594,8 +602,9 @@ async def _run_round_trip(
         logger.error("Combo engine failed: %s", exc)
 
     # ── Merge everything ────────────────────────────────────────────────
-    # API RT offers + aggregator RT offers + outbound one-ways + return one-ways + combos
-    all_offers = api_offers + rt_aggregator_offers + outbound_offers + return_offers + combos_json
+    # Round-trip searches should only surface complete itineraries.
+    # One-way legs are inputs to the combo engine, not final user-facing offers.
+    all_offers = api_offers + rt_aggregator_offers + combos_json
     merged = _deduplicate(all_offers)
     # Final route validation on all merged offers (catches any stray results from API/aggregators)
     merged = _filter_route_mismatch(merged, valid_origins, valid_dests)
@@ -737,6 +746,7 @@ async def _search_local(
     only_rt_capable: bool = False,
     cabin_class: str | None = None,
     children: int = 0,
+    exclude_connectors: set[str] | None = None,
 ) -> dict:
     """Fan out search to individual connector-worker Cloud Run instances.
 
@@ -752,6 +762,8 @@ async def _search_local(
     if not CONNECTOR_WORKER_URL:
         logger.error("CONNECTOR_WORKER_URL not set — skipping fan-out")
         return {"offers": [], "total_results": 0}
+
+    excluded = exclude_connectors or set()
 
     from letsfg.connectors.airline_routes import (
         get_relevant_connectors, get_city_airports,
@@ -841,6 +853,8 @@ async def _search_local(
 
     # Fast connectors (Ryanair, Wizzair, Kiwi) — search all pairs
     for fast_id, fast_timeout, countries_key in FAST_CONNECTORS:
+        if fast_id in excluded:
+            continue
         if only_rt_capable and fast_id not in RT_CAPABLE_CONNECTORS:
             continue
         if countries_key:
@@ -852,6 +866,8 @@ async def _search_local(
 
     # Direct airline connectors (route-filtered) — primary + siblings
     for name, _cls, timeout in filtered:
+        if name in excluded:
+            continue
         if only_rt_capable and name not in RT_CAPABLE_CONNECTORS:
             continue
         tasks.append(_base_payload(name, all_pairs=False))
