@@ -94,15 +94,17 @@ We searched 5 routes on Google Flights and LetsFG on the same day (June 15, 2026
 
 ## Try it right now — no install needed
 
-**Don't want to install anything?** Message our AI assistant and search flights instantly:
+**Don't want to install anything?** Use [letsfg.co](https://letsfg.co) and search flights instantly in your browser:
 
 <div align="center">
 
-### 💬 [**Try it on Messenger**](https://m.me/61579557368989) &nbsp;&nbsp;·&nbsp;&nbsp; 📸 [**Try it on Instagram**](https://ig.me/m/letsfg_)
+### 🌐 [**Search on letsfg.co**](https://letsfg.co)
 
 </div>
 
-Ask it anything: *"Find me the cheapest flight from London to Barcelona next month"* — it searches 200 airlines in real time and gives you the best deals.
+Search any route, compare live results, and unlock the booking links for the flights you want without installing anything.
+
+If you prefer chat, the Messenger and Instagram buttons at the top still work too.
 
 When you're ready to integrate it into your own agent, keep reading.
 
@@ -114,11 +116,11 @@ When you're ready to integrate it into your own agent, keep reading.
 |----------------|--------|--------|------|-------------|
 | **CLI / Python SDK / npm** | ✅ Free | ✅ Free | Ticket price only | Your machine |
 | **MCP Server (local)** | ✅ Free | ✅ Free | Ticket price only | Your machine |
-| **Messenger / Instagram** | ✅ Free | 1% (min $1) | Ticket price only | Our servers |
+| **letsfg.co** | ✅ Free | Small one-time fee per search | Ticket price only | Our servers |
 
 **Local = 100% free.** The CLI, Python SDK, npm packages, and local MCP server run 200+ connectors covering 400+ airlines on your machine. No API key needed, no fees, no limits.
 
-**Messenger/Instagram = free search + small unlock fee.** When you chat with us on Messenger/Instagram, search is completely free. We charge 1% of the ticket price (min $1) to unlock offer details. Booking is at the raw airline price — zero markup.
+**letsfg.co = free search + small unlock fee.** Search is free, and when you unlock a search you get the booking links for all flights from that search. Booking stays at the raw airline price — zero markup.
 
 > 💡 **Know someone who travels?** The more people discover LetsFG, the more airlines we cover — and the better it gets for everyone. **[⭐ Star](https://github.com/LetsFG/LetsFG)** · **[Share with a friend](#-join-the-community-)**
 
@@ -377,7 +379,7 @@ Search a city code and LetsFG automatically searches all airports in that city. 
 
 <div align="center">
 
-**[Documentation](https://api.letsfg.co/docs)** · **[Connector Health](https://api.letsfg.co/health/connectors)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)** · **[Instagram](https://ig.me/m/letsfg_)**
+**[letsfg.co](https://letsfg.co)** · **[Documentation](https://api.letsfg.co/docs)** · **[Connector Health](https://api.letsfg.co/health/connectors)** · **[PyPI](https://pypi.org/project/letsfg/)** · **[npm](https://www.npmjs.com/package/letsfg-mcp)** · **[Smithery](https://smithery.ai/servers/letsfg)** · **[Messenger](https://m.me/61579557368989)** · **[Instagram](https://ig.me/m/letsfg_)**
 
 *Open source · MIT License · Made with ❤️ by travelers, for travelers*
 
