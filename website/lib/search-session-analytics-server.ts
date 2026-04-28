@@ -1,10 +1,12 @@
 import type { SearchSessionPayload } from './search-session-analytics'
 
-const API_BASE = process.env.LETSFG_API_URL || 'https://api.letsfg.co'
+const ANALYTICS_API_BASE = (
+  process.env.LETSFG_ANALYTICS_API_URL || 'https://letsfg-api-876385716101.us-central1.run.app'
+).replace(/\/$/, '')
 
 export async function upsertSearchSessionServer(payload: SearchSessionPayload) {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/analytics/search-sessions/upsert`, {
+    const res = await fetch(`${ANALYTICS_API_BASE}/api/v1/analytics/search-sessions/upsert`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
