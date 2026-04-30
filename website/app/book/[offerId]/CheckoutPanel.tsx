@@ -6,10 +6,13 @@ import { getAirlineLogoUrl } from '../../airlineLogos'
 import { calculateFee, withFee } from '../../../lib/pricing'
 import type { Offer } from './page'
 import { trackSearchSessionEvent } from '../../../lib/search-session-analytics'
+import { appendProbeParam, getTrackedSourcePath } from '../../../lib/probe-mode'
 
 interface Props {
   offer: Offer
   searchId: string | null
+  trackingSearchId: string | null
+  isTestSearch: boolean
   offerRef: string | null
 }
 
@@ -152,9 +155,12 @@ function persistUnlockToken(searchId: string | null, unlockToken: string | undef
   }
 }
 
-async function fetchLatestOfferRef(searchId: string, offerId: string): Promise<string | null> {
+async function fetchLatestOfferRef(searchId: string, offerId: string, isTestSearch: boolean): Promise<string | null> {
   try {
-    const res = await fetch(`/api/results/${encodeURIComponent(searchId)}`, {
+    const params = new URLSearchParams()
+    appendProbeParam(params, isTestSearch)
+    const query = params.toString()
+    const res = await fetch(`/api/results/${encodeURIComponent(searchId)}${query ? `?${query}` : ''}`, {
       cache: 'no-store',
       credentials: 'same-origin',
     })
@@ -221,8 +227,17 @@ function AirlineLogo({ code, name }: { code: string; name: string }) {
   )
 }
 
-export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
+export default function CheckoutPanel({
+  offer,
+  searchId,
+  trackingSearchId,
+  isTestSearch,
+  offerRef,
+}: Props) {
   const t = useTranslations('Checkout')
+  const analyticsSearchId = trackingSearchId || searchId
+  const checkoutSourcePath = getTrackedSourcePath(`/book/${offer.id}`, isTestSearch)
+  const homeHref = isTestSearch ? 'https://letsfg.co/en?probe=1' : 'https://letsfg.co'
   const platforms = useMemo<Platform[]>(() => [
     {
       id: 'instagram',
@@ -416,6 +431,7 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
       let resolvedOfferRef = offer.offer_ref || offerRef || undefined
       if (!resolvedOfferRef) {
         const snapshotParams = new URLSearchParams({ from: searchId })
+        appendProbeParam(snapshotParams, isTestSearch)
         if (offerRef) {
           snapshotParams.set('ref', offerRef)
         }
@@ -440,6 +456,7 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
         from: searchId,
         view: 'booking-link',
       })
+      appendProbeParam(params, isTestSearch)
       if (resolvedOfferRef) {
         params.set('ref', resolvedOfferRef)
       }
@@ -453,13 +470,14 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
       )
 
       if (!res.ok && res.status === 404) {
-        const latestOfferRef = await fetchLatestOfferRef(searchId, offer.id)
+        const latestOfferRef = await fetchLatestOfferRef(searchId, offer.id, isTestSearch)
         if (latestOfferRef && latestOfferRef !== resolvedOfferRef) {
           resolvedOfferRef = latestOfferRef
           const retryParams = new URLSearchParams({
             from: searchId,
             view: 'booking-link',
           })
+          appendProbeParam(retryParams, isTestSearch)
           retryParams.set('ref', latestOfferRef)
           res = await fetch(
             `/api/offer/${encodeURIComponent(offer.id)}?${retryParams.toString()}`,
@@ -520,11 +538,12 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
       setBookingLinkStatus('idle')
       if (!bookingLinkTrackedRef.current) {
         bookingLinkTrackedRef.current = true
-        trackSearchSessionEvent(searchId, 'booking_link_ready', {
+        trackSearchSessionEvent(analyticsSearchId, 'booking_link_ready', {
           offer_id: offer.id,
         }, {
           source: 'website-checkout',
-          source_path: `/book/${offer.id}`,
+          source_path: checkoutSourcePath,
+          is_test_search: isTestSearch || undefined,
         })
       }
       return true
@@ -535,7 +554,7 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
       setBookingLinkStatus('error')
       return false
     }
-  }, [offer.id, offer.offer_ref, offerRef, searchId])
+  }, [analyticsSearchId, checkoutSourcePath, isTestSearch, offer.id, offer.offer_ref, offerRef, searchId])
 
   const loadUnlockedBookingLink = useCallback(async (): Promise<boolean> => {
     for (const delayMs of [0, 200, 600, 1200]) {
@@ -556,35 +575,37 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
   }, [checkUnlockStatus, loadBookingLink])
 
   useEffect(() => {
-    trackSearchSessionEvent(searchId, 'checkout_opened', {
+    trackSearchSessionEvent(analyticsSearchId, 'checkout_opened', {
       offer_id: offer.id,
       airline: offer.airline,
       currency: offer.currency,
       price: offer.price,
     }, {
       source: 'website-checkout',
-      source_path: `/book/${offer.id}`,
+      source_path: checkoutSourcePath,
+      is_test_search: isTestSearch || undefined,
       selected_offer_id: offer.id,
       selected_offer_airline: offer.airline,
       selected_offer_currency: offer.currency,
       selected_offer_price: offer.price,
     })
-  }, [offer.airline, offer.currency, offer.id, offer.price, searchId])
+  }, [analyticsSearchId, checkoutSourcePath, isTestSearch, offer.airline, offer.currency, offer.id, offer.price])
 
   useEffect(() => {
     const handlePageHide = () => {
-      trackSearchSessionEvent(searchId, 'pagehide_checkout', {
+      trackSearchSessionEvent(analyticsSearchId, 'pagehide_checkout', {
         offer_id: offer.id,
         step: step.type,
       }, {
         source: 'website-checkout',
-        source_path: `/book/${offer.id}`,
+        source_path: checkoutSourcePath,
+        is_test_search: isTestSearch || undefined,
       }, { beacon: true })
     }
 
     window.addEventListener('pagehide', handlePageHide)
     return () => window.removeEventListener('pagehide', handlePageHide)
-  }, [offer.id, searchId, step.type])
+  }, [analyticsSearchId, checkoutSourcePath, isTestSearch, offer.id, step.type])
 
   // ── On mount: verify payment redirect OR check stored unlock ────────────
   useEffect(() => {
@@ -605,11 +626,12 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
           if (data.unlocked) {
             persistUnlockToken(searchId, data.unlockToken)
             setStep({ type: 'unlocked', via: 'payment' })
-            trackSearchSessionEvent(searchId, 'payment_verified', {
+            trackSearchSessionEvent(analyticsSearchId, 'payment_verified', {
               offer_id: offer.id,
             }, {
               source: 'website-checkout',
-              source_path: `/book/${offer.id}`,
+              source_path: checkoutSourcePath,
+              is_test_search: isTestSearch || undefined,
               revenue: fee,
             })
             await loadUnlockedBookingLink()
@@ -635,11 +657,12 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
       .then(async (unlocked) => {
         if (unlocked) {
           setStep({ type: 'unlocked', via: 'existing' })
-          trackSearchSessionEvent(searchId, 'existing_unlock', {
+          trackSearchSessionEvent(analyticsSearchId, 'existing_unlock', {
             offer_id: offer.id,
           }, {
             source: 'website-checkout',
-            source_path: `/book/${offer.id}`,
+            source_path: checkoutSourcePath,
+            is_test_search: isTestSearch || undefined,
           })
           await loadUnlockedBookingLink()
           return
@@ -647,18 +670,19 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
         setStep({ type: 'locked' })
       })
       .catch(() => setStep({ type: 'locked' }))
-  }, [checkUnlockStatus, loadUnlockedBookingLink, offer.id, fee, searchId])
+  }, [analyticsSearchId, checkUnlockStatus, checkoutSourcePath, fee, isTestSearch, loadUnlockedBookingLink, offer.id, searchId])
 
   // ── Pay via Stripe ───────────────────────────────────────────────────────
   const handlePay = useCallback(async () => {
-    trackSearchSessionEvent(searchId, 'payment_attempted', {
+    trackSearchSessionEvent(analyticsSearchId, 'payment_attempted', {
       offer_id: offer.id,
       airline: offer.airline,
       currency: offer.currency,
       price: offer.price,
     }, {
       source: 'website-checkout',
-      source_path: `/book/${offer.id}`,
+      source_path: checkoutSourcePath,
+      is_test_search: isTestSearch || undefined,
       potential_revenue: fee,
     })
     setStep({ type: 'paying' })
@@ -669,6 +693,7 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
         body: JSON.stringify({
           offerId: offer.id,
           searchId: searchId ?? '',
+          probe: isTestSearch ? '1' : undefined,
         }),
       })
       const data = await res.json()
@@ -680,21 +705,22 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
     } catch {
       setStep({ type: 'locked' })
     }
-  }, [fee, offer, searchId])
+  }, [analyticsSearchId, checkoutSourcePath, fee, isTestSearch, offer, searchId])
 
   const handleSelectPlatform = useCallback((platform: Platform) => {
-    trackSearchSessionEvent(searchId, 'share_selected', {
+    trackSearchSessionEvent(analyticsSearchId, 'share_selected', {
       platform: platform.id,
       offer_id: offer.id,
     }, {
       source: 'website-checkout',
-      source_path: `/book/${offer.id}`,
+      source_path: checkoutSourcePath,
+      is_test_search: isTestSearch || undefined,
     })
     setShareError(null)
     setStep({ type: 'share-upload', platform })
     setUploadedFile(null)
     setPreviewUrl(null)
-  }, [offer.id, searchId])
+  }, [analyticsSearchId, checkoutSourcePath, isTestSearch, offer.id])
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -724,12 +750,13 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
   const handleVerify = useCallback(async () => {
     if (!uploadedFile || step.type !== 'share-upload') return
     const platform = step.platform
-    trackSearchSessionEvent(searchId, 'share_verification_submitted', {
+    trackSearchSessionEvent(analyticsSearchId, 'share_verification_submitted', {
       platform: platform.id,
       offer_id: offer.id,
     }, {
       source: 'website-checkout',
-      source_path: `/book/${offer.id}`,
+      source_path: checkoutSourcePath,
+      is_test_search: isTestSearch || undefined,
     })
     setShareError(null)
     setStep({ type: 'share-verifying', platform })
@@ -752,12 +779,13 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
         persistUnlockToken(searchId, data.unlockToken)
         setShareError(null)
         setStep({ type: 'unlocked', via: 'share' })
-        trackSearchSessionEvent(searchId, 'share_unlocked', {
+        trackSearchSessionEvent(analyticsSearchId, 'share_unlocked', {
           platform: platform.id,
           offer_id: offer.id,
         }, {
           source: 'website-checkout',
-          source_path: `/book/${offer.id}`,
+          source_path: checkoutSourcePath,
+          is_test_search: isTestSearch || undefined,
         })
         await loadUnlockedBookingLink()
       } else {
@@ -768,7 +796,7 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
       setShareError('Verification failed. Please try again.')
       setStep({ type: 'share-rejected', platform })
     }
-  }, [loadUnlockedBookingLink, offer.id, searchId, step, uploadedFile])
+  }, [analyticsSearchId, checkoutSourcePath, isTestSearch, loadUnlockedBookingLink, offer.id, searchId, step, uploadedFile])
 
   const handleRetryShare = useCallback(() => {
     setShareError(null)
@@ -1101,13 +1129,14 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
                               target="_blank"
                               rel="noopener noreferrer"
                               className="ck-book-btn ck-book-btn--active"
-                              onClick={() => trackSearchSessionEvent(searchId, 'booking_link_opened', {
+                              onClick={() => trackSearchSessionEvent(analyticsSearchId, 'booking_link_opened', {
                                 offer_id: offer.id,
                                 airline: leg.airline,
                                 leg: leg.leg,
                               }, {
                                 source: 'website-checkout',
-                                source_path: `/book/${offer.id}`,
+                                source_path: checkoutSourcePath,
+                                is_test_search: isTestSearch || undefined,
                                 decision: 'booking_link_opened',
                               }, { keepalive: true })}
                             >
@@ -1173,13 +1202,14 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
                         target="_blank"
                         rel="noopener noreferrer"
                         className="ck-book-btn ck-book-btn--active"
-                        onClick={() => trackSearchSessionEvent(searchId, 'booking_link_opened', {
+                        onClick={() => trackSearchSessionEvent(analyticsSearchId, 'booking_link_opened', {
                           offer_id: offer.id,
                           airline: option.airline,
                           leg: option.leg,
                         }, {
                           source: 'website-checkout',
-                          source_path: `/book/${offer.id}`,
+                          source_path: checkoutSourcePath,
+                          is_test_search: isTestSearch || undefined,
                           decision: 'booking_link_opened',
                         }, { keepalive: true })}
                       >
@@ -1195,12 +1225,13 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="ck-book-btn ck-book-btn--active"
-                    onClick={() => trackSearchSessionEvent(searchId, 'booking_link_opened', {
+                    onClick={() => trackSearchSessionEvent(analyticsSearchId, 'booking_link_opened', {
                       offer_id: offer.id,
                       airline: offer.airline,
                     }, {
                       source: 'website-checkout',
-                      source_path: `/book/${offer.id}`,
+                      source_path: checkoutSourcePath,
+                      is_test_search: isTestSearch || undefined,
                       decision: 'booking_link_opened',
                     }, { keepalive: true })}
                 >
@@ -1267,13 +1298,14 @@ export default function CheckoutPanel({ offer, searchId, offerRef }: Props) {
         {/* ── Trust footer ────────────────────────────────────────────────── */}
         <div className="ck-trust-footer">
           <a
-            href="https://letsfg.co"
+            href={homeHref}
             target="_blank"
             rel="noreferrer"
             className="ck-trust-link ck-trust-brand"
-            onClick={() => trackSearchSessionEvent(searchId, 'navigate_home', {}, {
+            onClick={() => trackSearchSessionEvent(analyticsSearchId, 'navigate_home', {}, {
               source: 'website-checkout',
-              source_path: `/book/${offer.id}`,
+              source_path: checkoutSourcePath,
+              is_test_search: isTestSearch || undefined,
             }, { keepalive: true })}
           >LetsFG</a>
           <span className="ck-meta-dot">·</span>

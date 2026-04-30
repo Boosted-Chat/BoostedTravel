@@ -117,6 +117,7 @@
     "returnLeg": "Povratak",
     "hideDetails": "Sakrij detalje",
     "flightDetails": "Detalji leta",
+    "cheaperThanGoogleFlights": "{amount} jeftinije od Google Flights",
     "leg": "Dionica {number}",
     "layover": "{duration} tranzit u {city}",
     "noFlights": "Nijedan let ne odgovara va\u0161im filtrima.",

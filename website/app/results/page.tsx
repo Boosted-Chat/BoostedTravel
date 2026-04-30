@@ -12,6 +12,7 @@ import { IATA_TO_NAME, getAirlineNameFromCode, looksLikeIataCode } from '../airl
 import { startWebSearch } from '../../lib/fsw-search'
 import { upsertSearchSessionServer } from '../../lib/search-session-analytics-server'
 import { getGitHubStars, formatStars } from '../../lib/github-stars'
+import { getTrackedSourcePath, isProbeModeValue } from '../../lib/probe-mode'
 
 const FSW_SECRET = process.env.FSW_SECRET || ''
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://letsfg.co'
@@ -251,7 +252,11 @@ function normalizeOffer(raw: RawOffer, idx: number) {
   }
 }
 
-async function startFSWSearch(parsed: ReturnType<typeof parseNLQuery>, query?: string): Promise<{ searchId: string | null; cache: 'hit' | 'miss' }> {
+async function startFSWSearch(
+  parsed: ReturnType<typeof parseNLQuery>,
+  query?: string,
+  isProbe = false,
+): Promise<{ searchId: string | null; cache: 'hit' | 'miss' }> {
   if (!parsed.origin || !parsed.destination || !parsed.date) {
     return { searchId: null, cache: 'miss' }
   }
@@ -271,7 +276,8 @@ async function startFSWSearch(parsed: ReturnType<typeof parseNLQuery>, query?: s
       origin_name: parsed.origin_name,
       destination_name: parsed.destination_name,
       source: 'website-results-page',
-      source_path: '/results',
+      source_path: getTrackedSourcePath('/results', isProbe),
+      is_test_search: isProbe,
     })
     return result
   } catch {
@@ -306,11 +312,11 @@ async function pollFSW(searchId: string, maxWaitMs: number): Promise<{ offers: R
 
 // ── Page components ───────────────────────────────────────────────────────────
 
-async function PageTopbar({ query }: { query: string }) {
+async function PageTopbar({ query, homeHref = '/en' }: { query: string; homeHref?: string }) {
   const stars = await getGitHubStars()
   return (
     <div className="res-topbar res-topbar--results">
-      <Link href="/en" className="res-topbar-logo-link" aria-label="LetsFG home">
+      <Link href={homeHref} className="res-topbar-logo-link" aria-label="LetsFG home">
         <Image src="/lfg_ban.png" alt="LetsFG" width={4990} height={1560} className="res-topbar-logo" priority />
       </Link>
       <div className="res-topbar-actions">
@@ -345,12 +351,13 @@ function PageFooter() {
 
 // ── Main async search component (runs server-side) ────────────────────────────
 
-async function SearchContent({ query, sid, started }: { query: string; sid?: string; started?: string }) {
+async function SearchContent({ query, sid, started, isProbe }: { query: string; sid?: string; started?: string; isProbe: boolean }) {
   const parsed = parseNLQuery(query)
   const routeLabel = [
     parsed.origin_name || parsed.origin,
     parsed.destination_name || parsed.destination,
   ].filter(Boolean).join(' → ')
+  const homeHref = isProbe ? '/en?probe=1' : '/en'
 
   let searchId = sid
   let cacheHit = false
@@ -383,9 +390,9 @@ async function SearchContent({ query, sid, started }: { query: string; sid?: str
           <section className="res-hero res-hero--results">
             <div className="res-hero-backdrop" aria-hidden="true" />
             <div className="res-hero-inner">
-              <PageTopbar query={query} />
+              <PageTopbar query={query} homeHref={homeHref} />
               <div className="res-search-shell">
-                <ResultsSearchForm initialQuery={query} trackingSearchId={searchId} trackingSourcePath="/results" />
+                <ResultsSearchForm initialQuery={query} trackingSearchId={searchId} trackingSourcePath={getTrackedSourcePath('/results', isProbe)} probeMode={isProbe} />
               </div>
               <div className="res-hero-copy">
                 <p className="res-hero-kicker">{errKicker}</p>
@@ -398,7 +405,7 @@ async function SearchContent({ query, sid, started }: { query: string; sid?: str
       )
     }
 
-    const fswResult = await startFSWSearch(parsed, query)
+    const fswResult = await startFSWSearch(parsed, query, isProbe)
     searchId = fswResult.searchId ?? undefined
     cacheHit = fswResult.cache === 'hit'
     if (!searchId) {
@@ -407,9 +414,9 @@ async function SearchContent({ query, sid, started }: { query: string; sid?: str
           <section className="res-hero res-hero--results">
             <div className="res-hero-backdrop" aria-hidden="true" />
             <div className="res-hero-inner">
-              <PageTopbar query={query} />
+              <PageTopbar query={query} homeHref={homeHref} />
               <div className="res-search-shell">
-                <ResultsSearchForm initialQuery={query} trackingSearchId={searchId} trackingSourcePath="/results" />
+                <ResultsSearchForm initialQuery={query} trackingSearchId={searchId} trackingSourcePath={getTrackedSourcePath('/results', isProbe)} probeMode={isProbe} />
               </div>
               <div className="res-hero-copy">
                 <p className="res-hero-kicker">Search unavailable</p>
@@ -431,17 +438,18 @@ async function SearchContent({ query, sid, started }: { query: string; sid?: str
   // Hand off immediately to the stable search page so the browser can leave
   // the homepage without waiting for server-side polling on /results.
   const startedTs = started || Date.now().toString()
-  redirect(`/results/${searchId}?started=${startedTs}`)
+  redirect(getTrackedSourcePath(`/results/${searchId}?started=${startedTs}`, isProbe))
 }
 
 // ── Suspense fallback (shown instantly while SearchContent runs) ───────────────
 
-function SearchFallback({ query }: { query: string }) {
+function SearchFallback({ query, isProbe }: { query: string; isProbe: boolean }) {
   const parsed = parseNLQuery(query)
   const routeLabel = [
     parsed.origin_name || parsed.origin,
     parsed.destination_name || parsed.destination,
   ].filter(Boolean).join(' → ')
+  const homeHref = isProbe ? '/en?probe=1' : '/en'
 
   return (
     <main className="res-page res-page--searching">
@@ -449,7 +457,7 @@ function SearchFallback({ query }: { query: string }) {
         <div className="res-hero-backdrop" aria-hidden="true" />
         <div className="res-hero-inner">
           <div className="res-topbar res-topbar--searching">
-            <Link href="/en" className="res-topbar-logo-link" aria-label="LetsFG home">
+            <Link href={homeHref} className="res-topbar-logo-link" aria-label="LetsFG home">
               <Image src="/lfg_ban.png" alt="LetsFG" width={4990} height={1560} className="res-topbar-logo" priority />
             </Link>
             <div className="res-topbar-actions">
@@ -457,7 +465,7 @@ function SearchFallback({ query }: { query: string }) {
             </div>
           </div>
           <div className="res-search-shell">
-            <ResultsSearchForm initialQuery={query} />
+            <ResultsSearchForm initialQuery={query} probeMode={isProbe} />
           </div>
           <div className="res-searching-stage">
             <SearchingTasks
@@ -489,19 +497,20 @@ export async function generateMetadata({ searchParams }: { searchParams: Promise
 export default async function ResultsQueryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; sid?: string; started?: string }>
+  searchParams: Promise<{ q?: string; sid?: string; started?: string; probe?: string }>
 }) {
-  const { q, sid, started } = await searchParams
+  const { q, sid, started, probe } = await searchParams
+  const isProbe = isProbeModeValue(probe)
 
   if (!q?.trim()) {
-    redirect('/')
+    redirect(isProbe ? '/en?probe=1' : '/')
   }
 
   const query = q.trim()
 
   return (
-    <Suspense fallback={<SearchFallback query={query} />}>
-      <SearchContent query={query} sid={sid?.trim()} started={started?.trim()} />
+    <Suspense fallback={<SearchFallback query={query} isProbe={isProbe} />}>
+      <SearchContent query={query} sid={sid?.trim()} started={started?.trim()} isProbe={isProbe} />
     </Suspense>
   )
 }

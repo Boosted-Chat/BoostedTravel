@@ -10,11 +10,21 @@ interface Props {
   initialOffer: Offer | null
   offerId: string
   searchId: string | null
+  trackingSearchId: string | null
+  isTestSearch: boolean
   offerRef: string | null
   backHref: string
 }
 
-export default function BookPageClient({ initialOffer, offerId, searchId, offerRef, backHref }: Props) {
+export default function BookPageClient({
+  initialOffer,
+  offerId,
+  searchId,
+  trackingSearchId,
+  isTestSearch,
+  offerRef,
+  backHref,
+}: Props) {
   const [offer, setOffer] = useState<Offer | null>(initialOffer)
   const [checkedRecovery, setCheckedRecovery] = useState(Boolean(initialOffer) || !searchId)
 
@@ -38,7 +48,15 @@ export default function BookPageClient({ initialOffer, offerId, searchId, offerR
   }, [initialOffer, offerId, searchId])
 
   if (offer) {
-    return <CheckoutPanel offer={offer} searchId={searchId} offerRef={offerRef} />
+    return (
+      <CheckoutPanel
+        offer={offer}
+        searchId={searchId}
+        trackingSearchId={trackingSearchId}
+        isTestSearch={isTestSearch}
+        offerRef={offerRef}
+      />
+    )
   }
 
   if (!checkedRecovery) {

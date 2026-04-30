@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { recordLocalSearch } from '../../lib/stats'
 import { parseNLQuery } from '../../lib/searchParsing'
 import { startWebSearch } from '../../../lib/fsw-search'
+import { getTrackedSourcePath, isProbeModeValue } from '../../../lib/probe-mode'
 
 // ── POST /api/search ─────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
+    const isProbeSearch = isProbeModeValue(body.probe)
 
     let origin: string | undefined
     let originName: string | undefined
@@ -65,7 +67,8 @@ export async function POST(request: NextRequest) {
       origin_name: originName,
       destination_name: destinationName,
       source: 'website-api-search',
-      source_path: '/api/search',
+      source_path: getTrackedSourcePath('/api/search', isProbeSearch),
+      is_test_search: isProbeSearch,
     })
 
     if (!searchId) {

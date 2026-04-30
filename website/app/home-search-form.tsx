@@ -488,12 +488,14 @@ interface HomeSearchFormProps {
   initialQuery?: string
   compact?: boolean
   autoFocus?: boolean
+  probeMode?: boolean
 }
 
 export default function HomeSearchForm({
   initialQuery = '',
   compact = false,
   autoFocus = true,
+  probeMode = false,
 }: HomeSearchFormProps = {}) {
   const router = useRouter()
   const params = useParams()
@@ -563,7 +565,7 @@ export default function HomeSearchForm({
     if (DEMO_LOADING) {
       event.preventDefault()
       setIsLoading(true)
-      router.push('/results/demo-loading')
+      router.push(`/results/demo-loading${probeMode ? '?probe=1' : ''}`)
       return
     }
   }
@@ -603,6 +605,7 @@ export default function HomeSearchForm({
       )}
 
       <form action="/results" method="get" onSubmit={handleSearch} className="lp-sf-form">
+        {probeMode && <input type="hidden" name="probe" value="1" />}
         <div className="lp-sf-frame">
           <div className="lp-sf-input-wrap">
             <span className="lp-sf-leading" aria-hidden="true">

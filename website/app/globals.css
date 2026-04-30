@@ -6272,3 +6272,174 @@ body:has(.res-page) {
   font-weight: 500;
 }
 
+.rf-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 22px 0;
+}
+
+.rf-card-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.rf-card-badge--savings {
+  background: rgba(249, 115, 22, 0.12);
+  color: #b45309;
+  border: 1px solid rgba(249, 115, 22, 0.2);
+}
+
+.rf-airline-logo-wrap {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.rf-airline-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #142d3e;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 10;
+}
+
+.rf-airline-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: #142d3e;
+}
+
+.rf-airline-logo-wrap:hover .rf-airline-tooltip,
+.rf-airline-logo-wrap--tapped .rf-airline-tooltip {
+  opacity: 1;
+}
+
+.rf-source-pill--savings {
+  background: rgba(249, 115, 22, 0.12);
+  color: #b45309;
+  border-color: rgba(249, 115, 22, 0.2);
+}
+
+.rf-city {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: rgba(20, 45, 60, 0.7);
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.rf-details--cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 1px;
+  padding: 0;
+}
+
+.rf-details-col {
+  padding: 20px 24px;
+}
+
+.rf-details-col + .rf-details-col {
+  border-left: 1px solid rgba(20, 45, 60, 0.08);
+}
+
+.rf-details-col-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.rf-details-col-label--out {
+  background: rgba(20, 45, 60, 0.08);
+  color: #142d3e;
+}
+
+.rf-details-col-label--ret {
+  background: rgba(15, 109, 83, 0.1);
+  color: #0a5c45;
+}
+
+.rf-leg-date {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: rgba(20, 45, 60, 0.45);
+}
+
+@media (max-width: 720px) {
+  .rf-city {
+    max-width: 88px;
+    font-size: 0.68rem;
+  }
+
+  .rf-card-badges {
+    gap: 6px;
+    padding: 10px 14px 0;
+  }
+
+  .rf-card-badge {
+    min-height: 20px;
+    padding: 3px 8px;
+    font-size: 0.58rem;
+  }
+
+  .rf-details {
+    padding: 14px 14px;
+  }
+
+  .rf-details--cols {
+    grid-template-columns: 1fr;
+  }
+
+  .rf-details-col {
+    padding: 14px 14px;
+  }
+
+  .rf-details-col + .rf-details-col {
+    border-left: none;
+    border-top: 1px solid rgba(20, 45, 60, 0.08);
+  }
+}
+
+@media (max-width: 420px) {
+  .rf-card-badges {
+    padding: 10px 12px 0;
+  }
+
+  .rf-card-badge {
+    font-size: 0.55rem;
+  }
+}
+

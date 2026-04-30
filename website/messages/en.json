@@ -117,6 +117,7 @@
     "returnLeg": "Return",
     "hideDetails": "Hide details",
     "flightDetails": "Flight details",
+    "cheaperThanGoogleFlights": "{amount} cheaper than Google Flights",
     "leg": "Leg {number}",
     "layover": "{duration} layover in {city}",
     "noFlights": "No flights match your filters.",

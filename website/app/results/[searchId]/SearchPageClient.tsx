@@ -10,6 +10,8 @@ import ResultsSearchForm from '../ResultsSearchForm'
 import ResultsPanel from './ResultsPanel'
 import { trackSearchSessionEvent } from '../../../lib/search-session-analytics'
 import { readBrowserCachedResults, writeBrowserCachedResults } from '../../../lib/browser-offer-cache'
+import { getOfferKnownTotalPrice } from '../../../lib/offer-pricing'
+import { appendProbeParam, getTrackedSourcePath } from '../../../lib/probe-mode'
 
 const REPO_URL = 'https://github.com/LetsFG/LetsFG'
 const INSTAGRAM_URL = 'https://www.instagram.com/letsfg_'
@@ -84,6 +86,8 @@ interface ParsedQuery {
 
 export interface SearchPageClientProps {
   searchId: string
+  trackingSearchId?: string | null
+  isTestSearch?: boolean
   query: string
   parsed: ParsedQuery
   initialStatus: 'searching' | 'completed' | 'expired'
@@ -118,6 +122,8 @@ function formatDuration(mins: number) {
  */
 export default function SearchPageClient({
   searchId,
+  trackingSearchId,
+  isTestSearch = false,
   query,
   parsed,
   initialStatus,
@@ -134,6 +140,9 @@ export default function SearchPageClient({
   const trackedResultsViewRef = useRef(false)
   const trackedExpiredRef = useRef(false)
   const scrollMilestonesRef = useRef<Set<number>>(new Set())
+  const analyticsSearchId = trackingSearchId || searchId
+  const resultsSourcePath = getTrackedSourcePath(`/results/${searchId}`, isTestSearch)
+  const homeHref = isTestSearch ? '/en?probe=1' : '/en'
 
   const isSearching = status === 'searching'
   const isExpired = status === 'expired'
@@ -168,7 +177,10 @@ export default function SearchPageClient({
 
     const poll = async () => {
       try {
-        const res = await fetch(`/api/results/${searchId}`, { cache: 'no-store' })
+        const params = new URLSearchParams()
+        appendProbeParam(params, isTestSearch)
+        const query = params.toString()
+        const res = await fetch(`/api/results/${searchId}${query ? `?${query}` : ''}`, { cache: 'no-store' })
         if (!res.ok) return
         const data = await res.json()
         if (data.progress) setProgress(data.progress)
@@ -183,55 +195,59 @@ export default function SearchPageClient({
 
     const id = setInterval(poll, 5000)
     return () => clearInterval(id)
-  }, [searchId, isSearching])
+  }, [searchId, isSearching, isTestSearch])
 
   useEffect(() => {
     if (status !== 'completed' || trackedResultsViewRef.current) return
     trackedResultsViewRef.current = true
-    trackSearchSessionEvent(searchId, 'results_viewed', {
+    trackSearchSessionEvent(analyticsSearchId, 'results_viewed', {
       offers_count: offers.length,
     }, {
       source: 'website-results-client',
-      source_path: `/results/${searchId}`,
+      source_path: resultsSourcePath,
+      is_test_search: isTestSearch || undefined,
     })
-  }, [offers.length, searchId, status])
+  }, [analyticsSearchId, isTestSearch, offers.length, resultsSourcePath, status])
 
   useEffect(() => {
     if (status !== 'expired' || trackedExpiredRef.current) return
     trackedExpiredRef.current = true
-    trackSearchSessionEvent(searchId, 'search_expired', {}, {
+    trackSearchSessionEvent(analyticsSearchId, 'search_expired', {}, {
       source: 'website-results-client',
-      source_path: `/results/${searchId}`,
+      source_path: resultsSourcePath,
+      is_test_search: isTestSearch || undefined,
       status: 'expired',
     })
-  }, [searchId, status])
+  }, [analyticsSearchId, isTestSearch, resultsSourcePath, status])
 
   useEffect(() => {
     const handlePageHide = () => {
       if (status === 'searching') {
-        trackSearchSessionEvent(searchId, 'pagehide_searching', {
+        trackSearchSessionEvent(analyticsSearchId, 'pagehide_searching', {
           progress_checked: progress?.checked ?? null,
           progress_total: progress?.total ?? null,
         }, {
           source: 'website-results-client',
-          source_path: `/results/${searchId}`,
+          source_path: resultsSourcePath,
+          is_test_search: isTestSearch || undefined,
         }, { beacon: true })
         return
       }
 
       if (status === 'completed') {
-        trackSearchSessionEvent(searchId, 'pagehide_results', {
+        trackSearchSessionEvent(analyticsSearchId, 'pagehide_results', {
           offers_count: offers.length,
         }, {
           source: 'website-results-client',
-          source_path: `/results/${searchId}`,
+          source_path: resultsSourcePath,
+          is_test_search: isTestSearch || undefined,
         }, { beacon: true })
       }
     }
 
     window.addEventListener('pagehide', handlePageHide)
     return () => window.removeEventListener('pagehide', handlePageHide)
-  }, [offers.length, progress?.checked, progress?.total, searchId, status])
+  }, [analyticsSearchId, isTestSearch, offers.length, progress?.checked, progress?.total, resultsSourcePath, status])
 
   useEffect(() => {
     if (status !== 'completed') return
@@ -245,9 +261,10 @@ export default function SearchPageClient({
       for (const milestone of milestones) {
         if (percent < milestone || scrollMilestonesRef.current.has(milestone)) continue
         scrollMilestonesRef.current.add(milestone)
-        trackSearchSessionEvent(searchId, 'scroll_depth', { percent: milestone }, {
+        trackSearchSessionEvent(analyticsSearchId, 'scroll_depth', { percent: milestone }, {
           source: 'website-results-client',
-          source_path: `/results/${searchId}`,
+          source_path: resultsSourcePath,
+          is_test_search: isTestSearch || undefined,
         })
       }
     }
@@ -255,7 +272,7 @@ export default function SearchPageClient({
     window.addEventListener('scroll', handleScroll, { passive: true })
     handleScroll()
     return () => window.removeEventListener('scroll', handleScroll)
-  }, [searchId, status])
+  }, [analyticsSearchId, isTestSearch, resultsSourcePath, status])
 
   // Derived display strings
   const routeLabel = [
@@ -292,22 +309,24 @@ export default function SearchPageClient({
   // Offer data for ResultsPanel
   const allOffers = offers
   const offerCurrency = allOffers[0]?.currency || '€'
-  const priceMin = allOffers.length ? Math.min(...allOffers.map(o => o.price)) : 0
-  const priceMax = allOffers.length ? Math.max(...allOffers.map(o => o.price)) : 1000
+  const priceMin = allOffers.length ? Math.min(...allOffers.map((offer) => getOfferKnownTotalPrice(offer))) : 0
+  const priceMax = allOffers.length ? Math.max(...allOffers.map((offer) => getOfferKnownTotalPrice(offer))) : 1000
 
   const handleNavigateHome = () => {
-    trackSearchSessionEvent(searchId, 'navigate_home', {}, {
+    trackSearchSessionEvent(analyticsSearchId, 'navigate_home', {}, {
       source: 'website-results-client',
-      source_path: `/results/${searchId}`,
+      source_path: resultsSourcePath,
+      is_test_search: isTestSearch || undefined,
     }, { beacon: true })
   }
 
   const handleSearchSubmit = (nextQuery: string) => {
-    trackSearchSessionEvent(searchId, 'new_search_started', {
+    trackSearchSessionEvent(analyticsSearchId, 'new_search_started', {
       next_query: nextQuery,
     }, {
       source: 'website-results-client',
-      source_path: `/results/${searchId}`,
+      source_path: resultsSourcePath,
+      is_test_search: isTestSearch || undefined,
     }, { keepalive: true })
   }
 
@@ -318,7 +337,7 @@ export default function SearchPageClient({
 
         <div className="res-hero-inner">
           <div className={`res-topbar${isSearching ? ' res-topbar--searching' : status === 'completed' ? ' res-topbar--results' : ''}`}>
-            <Link href="/en" className="res-topbar-logo-link" aria-label="LetsFG home" onClick={handleNavigateHome}>
+            <Link href={homeHref} className="res-topbar-logo-link" aria-label="LetsFG home" onClick={handleNavigateHome}>
               <Image
                 src="/lfg_ban.png"
                 alt="LetsFG"
@@ -346,14 +365,14 @@ export default function SearchPageClient({
 
           {status === 'completed' && (
             <div className="res-search-shell">
-              <ResultsSearchForm initialQuery={query} onSearchSubmit={handleSearchSubmit} />
+              <ResultsSearchForm initialQuery={query} onSearchSubmit={handleSearchSubmit} probeMode={isTestSearch} />
             </div>
           )}
 
           {isSearching ? (
             <>
               <div className="res-search-shell">
-                <ResultsSearchForm initialQuery={query} onSearchSubmit={handleSearchSubmit} />
+                <ResultsSearchForm initialQuery={query} onSearchSubmit={handleSearchSubmit} probeMode={isTestSearch} />
               </div>
 
               <div className="res-searching-stage">
@@ -405,7 +424,7 @@ export default function SearchPageClient({
                 <p className="res-notice-title">{t('expiredNoticeTitle')}</p>
                 <p className="res-notice-sub">{t('expiredNoticeSub')}</p>
               </div>
-              <Link href="/en" className="res-notice-btn" onClick={handleNavigateHome}>{t('searchAgain')}</Link>
+              <Link href={homeHref} className="res-notice-btn" onClick={handleNavigateHome}>{t('searchAgain')}</Link>
             </div>
           )}
         </div>
@@ -418,6 +437,8 @@ export default function SearchPageClient({
           priceMin={priceMin}
           priceMax={priceMax}
           searchId={searchId}
+                trackingSearchId={analyticsSearchId}
+                isTestSearch={isTestSearch}
         />
       )}
 

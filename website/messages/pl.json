@@ -108,6 +108,7 @@
     "returnLeg": "Powr\u00f3t",
     "hideDetails": "Ukryj szczeg\u00f3\u0142y",
     "flightDetails": "Szczeg\u00f3\u0142y lotu",
+    "cheaperThanGoogleFlights": "{amount} taniej niż Google Flights",
     "leg": "Odcinek {number}",
     "layover": "{duration} przesiadka w {city}",
     "noFlights": "\u017baden lot nie spe\u0142nia Twoich filtr\u00f3w.",

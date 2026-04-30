@@ -2,6 +2,8 @@ import { Metadata } from 'next'
 import { headers } from 'next/headers'
 import { notFound } from 'next/navigation'
 import SearchPageClient from './SearchPageClient'
+import { getOfferKnownTotalPrice } from '../../../lib/offer-pricing'
+import { appendProbeParam, getTrackingSearchId, isProbeModeValue } from '../../../lib/probe-mode'
 
 // Types for our search results
 interface FlightOffer {
@@ -63,10 +65,12 @@ async function getApiBase(): Promise<string> {
 }
 
 // Single-shot fetch — used only for generateMetadata (fast, no blocking)
-async function getSearchResults(searchId: string): Promise<SearchResult | null> {
+async function getSearchResults(searchId: string, isProbe: boolean): Promise<SearchResult | null> {
   try {
     const apiBase = await getApiBase()
-    const res = await fetch(`${apiBase}/api/results/${searchId}`, { cache: 'no-store' })
+    const url = new URL(`/api/results/${searchId}`, apiBase)
+    appendProbeParam(url.searchParams, isProbe)
+    const res = await fetch(url.toString(), { cache: 'no-store' })
     if (!res.ok) return null
     return res.json()
   } catch {
@@ -77,7 +81,7 @@ async function getSearchResults(searchId: string): Promise<SearchResult | null> 
 // Generate metadata for SEO and social sharing
 export async function generateMetadata({ params }: { params: Promise<{ searchId: string }> }): Promise<Metadata> {
   const { searchId } = await params
-  const result = await getSearchResults(searchId)
+  const result = await getSearchResults(searchId, false)
   
   if (!result) {
     return { title: 'Search not found — LetsFG' }
@@ -99,23 +103,29 @@ export async function generateMetadata({ params }: { params: Promise<{ searchId:
     }
   }
   
-  const cheapest = offers?.[0]
+  const cheapest = offers?.reduce((best, offer) => {
+    if (!best) return offer
+    return getOfferKnownTotalPrice(offer) < getOfferKnownTotalPrice(best) ? offer : best
+  }, offers?.[0])
+  const cheapestDisplayPrice = cheapest ? Math.round(getOfferKnownTotalPrice(cheapest)) : null
   const title = cheapest 
-    ? `${offers?.length} flights ${parsed.origin_name || parsed.origin} → ${parsed.destination_name || parsed.destination} from ${cheapest.currency}${cheapest.price}`
+    ? `${offers?.length} flights ${parsed.origin_name || parsed.origin} → ${parsed.destination_name || parsed.destination} from ${cheapest.currency}${cheapestDisplayPrice}`
     : `Flights ${parsed.origin} → ${parsed.destination}`
   
   return {
     title: `${title} — LetsFG`,
-    description: `Found ${offers?.length || 0} flights. Cheapest: ${cheapest?.currency}${cheapest?.price} on ${cheapest?.airline}. Zero markup, raw airline prices.`,
+    description: `Found ${offers?.length || 0} flights. Cheapest: ${cheapest?.currency}${cheapestDisplayPrice} on ${cheapest?.airline}. Zero markup, raw airline prices.`,
   }
 }
 
-export default async function ResultsPage({ params, searchParams }: { params: Promise<{ searchId: string }>; searchParams: Promise<{ sort?: string; filter?: string; started?: string }> }) {
+export default async function ResultsPage({ params, searchParams }: { params: Promise<{ searchId: string }>; searchParams: Promise<{ sort?: string; filter?: string; started?: string; probe?: string }> }) {
   const { searchId } = await params
   const sp = await searchParams
+  const isProbe = isProbeModeValue(sp?.probe)
+  const trackingSearchId = getTrackingSearchId(searchId, isProbe)
   // Render immediately with the current snapshot and let SearchPageClient poll.
   // Blocking here traps users on loading.tsx while the server waits.
-  const result = await getSearchResults(searchId)
+  const result = await getSearchResults(searchId, isProbe)
 
   if (!result) {
     notFound()
@@ -155,7 +165,7 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
             name: `${offer.airline} ${offer.origin}→${offer.destination}`,
             offers: {
               '@type': 'Offer',
-              price: String(offer.price),
+              price: String(Math.round(getOfferKnownTotalPrice(offer))),
               priceCurrency: offer.currency,
               availability: 'https://schema.org/InStock',
             },
@@ -178,6 +188,8 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
           so SearchingTasks is never remounted and its animation state is always preserved. */}
       <SearchPageClient
         searchId={searchId}
+        trackingSearchId={trackingSearchId}
+        isTestSearch={isProbe}
         query={query}
         parsed={parsed}
         initialStatus={status}

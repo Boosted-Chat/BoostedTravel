@@ -216,6 +216,7 @@ export const OTA_DOMAINS: Record<string, string> = {
   opodo:            'opodo.com',
   priceline:        'priceline.com',
   rehlat:           'rehlat.com',
+  google_flights:   'google.com',
   serpapi_google:   'google.com',
   skiplagged:       'skiplagged.com',
   skyscanner:       'skyscanner.net',
@@ -284,9 +285,26 @@ export const IATA_TO_NAME: Record<string, string> = {
   '2W': 'World2Fly', '4U': 'Germanwings', '5O': 'ASL Airlines France',
 }
 
+function normalizeAirlineLookupValue(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+const NAME_TO_IATA: Record<string, string> = Object.entries(IATA_TO_NAME).reduce<Record<string, string>>((map, [code, name]) => {
+  map[normalizeAirlineLookupValue(name)] = code
+  return map
+}, {
+  wizzairmalta: 'W6',
+  wizzairuk: 'W9',
+})
+
 /** Look up airline display name from IATA code. Returns null if unknown. */
 export function getAirlineNameFromCode(iata: string): string | null {
   return IATA_TO_NAME[iata.toUpperCase()] ?? null
+}
+
+/** Look up airline IATA code from a display name. Returns null if unknown. */
+export function getAirlineCodeFromName(name: string): string | null {
+  return NAME_TO_IATA[normalizeAirlineLookupValue(name)] ?? null
 }
 
 /** Return true if the string looks like an airline IATA code (2 chars: letters/digits). */

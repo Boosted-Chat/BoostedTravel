@@ -107,6 +107,7 @@
     "returnLeg": "Rückflug",
     "hideDetails": "Details ausblenden",
     "flightDetails": "Flugdetails",
+    "cheaperThanGoogleFlights": "{amount} günstiger als Google Flights",
     "leg": "Abschnitt {number}",
     "layover": "{duration} Aufenthalt in {city}",
     "noFlights": "Kein Flug entspricht deinen Filtern.",

@@ -5,6 +5,7 @@ import { cacheOffers, getCachedOffer } from './offer-cache'
 const FSW_URL = process.env.FSW_URL || 'https://flight-search-worker-qryvus4jia-uc.a.run.app'
 const FSW_SECRET = process.env.FSW_SECRET || ''
 const OFFER_SNAPSHOT_SECRET = process.env.OFFER_SNAPSHOT_SECRET || FSW_SECRET || 'letsfg-local-offer-snapshot-secret'
+const GOOGLE_FLIGHTS_SOURCES = new Set(['google_flights', 'serpapi_google'])
 
 export interface TrustedSegment {
   airline: string
@@ -72,6 +73,7 @@ export interface TrustedOffer {
   id: string
   price: number
   google_flights_price?: number
+  source?: string
   currency: string
   airline: string
   airline_code: string
@@ -321,6 +323,154 @@ function parseBooleanLike(value: unknown): boolean | undefined {
   }
 
   return undefined
+}
+
+function isGoogleFlightsSource(source: unknown): boolean {
+  return typeof source === 'string' && GOOGLE_FLIGHTS_SOURCES.has(source.trim().toLowerCase())
+}
+
+function extractGoogleFlightsQuotedCurrency(rawOffer: any): string | undefined {
+  const bookingUrl = parseStringValue(rawOffer?.booking_url)
+  if (!bookingUrl) {
+    return undefined
+  }
+
+  try {
+    const currency = new URL(bookingUrl).searchParams.get('curr')
+    return currency ? currency.trim().toUpperCase() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+type OfferSignatureSegment = {
+  airline_code?: string
+  flight_number?: string
+  origin?: string
+  destination?: string
+  departure_time?: string
+  arrival_time?: string
+}
+
+function getOfferSignatureSegments(offer: TrustedOffer, leg: 'outbound' | 'inbound'): OfferSignatureSegment[] {
+  if (leg === 'outbound') {
+    if (offer.segments?.length) {
+      return offer.segments
+    }
+
+    return [{
+      airline_code: offer.airline_code,
+      flight_number: offer.flight_number,
+      origin: offer.origin,
+      destination: offer.destination,
+      departure_time: offer.departure_time,
+      arrival_time: offer.arrival_time,
+    }]
+  }
+
+  if (!offer.inbound) {
+    return []
+  }
+
+  if (offer.inbound.segments?.length) {
+    return offer.inbound.segments
+  }
+
+  return [{
+    airline_code: offer.inbound.airline_code || offer.airline_code,
+    flight_number: '',
+    origin: offer.inbound.origin,
+    destination: offer.inbound.destination,
+    departure_time: offer.inbound.departure_time,
+    arrival_time: offer.inbound.arrival_time,
+  }]
+}
+
+function getOfferSignature(offer: TrustedOffer): string | undefined {
+  const outboundSegments = getOfferSignatureSegments(offer, 'outbound')
+  if (outboundSegments.length === 0) {
+    return undefined
+  }
+
+  const serializeSegment = (segment: OfferSignatureSegment): string => [
+    toUpperCode(segment.airline_code),
+    (segment.flight_number || '').trim().toUpperCase(),
+    toUpperCode(segment.origin),
+    toUpperCode(segment.destination),
+    parseStringValue(segment.departure_time) || '',
+    parseStringValue(segment.arrival_time) || '',
+  ].join('|')
+
+  const outboundSignature = outboundSegments.map(serializeSegment).join('>')
+  const inboundSignature = getOfferSignatureSegments(offer, 'inbound').map(serializeSegment).join('>')
+  return `${outboundSignature}||${inboundSignature}`
+}
+
+function buildGoogleFlightsMatchIndex(
+  rawOffers: any[],
+  offers: TrustedOffer[],
+): Map<string, Map<string, number>> {
+  const matchIndex = new Map<string, Map<string, number>>()
+
+  for (const [index, rawOffer] of rawOffers.entries()) {
+    if (!isGoogleFlightsSource(rawOffer?.source)) {
+      continue
+    }
+
+    const normalizedOffer = offers[index]
+    const signature = normalizedOffer ? getOfferSignature(normalizedOffer) : undefined
+    const quotedCurrency = extractGoogleFlightsQuotedCurrency(rawOffer)
+    const price = parsePriceValue(normalizedOffer?.price)
+    if (!signature || !quotedCurrency || typeof price !== 'number') {
+      continue
+    }
+
+    const pricesByCurrency = matchIndex.get(signature) ?? new Map<string, number>()
+    const currentPrice = pricesByCurrency.get(quotedCurrency)
+    if (typeof currentPrice !== 'number' || price < currentPrice) {
+      pricesByCurrency.set(quotedCurrency, price)
+    }
+    matchIndex.set(signature, pricesByCurrency)
+  }
+
+  return matchIndex
+}
+
+export function applyGoogleFlightsBaseline(
+  rawOffers: any[],
+  offers: TrustedOffer[],
+  explicitBaseline?: number,
+): TrustedOffer[] {
+  // Only compare like-for-like itineraries in the same quoted currency.
+  const matchIndex = buildGoogleFlightsMatchIndex(rawOffers, offers)
+  const fallbackBaseline = parsePriceValue(explicitBaseline)
+  if (matchIndex.size === 0 && typeof fallbackBaseline !== 'number') {
+    return offers
+  }
+
+  let changed = false
+  const nextOffers = offers.map((offer, index) => {
+    if (typeof offer.google_flights_price === 'number') {
+      return offer
+    }
+
+    const signature = getOfferSignature(offer)
+    const matchedPrice = signature
+      ? matchIndex.get(signature)?.get(toUpperCode(offer.currency))
+      : undefined
+    const googleFlightsPrice = typeof matchedPrice === 'number' ? matchedPrice : fallbackBaseline
+    if (typeof googleFlightsPrice !== 'number' || offer.google_flights_price === googleFlightsPrice) {
+      return offer
+    }
+
+    changed = true
+    return {
+      ...offer,
+      google_flights_price: googleFlightsPrice,
+    }
+  })
+
+  return changed ? nextOffers : offers
 }
 
 function mergeAncillary(current: TrustedAncillary | undefined, next: TrustedAncillary): TrustedAncillary {
@@ -1047,6 +1197,7 @@ export function normalizeTrustedOffer(raw: any, idx: number): TrustedOffer {
     google_flights_price: typeof raw.google_flights_price === 'number'
       ? Math.round(raw.google_flights_price * 100) / 100
       : undefined,
+    source: parseStringValue(raw.source),
     currency: raw.currency || 'EUR',
     airline: airlineName,
     airline_code: airlineCode,
@@ -1116,7 +1267,11 @@ export async function getTrustedOffer(
 
   const data = await response.json()
   const rawOffers: any[] = data.offers || []
-  const trustedOffers = rawOffers.map((rawOffer: any, idx: number) => normalizeTrustedOffer(rawOffer, idx))
+  const trustedOffers = applyGoogleFlightsBaseline(
+    rawOffers,
+    rawOffers.map((rawOffer: any, idx: number) => normalizeTrustedOffer(rawOffer, idx)),
+    data.google_flights_price,
+  )
   if (trustedOffers.length > 0) {
     cacheOffers(trustedOffers, searchId)
   }

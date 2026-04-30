@@ -108,6 +108,7 @@
     "returnLeg": "Retur",
     "hideDetails": "D\u00f6lj detaljer",
     "flightDetails": "Flyginformation",
+    "cheaperThanGoogleFlights": "{amount} billigare än Google Flights",
     "leg": "Ben {number}",
     "layover": "{duration} mellanlandning i {city}",
     "noFlights": "Inga flyg matchar dina filter.",

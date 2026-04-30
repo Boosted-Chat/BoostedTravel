@@ -8,6 +8,10 @@ export interface PersistedSearchResult {
   parsed: Record<string, unknown>
   offers: unknown[]
   total_results: number
+  cheapest_price?: number
+  google_flights_price?: number
+  value?: number
+  savings_vs_google_flights?: number
   searched_at?: string
   expires_at?: string
   stored_at: number

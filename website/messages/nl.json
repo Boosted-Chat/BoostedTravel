@@ -108,6 +108,7 @@
     "returnLeg": "Terug",
     "hideDetails": "Details verbergen",
     "flightDetails": "Vluchtdetails",
+    "cheaperThanGoogleFlights": "{amount} goedkoper dan Google Flights",
     "leg": "Deel {number}",
     "layover": "{duration} tussenstop in {city}",
     "noFlights": "Geen vluchten voldoen aan je filters.",

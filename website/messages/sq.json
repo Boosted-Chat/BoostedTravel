@@ -117,6 +117,7 @@
     "returnLeg": "Kthim",
     "hideDetails": "Fshih detajet",
     "flightDetails": "Detajet e fluturimit",
+    "cheaperThanGoogleFlights": "{amount} më lirë se Google Flights",
     "leg": "K\u00ebmb\u00eb {number}",
     "layover": "{duration} tranzit n\u00eb {city}",
     "noFlights": "Asnj\u00eb fluturim nuk p\u00ebrputhet me filtrat tuaja.",

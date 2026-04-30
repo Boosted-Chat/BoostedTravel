@@ -108,6 +108,7 @@
     "returnLeg": "Retour",
     "hideDetails": "Masquer les d\u00e9tails",
     "flightDetails": "D\u00e9tails du vol",
+    "cheaperThanGoogleFlights": "{amount} moins cher que Google Flights",
     "leg": "Segment {number}",
     "layover": "{duration} d'escale \u00e0 {city}",
     "noFlights": "Aucun vol ne correspond \u00e0 vos filtres.",

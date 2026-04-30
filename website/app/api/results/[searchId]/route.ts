@@ -1,7 +1,9 @@
 ﻿import { NextRequest, NextResponse } from 'next/server'
 import { cacheOffers } from '../../../../lib/offer-cache'
 import { cacheCompletedSearchResult, getCachedSearchResult } from '../../../../lib/results-cache'
-import { normalizeTrustedOffer, toPublicOffer } from '../../../../lib/trusted-offer'
+import { getOfferKnownTotalPrice } from '../../../../lib/offer-pricing'
+import { getTrackedSourcePath, getTrackingSearchId, isProbeModeValue } from '../../../../lib/probe-mode'
+import { applyGoogleFlightsBaseline, normalizeTrustedOffer, toPublicOffer } from '../../../../lib/trusted-offer'
 import { upsertSearchSessionServer } from '../../../../lib/search-session-analytics-server'
 
 const FSW_URL = process.env.FSW_URL || 'https://flight-search-worker-qryvus4jia-uc.a.run.app'
@@ -189,10 +191,13 @@ function mockOffer(i: number, origin: string, dest: string, date: string) {
 // ── GET /api/results/[searchId] ───────────────────────────────────────────────
 
 export async function GET(
-  _req: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ searchId: string }> }
 ) {
   const { searchId } = await params
+  const isProbeSearch = isProbeModeValue(request.nextUrl.searchParams.get('probe'))
+  const analyticsSearchId = getTrackingSearchId(searchId, isProbeSearch) || searchId
+  const analyticsSourcePath = getTrackedSourcePath(`/api/results/${searchId}`, isProbeSearch)
 
   // Demo stubs for UI testing
   if (searchId === 'demo-loading') {
@@ -239,6 +244,48 @@ export async function GET(
     if (res.status === 404) {
       const cachedResult = getCachedSearchResult(searchId)
       if (cachedResult) {
+        if (isProbeSearch && cachedResult.status === 'completed') {
+          const cachedOffers = (Array.isArray(cachedResult.offers) ? cachedResult.offers : []) as Array<{
+            id?: string
+            airline?: string
+            price?: number
+            currency?: string
+            google_flights_price?: number
+            stops?: number
+            duration_minutes?: number
+          }>
+          await upsertSearchSessionServer({
+            search_id: analyticsSearchId,
+            source_search_id: searchId,
+            is_test_search: true,
+            source: 'website-results-api-cache',
+            source_path: analyticsSourcePath,
+            status: 'completed',
+            results_count: cachedResult.total_results || cachedOffers.length,
+            cheapest_price: cachedResult.cheapest_price,
+            google_flights_price: cachedResult.google_flights_price,
+            value: cachedResult.value,
+            savings_vs_google_flights: cachedResult.savings_vs_google_flights,
+            results_preview: cachedOffers.slice(0, 10).map((offer) => ({
+              id: offer.id,
+              airline: offer.airline,
+              price: offer.price,
+              currency: offer.currency,
+              google_flights_price: offer.google_flights_price,
+              stops: offer.stops,
+              duration_minutes: offer.duration_minutes,
+            })),
+            event: {
+              type: 'results_materialized',
+              at: new Date().toISOString(),
+              data: {
+                offers_returned: cachedOffers.length,
+                cache_hit: true,
+              },
+            },
+          })
+        }
+
         return NextResponse.json(cachedResult)
       }
 
@@ -257,33 +304,45 @@ export async function GET(
 
     const data = await res.json()
     const rawOffers: any[] = data.offers || []
-    const trustedOffers = rawOffers.map((offer: any, idx: number) => normalizeTrustedOffer(offer, idx))
+    const trustedOffers = applyGoogleFlightsBaseline(
+      rawOffers,
+      rawOffers.map((offer: any, idx: number) => normalizeTrustedOffer(offer, idx)),
+      data.google_flights_price,
+    )
     const normalized = trustedOffers.map((offer) => toPublicOffer(offer))
+    const cheapestPrice = normalized.length > 0
+      ? Math.min(...normalized.map((offer) => getOfferKnownTotalPrice(offer)))
+      : undefined
+    const googleFlightsPrices = normalized
+      .map((offer) => typeof offer.google_flights_price === 'number' ? offer.google_flights_price : null)
+      .filter((price): price is number => price !== null)
+    const googleFlightsPrice = typeof data.google_flights_price === 'number'
+      ? Math.round(data.google_flights_price * 100) / 100
+      : (googleFlightsPrices.length > 0 ? Math.min(...googleFlightsPrices) : undefined)
+    const diff = typeof googleFlightsPrice === 'number' && typeof cheapestPrice === 'number'
+      ? Math.round((googleFlightsPrice - cheapestPrice) * 100) / 100
+      : undefined
+    const nonNegativeDiff = typeof diff === 'number'
+      ? (Math.abs(diff) < 0.005 ? 0 : Math.max(0, diff))
+      : undefined
 
     // Cache completed offers so /api/offer/[offerId] can find them without
     // needing to hit FSW again (which may route to a different instance).
     if (data.status === 'completed' && normalized.length > 0) {
       cacheOffers(trustedOffers, searchId)
 
-      const cheapestPrice = Math.min(...normalized.map((offer) => offer.price))
-      const googleFlightsPrices = normalized
-        .map((offer) => typeof offer.google_flights_price === 'number' ? offer.google_flights_price : null)
-        .filter((price): price is number => price !== null)
-      const googleFlightsPrice = googleFlightsPrices.length > 0 ? Math.min(...googleFlightsPrices) : undefined
-      const diff = typeof googleFlightsPrice === 'number'
-        ? Math.round((googleFlightsPrice - cheapestPrice) * 100) / 100
-        : undefined
-
       await upsertSearchSessionServer({
-        search_id: searchId,
+        search_id: analyticsSearchId,
+        source_search_id: isProbeSearch ? searchId : undefined,
+        is_test_search: isProbeSearch || undefined,
         source: 'website-results-api',
-        source_path: `/api/results/${searchId}`,
+        source_path: analyticsSourcePath,
         status: 'completed',
         results_count: normalized.length,
         cheapest_price: cheapestPrice,
         google_flights_price: googleFlightsPrice,
-        value: typeof diff === 'number' ? (Math.abs(diff) < 0.005 ? 0 : diff) : undefined,
-        savings_vs_google_flights: typeof diff === 'number' ? Math.max(0, diff) : undefined,
+        value: nonNegativeDiff,
+        savings_vs_google_flights: nonNegativeDiff,
         results_preview: normalized.slice(0, 10).map((offer) => ({
           id: offer.id,
           airline: offer.airline,
@@ -319,6 +378,10 @@ export async function GET(
       },
       offers: normalized,
       total_results: normalized.length,
+      cheapest_price: cheapestPrice,
+      google_flights_price: googleFlightsPrice,
+      value: nonNegativeDiff,
+      savings_vs_google_flights: nonNegativeDiff,
       elapsed_seconds: data.elapsed_seconds,
       searched_at: new Date(now.getTime() - createdAgo).toISOString(),
       expires_at: new Date(now.getTime() + (data.expires_in_seconds ?? 1200) * 1000).toISOString(),
@@ -332,6 +395,10 @@ export async function GET(
         parsed: result.parsed,
         offers: result.offers,
         total_results: result.total_results,
+        cheapest_price: result.cheapest_price,
+        google_flights_price: result.google_flights_price,
+        value: result.value,
+        savings_vs_google_flights: result.savings_vs_google_flights,
         searched_at: result.searched_at,
         expires_at: result.expires_at,
       })

@@ -3,6 +3,7 @@ import { getStripe, toStripeAmount } from '../../../../lib/stripe'
 import { calculateFee } from '../../../../lib/pricing'
 import { getSessionUid } from '../../../../lib/session-uid'
 import { getTrustedOffer } from '../../../../lib/trusted-offer'
+import { appendProbeParam, isProbeModeValue } from '../../../../lib/probe-mode'
 
 /**
  * POST /api/checkout/create-session
@@ -17,12 +18,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No session cookie' }, { status: 400 })
   }
 
-  let offerId: string, searchId: string
+  let offerId: string, searchId: string, probe: string | undefined
   try {
-    ;({ offerId, searchId } = await req.json())
+    ;({ offerId, searchId, probe } = await req.json())
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
   }
+
+  const isProbe = isProbeModeValue(probe)
 
   if (!offerId || !searchId) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
@@ -51,6 +54,15 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const successUrl = new URL(`/book/${offerId}`, origin)
+    successUrl.searchParams.set('from', searchId)
+    successUrl.searchParams.set('stripe_session', '{CHECKOUT_SESSION_ID}')
+    appendProbeParam(successUrl.searchParams, isProbe)
+
+    const cancelUrl = new URL(`/book/${offerId}`, origin)
+    cancelUrl.searchParams.set('from', searchId)
+    appendProbeParam(cancelUrl.searchParams, isProbe)
+
     const stripe = getStripe()
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
@@ -77,8 +89,8 @@ export async function POST(req: NextRequest) {
         offer_id: offerId,
       },
       // {CHECKOUT_SESSION_ID} is replaced by Stripe with the actual session ID.
-      success_url: `${origin}/book/${offerId}?from=${searchId}&stripe_session={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/book/${offerId}?from=${searchId}`,
+      success_url: successUrl.toString(),
+      cancel_url: cancelUrl.toString(),
     })
 
     return NextResponse.json({ url: session.url })

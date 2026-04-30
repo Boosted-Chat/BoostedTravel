@@ -28,6 +28,7 @@ interface ResultsSearchFormProps {
   onSearchSubmit?: (query: string) => void
   trackingSearchId?: string
   trackingSourcePath?: string
+  probeMode?: boolean
 }
 
 export default function ResultsSearchForm({
@@ -35,6 +36,7 @@ export default function ResultsSearchForm({
   onSearchSubmit,
   trackingSearchId,
   trackingSourcePath,
+  probeMode = false,
 }: ResultsSearchFormProps) {
   const router = useRouter()
   const [query, setQuery] = useState(initialQuery)
@@ -59,7 +61,7 @@ export default function ResultsSearchForm({
     if (DEMO_LOADING) {
       event.preventDefault()
       setIsLoading(true)
-      router.push('/results/demo-loading')
+      router.push(`/results/demo-loading${probeMode ? '?probe=1' : ''}`)
       return
     }
   }
@@ -67,6 +69,7 @@ export default function ResultsSearchForm({
   return (
     <div className="lp-sf-wrap lp-sf-wrap--compact lp-sf-wrap--results">
       <form action="/results" method="get" onSubmit={handleSearch} className="lp-sf-form">
+        {probeMode && <input type="hidden" name="probe" value="1" />}
         <div className="lp-sf-frame">
           <div className="lp-sf-input-wrap">
             <span className="lp-sf-leading" aria-hidden="true">

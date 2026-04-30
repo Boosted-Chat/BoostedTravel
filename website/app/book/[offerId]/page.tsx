@@ -6,6 +6,7 @@ import Image from 'next/image'
 import { getTranslations } from 'next-intl/server'
 import GlobeButton from '../../globe-button'
 import BookPageClient from './BookPageClient'
+import { appendProbeParam, getTrackedSourcePath, getTrackingSearchId, isProbeModeValue } from '../../../lib/probe-mode'
 
 const REPO_URL = 'https://github.com/LetsFG/LetsFG'
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://letsfg.co'
@@ -25,6 +26,7 @@ export interface Offer {
   id: string
   price: number
   currency: string
+  source?: string
   airline: string
   airline_code: string
   origin: string
@@ -72,11 +74,12 @@ function getOfferAirlineLabel(offer: Offer): string {
     : offer.airline
 }
 
-async function getOffer(offerId: string, from?: string, ref?: string): Promise<Offer | null> {
+async function getOffer(offerId: string, from?: string, ref?: string, isProbe = false): Promise<Offer | null> {
   try {
     const url = new URL(`/api/offer/${offerId}`, await getApiBase())
     if (from) url.searchParams.set('from', from)
     if (ref) url.searchParams.set('ref', ref)
+    appendProbeParam(url.searchParams, isProbe)
     const res = await fetch(url.toString(), { cache: 'no-store' })
     if (!res.ok) return null
     return res.json()
@@ -112,7 +115,7 @@ export async function generateMetadata({
   const { from, ref } = await searchParams
   const resolvedFrom = firstQueryValue(from)
   const resolvedRef = firstQueryValue(ref)
-  const offer = await getOffer(offerId, resolvedFrom, resolvedRef)
+  const offer = await getOffer(offerId, resolvedFrom, resolvedRef, false)
   if (!offer) {
     return { title: resolvedFrom || resolvedRef ? 'Recovering offer — LetsFG' : 'Offer not found — LetsFG' }
   }
@@ -128,13 +131,15 @@ export default async function BookPage({
   searchParams,
 }: {
   params: Promise<{ offerId: string }>
-  searchParams: Promise<{ from?: string | string[]; ref?: string | string[] }>
+  searchParams: Promise<{ from?: string | string[]; ref?: string | string[]; probe?: string | string[] }>
 }) {
   const { offerId } = await params
-  const { from, ref } = await searchParams
+  const { from, ref, probe } = await searchParams
   const resolvedFrom = firstQueryValue(from)
   const resolvedRef = firstQueryValue(ref)
-  const offer = await getOffer(offerId, resolvedFrom, resolvedRef)
+  const isProbe = isProbeModeValue(firstQueryValue(probe))
+  const trackingSearchId = getTrackingSearchId(resolvedFrom, isProbe)
+  const offer = await getOffer(offerId, resolvedFrom, resolvedRef, isProbe)
   const t = await getTranslations('Checkout')
 
   if (!offer && !resolvedFrom && !resolvedRef) notFound()
@@ -144,7 +149,10 @@ export default async function BookPage({
   const fmtDuration = (mins: number) => mins > 0 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : 'Unknown duration'
   const airlineLabel = offer ? getOfferAirlineLabel(offer) : 'Offer'
 
-  const backHref = resolvedFrom ? `/results/${resolvedFrom}` : '/results/demo-completed'
+  const backHref = resolvedFrom
+    ? getTrackedSourcePath(`/results/${resolvedFrom}`, isProbe)
+    : getTrackedSourcePath('/results/demo-completed', isProbe)
+  const homeHref = isProbe ? '/en?probe=1' : '/'
 
   const jsonLd = offer ? {
     '@context': 'https://schema.org',
@@ -174,7 +182,7 @@ export default async function BookPage({
         <div className="res-hero-backdrop" aria-hidden="true" />
         <div className="res-hero-inner">
           <div className="res-topbar ck-topbar">
-            <Link href="/" className="res-topbar-logo-link" aria-label="LetsFG home">
+            <Link href={homeHref} className="res-topbar-logo-link" aria-label="LetsFG home">
               <Image
                 src="/lfg_ban.png"
                 alt="LetsFG"
@@ -213,6 +221,8 @@ export default async function BookPage({
         initialOffer={offer}
         offerId={offerId}
         searchId={resolvedFrom ?? null}
+        trackingSearchId={trackingSearchId ?? null}
+        isTestSearch={isProbe}
         offerRef={resolvedRef ?? null}
         backHref={backHref}
       />

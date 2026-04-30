@@ -3,6 +3,7 @@ const FSW_SECRET = process.env.FSW_SECRET || ''
 const WEBSITE_SEARCH_LIMIT = 500
 
 import { upsertSearchSessionServer } from './search-session-analytics-server'
+import { getTrackingSearchId } from './probe-mode'
 
 export interface WebSearchParams {
   origin: string
@@ -23,6 +24,7 @@ export interface WebSearchAnalyticsContext {
   source_path?: string
   referrer_path?: string
   source_search_id?: string
+  is_test_search?: boolean
 }
 
 export interface StartWebSearchResult {
@@ -64,8 +66,11 @@ export async function startWebSearch(
   const searchId = typeof data.search_id === 'string' ? data.search_id : null
 
   if (searchId) {
+    const isTestSearch = Boolean(analytics?.is_test_search)
+    const analyticsSearchId = getTrackingSearchId(searchId, isTestSearch) || searchId
+
     await upsertSearchSessionServer({
-      search_id: searchId,
+      search_id: analyticsSearchId,
       query: analytics?.query,
       origin: params.origin,
       origin_name: analytics?.origin_name || params.origin,
@@ -81,7 +86,8 @@ export async function startWebSearch(
       source: analytics?.source || 'website',
       source_path: analytics?.source_path,
       referrer_path: analytics?.referrer_path,
-      source_search_id: analytics?.source_search_id,
+      source_search_id: analytics?.source_search_id || (isTestSearch ? searchId : undefined),
+      is_test_search: isTestSearch || undefined,
       status: 'searching',
       cache_hit: Boolean(data.cache_hit),
       search_started_at: startedAt,

@@ -5,6 +5,7 @@ import { getTranslations } from 'next-intl/server'
 import HomeSearchForm from '../home-search-form'
 import GlobeButton from '../globe-button'
 import { getGitHubStars, formatStars } from '../../lib/github-stars'
+import { getTrackedSourcePath, isProbeModeValue } from '../../lib/probe-mode'
 
 const REPO_URL = 'https://github.com/LetsFG/LetsFG'
 
@@ -39,33 +40,34 @@ const API_BASE = process.env.LETSFG_API_URL || 'https://api.letsfg.co'
 interface PublicStats {
   totalSearches: number | null
   avgSavings: number | null
-  avgAirlinesChecked: number | null
+  connectorsAvailable: number | null
 }
 
 async function getPublicStats(): Promise<PublicStats> {
   try {
     const res = await fetch(`${API_BASE}/api/v1/analytics/stats/public`, {
-      next: { revalidate: 300 },
+      cache: 'no-store',
       signal: AbortSignal.timeout(4000),
     })
     if (res.ok) {
       const data = (await res.json()) as {
         total_searches?: number
         avg_savings_usd?: number
+        connectors_available?: number
         websites_checked?: number
       }
       if (typeof data.total_searches === 'number') {
         return {
           totalSearches: data.total_searches,
           avgSavings: data.avg_savings_usd ?? null,
-          avgAirlinesChecked: data.websites_checked ?? null,
+          connectorsAvailable: data.connectors_available ?? data.websites_checked ?? null,
         }
       }
     }
   } catch {}
 
   // API unavailable — show dashes rather than misleading zeros
-  return { totalSearches: null, avgSavings: null, avgAirlinesChecked: null }
+  return { totalSearches: null, avgSavings: null, connectorsAvailable: null }
 }
 
 function formatNumber(n: number): string {
@@ -85,14 +87,15 @@ function GitHubIcon() {
   )
 }
 
-export default async function Home({ params, searchParams }: { params: Promise<{ locale: string }>; searchParams: Promise<{ q?: string }> }) {
+export default async function Home({ params, searchParams }: { params: Promise<{ locale: string }>; searchParams: Promise<{ q?: string; probe?: string }> }) {
   const { locale } = await params
-  const { q } = await searchParams
+  const { q, probe } = await searchParams
+  const isProbe = isProbeModeValue(probe)
 
   // ?q= support: agents (and humans) can navigate directly to /?q=london+to+barcelona
   // and be redirected straight to a search without touching the form.
   if (q?.trim()) {
-    redirect(`/results?q=${encodeURIComponent(q.trim())}`)
+    redirect(getTrackedSourcePath(`/results?q=${encodeURIComponent(q.trim())}`, isProbe))
   }
 
   const [stats, t, githubStars] = await Promise.all([
@@ -178,7 +181,7 @@ export default async function Home({ params, searchParams }: { params: Promise<{
           />
           <p className="lp-hero-sub">{th('tagline')}</p>
           <div className="lp-hero-search-shell" id="destinations">
-            <HomeSearchForm />
+            <HomeSearchForm probeMode={isProbe} />
           </div>
         </div>
       </section>
@@ -204,7 +207,7 @@ export default async function Home({ params, searchParams }: { params: Promise<{
           <article className="lp-stat-card">
             <span className="lp-stat-chip">Coverage</span>
             <span className="lp-stat-value">
-              {stats.avgAirlinesChecked !== null ? `${stats.avgAirlinesChecked}` : '—'}
+              {stats.connectorsAvailable !== null ? `${stats.connectorsAvailable}` : '—'}
             </span>
             <span className="lp-stat-label">{t('airlines')}</span>
           </article>
