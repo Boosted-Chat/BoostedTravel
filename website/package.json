@@ -7,10 +7,11 @@
     "build": "npm run test && next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "npm run test:locations && npm run test:ratelimit && npm run test:flight-datetime && npm run test:user-currency && npm run test:google-comparison",
+    "test": "npm run test:locations && npm run test:ratelimit && npm run test:flight-datetime && npm run test:flight-time-surfaces && npm run test:user-currency && npm run test:google-comparison",
     "test:locations": "tsx --test tests/location-resolution.test.ts",
     "test:ratelimit": "tsx --test tests/rate-limit.test.ts",
     "test:flight-datetime": "tsx --test tests/flight-datetime.test.ts",
+    "test:flight-time-surfaces": "tsx --test tests/flight-time-surfaces.test.ts",
     "test:user-currency": "tsx --test tests/user-currency.test.ts",
     "test:google-comparison": "tsx --test tests/google-comparison.test.ts"
   },

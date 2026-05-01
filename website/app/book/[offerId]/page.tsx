@@ -6,6 +6,7 @@ import Image from 'next/image'
 import { getTranslations } from 'next-intl/server'
 import GlobeButton from '../../globe-button'
 import BookPageClient from './BookPageClient'
+import { formatFlightTime } from '../../../lib/flight-datetime'
 import { appendProbeParam, getTrackedSourcePath, getTrackingSearchId, isProbeModeValue } from '../../../lib/probe-mode'
 
 const REPO_URL = 'https://github.com/LetsFG/LetsFG'
@@ -144,8 +145,7 @@ export default async function BookPage({
 
   if (!offer && !resolvedFrom && !resolvedRef) notFound()
 
-  const fmtTime = (iso: string) =>
-    new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+  const fmtTime = formatFlightTime
   const fmtDuration = (mins: number) => mins > 0 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : 'Unknown duration'
   const airlineLabel = offer ? getOfferAirlineLabel(offer) : 'Offer'
 

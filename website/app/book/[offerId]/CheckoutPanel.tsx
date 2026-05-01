@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { getAirlineLogoUrl } from '../../airlineLogos'
+import { formatFlightTime } from '../../../lib/flight-datetime'
 import { calculateFee, withFee } from '../../../lib/pricing'
 import type { Offer } from './page'
 import { trackSearchSessionEvent } from '../../../lib/search-session-analytics'
@@ -96,7 +97,7 @@ const PLATFORM_ICONS: Record<string, React.ReactNode> = {
 }
 
 function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+  return formatFlightTime(iso)
 }
 
 function fmtDuration(mins: number) {
