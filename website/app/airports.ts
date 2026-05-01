@@ -1,3 +1,4 @@
+import { GENERATED_AIRPORT_SUPPLEMENT } from './lib/generated-airport-supplement'
 import { GENERATED_LOCATIONS, type GeneratedLocationEntry } from './lib/generated-locations'
 
 // Airport database with locale-aware names
@@ -383,6 +384,31 @@ function dedupeAirports(airports: Airport[]): Airport[] {
   return Array.from(byCode.values())
 }
 
+function dedupeGeneratedLocations(entries: GeneratedLocationEntry[]): GeneratedLocationEntry[] {
+  const byCode = new Map<string, GeneratedLocationEntry>()
+
+  for (const entry of entries) {
+    const existing = byCode.get(entry.code)
+    if (!existing) {
+      byCode.set(entry.code, entry)
+      continue
+    }
+
+    byCode.set(entry.code, {
+      ...existing,
+      ...entry,
+      type: existing.type === 'city' ? existing.type : entry.type,
+      name: existing.name || entry.name,
+      country: existing.country || entry.country,
+      city: existing.city || entry.city,
+      airports: existing.airports || entry.airports,
+      aliases: Array.from(new Set([...(existing.aliases || []), ...(entry.aliases || [])])),
+    })
+  }
+
+  return Array.from(byCode.values())
+}
+
 function toGeneratedAirport(entry: GeneratedLocationEntry): Airport {
   const normalizedName = normalizeForSearch(entry.name)
   const normalizedCity = entry.city ? normalizeForSearch(entry.city) : ''
@@ -397,19 +423,31 @@ function toGeneratedAirport(entry: GeneratedLocationEntry): Airport {
   }
 }
 
+const EXTRA_LOCATION_ALIASES: Record<string, string[]> = {
+  BDL: ['hartford', 'hartford connecticut', 'connecticut'],
+}
+
+const ALL_GENERATED_LOCATIONS = dedupeGeneratedLocations([
+  ...GENERATED_LOCATIONS,
+  ...GENERATED_AIRPORT_SUPPLEMENT,
+])
+
 const GENERATED_LOCATION_BY_CODE = new Map(
-  GENERATED_LOCATIONS.map((entry) => [entry.code, entry]),
+  ALL_GENERATED_LOCATIONS.map((entry) => [entry.code, entry]),
 )
 
 const ALL_AIRPORTS = dedupeAirports([
   ...AIRPORTS,
-  ...GENERATED_LOCATIONS
+  ...ALL_GENERATED_LOCATIONS
     .filter((entry) => entry.type === 'airport')
     .map((entry) => toGeneratedAirport(entry)),
 ])
 
 function getLocationAliases(entry: GeneratedLocationEntry): string[] {
-  return Array.from(new Set(entry.aliases.map((alias) => normalizeForSearch(alias)).filter(Boolean)))
+  const extraAliases = EXTRA_LOCATION_ALIASES[entry.code] || []
+  return Array.from(
+    new Set([...entry.aliases, ...extraAliases].map((alias) => normalizeForSearch(alias)).filter(Boolean)),
+  )
 }
 
 function getAirportSearchTerms(airport: Airport): string[] {
@@ -434,6 +472,22 @@ function toLocationMatch(entry: GeneratedLocationEntry): LocationMatch {
     type: entry.type,
     country: entry.country,
   }
+}
+
+export function findExactLocationMatch(query: string): LocationMatch | null {
+  if (!query || query.length < 2) return null
+
+  const normalizedQuery = normalizeForSearch(query)
+  const exactCode = GENERATED_LOCATION_BY_CODE.get(normalizedQuery.toUpperCase())
+  if (exactCode) return toLocationMatch(exactCode)
+
+  const exactAliasMatches = ALL_GENERATED_LOCATIONS.filter((entry) => getLocationAliases(entry).includes(normalizedQuery))
+  if (exactAliasMatches.length > 0) {
+    const cityMatch = exactAliasMatches.find((entry) => entry.type === 'city')
+    return toLocationMatch(cityMatch || exactAliasMatches[0])
+  }
+
+  return null
 }
 
 function scoreLocationEntry(entry: GeneratedLocationEntry, normalizedQuery: string): number {
@@ -466,24 +520,13 @@ function scoreLocationEntry(entry: GeneratedLocationEntry, normalizedQuery: stri
 export function findBestLocationMatch(query: string): LocationMatch | null {
   if (!query || query.length < 2) return null
 
+  const exactMatch = findExactLocationMatch(query)
+  if (exactMatch) return exactMatch
+
   const normalizedQuery = normalizeForSearch(query)
-  const exactCode = GENERATED_LOCATION_BY_CODE.get(normalizedQuery.toUpperCase())
-  if (exactCode) return toLocationMatch(exactCode)
-
-  const explicitCodes = normalizedQuery.match(/\b[a-z]{3}\b/g) || []
-  for (let idx = explicitCodes.length - 1; idx >= 0; idx -= 1) {
-    const explicitMatch = GENERATED_LOCATION_BY_CODE.get(explicitCodes[idx].toUpperCase())
-    if (explicitMatch) return toLocationMatch(explicitMatch)
-  }
-
-  const exactAliasMatches = GENERATED_LOCATIONS.filter((entry) => getLocationAliases(entry).includes(normalizedQuery))
-  if (exactAliasMatches.length > 0) {
-    const cityMatch = exactAliasMatches.find((entry) => entry.type === 'city')
-    return toLocationMatch(cityMatch || exactAliasMatches[0])
-  }
 
   let bestMatch: { entry: GeneratedLocationEntry; score: number } | null = null
-  for (const entry of GENERATED_LOCATIONS) {
+  for (const entry of ALL_GENERATED_LOCATIONS) {
     const score = scoreLocationEntry(entry, normalizedQuery)
     if (score <= 0) continue
 

@@ -2,7 +2,7 @@
 // Handles: EN, DE, ES, FR, IT, NL, PL, PT, SQ (Albanian), HR (Croatian), SV (Swedish)
 // Also handles: filler words, typos via accent-stripping, ordinals, DD/MM/YYYY, relative dates
 
-import { findBestLocationMatch } from '../airports'
+import { findBestLocationMatch, findExactLocationMatch } from '../airports'
 
 // ── City → IATA lookup ────────────────────────────────────────────────────────
 // Keys are lowercase, accent-free. resolveCity() normalises input before lookup.
@@ -115,6 +115,8 @@ export const CITY_TO_IATA: Record<string, { code: string; name: string }> = {
   'katowice': { code: 'KTW', name: 'Katowice' },
   // ── Scandinavia & Baltics ────────────────────────────────────────────────────
   'stockholm': { code: 'ARN', name: 'Stockholm' },
+  'arlanda': { code: 'ARN', name: 'Stockholm-Arlanda Airport' },
+  'arl': { code: 'ARN', name: 'Stockholm-Arlanda Airport' },
   'goteborg': { code: 'GOT', name: 'Gothenburg' },
   'göteborg': { code: 'GOT', name: 'Gothenburg' },
   'gothenburg': { code: 'GOT', name: 'Gothenburg' },
@@ -400,6 +402,21 @@ function toLocalDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+function getNthWeekdayOfMonth(year: number, monthIndex: number, weekday: number, occurrence: number): Date {
+  const date = new Date(year, monthIndex, 1)
+  const offset = (weekday - date.getDay() + 7) % 7
+  date.setDate(1 + offset + (occurrence - 1) * 7)
+  return date
+}
+
+function getUpcomingUsThanksgiving(baseDate: Date): Date {
+  let thanksgiving = getNthWeekdayOfMonth(baseDate.getFullYear(), 10, 4, 4)
+  if (thanksgiving < baseDate) {
+    thanksgiving = getNthWeekdayOfMonth(baseDate.getFullYear() + 1, 10, 4, 4)
+  }
+  return thanksgiving
+}
+
 // Edit distance (Levenshtein) — for typo tolerance in city matching
 function editDistance(a: string, b: string): number {
   if (a === b) return 0
@@ -474,8 +491,24 @@ function resolveCity(raw: string): { code: string; name: string } | null {
 }
 
 function resolveLocation(raw: string): { code: string; name: string } | null {
+  const exactGenerated = findExactLocationMatch(raw)
+  const normalized = raw.toLowerCase().trim()
+  const stripped = stripAccents(normalized)
+  if (exactGenerated?.type === 'city') {
+    const mapped = CITY_TO_IATA[normalized] || CITY_TO_IATA[stripped]
+    return {
+      code: exactGenerated.code,
+      name: mapped?.name || exactGenerated.name,
+    }
+  }
+
   const resolved = resolveCity(raw)
   if (resolved) return resolved
+
+  if (exactGenerated) {
+    return { code: exactGenerated.code, name: exactGenerated.name }
+  }
+
   const generated = findBestLocationMatch(raw)
   if (generated) return { code: generated.code, name: generated.name }
   if (/^[a-zA-Z]{3}$/.test(raw.trim())) {
@@ -626,6 +659,8 @@ const ROUTE_SEP_RE = new RegExp(
 const REL_DATE_NEXT_RE = /\b(?:next|diese[rns]?|nächste[rns]?|nachste[rns]?|proxim[ao]|prochain[e]?|prossim[ao]|volgende|następn[ya]|nastepn[ya]|nästa|nasta|sljedeć[ia]|sljedeci[a]?)\b/i
 const REL_DATE_THIS_RE = /\b(?:this|heute|hoy|aujourd'?hui|oggi|vandaag|dzisiaj|hoje|idag|danas|sot)\b/i
 const REL_WEEKEND_RE = /\b(?:weekend|this weekend|wochenende|fin de semana|week-?end|fine settimana|weekeinde|vikend|helg)\b/i
+const THANKSGIVING_WEEK_RE = /\b(?:(?:the\s+)?week\s+of\s+thanksgiving|thanksgiving\s+week)\b/i
+const THANKSGIVING_RE = /\bthanksgiving\b/i
 
 // ── Main parse function ───────────────────────────────────────────────────────
 
@@ -672,6 +707,7 @@ export function parseNLQuery(query: string): ParsedQuery {
   if (destStr) {
     // Stop destination string at common date lead-ins that weren't caught by the regex
     destStr = destStr
+      .replace(/\s+(?:(?:next|this)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|(?:the\s+week\s+of\s+thanksgiving|thanksgiving\s+week|thanksgiving))\b.*/i, '')
       .replace(/\s+(?:on|in|for|at|around|circa|um|am|le|el|il|em|på|na|dne|dia|den|am)\s.*/i, '')
       .replace(/\s+\d{1,2}(?:st|nd|rd|th)?\s.*/i, '')
       .replace(DEST_PREFIX_RE, '')
@@ -765,6 +801,18 @@ export function parseNLQuery(query: string): ParsedQuery {
         if (!hasExplicitYear && d < today) d.setFullYear(today.getFullYear() + 1)
         return toLocalDateStr(d)
       }
+    }
+
+    if (THANKSGIVING_WEEK_RE.test(tl)) {
+      const thanksgiving = getUpcomingUsThanksgiving(today)
+      const weekStart = new Date(thanksgiving)
+      const mondayOffset = (thanksgiving.getDay() + 6) % 7
+      weekStart.setDate(thanksgiving.getDate() - mondayOffset)
+      return toLocalDateStr(weekStart)
+    }
+
+    if (THANKSGIVING_RE.test(tl)) {
+      return toLocalDateStr(getUpcomingUsThanksgiving(today))
     }
 
     // Relative: "next friday", "nächsten montag", etc.

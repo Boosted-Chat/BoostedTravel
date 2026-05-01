@@ -129,6 +129,64 @@ test('parseNLQuery falls back to generated global coverage for long-tail names',
   })
 })
 
+test('parseNLQuery handles shorthand airports, holiday weeks, and metro aliases', () => {
+  withFixedNow('2026-05-01T12:00:00Z', () => {
+    const triesteToArlanda = parseNLQuery('Trs to arl 17 july')
+    assert.deepEqual(
+      {
+        origin: triesteToArlanda.origin,
+        destination: triesteToArlanda.destination,
+        date: triesteToArlanda.date,
+      },
+      {
+        origin: 'TRS',
+        destination: 'ARN',
+        date: '2026-07-17',
+      },
+    )
+
+    const bdlThanksgiving = parseNLQuery('BDL to SAN the week of thanksgiving')
+    assert.deepEqual(
+      {
+        origin: bdlThanksgiving.origin,
+        destination: bdlThanksgiving.destination,
+        date: bdlThanksgiving.date,
+      },
+      {
+        origin: 'BDL',
+        destination: 'SAN',
+        date: '2026-11-23',
+      },
+    )
+
+    const hartfordThanksgiving = parseNLQuery('Hartford to san diego the week of thanksgiving')
+    assert.deepEqual(
+      {
+        origin: hartfordThanksgiving.origin,
+        destination: hartfordThanksgiving.destination,
+        date: hartfordThanksgiving.date,
+      },
+      {
+        origin: 'BDL',
+        destination: 'SAN',
+        date: '2026-11-23',
+      },
+    )
+
+    const helsinkiToRome = parseNLQuery('helsinki to rome')
+    assert.deepEqual(
+      {
+        origin: helsinkiToRome.origin,
+        destination: helsinkiToRome.destination,
+      },
+      {
+        origin: 'HEL',
+        destination: 'ROM',
+      },
+    )
+  })
+})
+
 test('findBestLocationMatch prefers explicit airports and city codes correctly', () => {
   assert.deepEqual(findBestLocationMatch('Aşgabat'), {
     code: 'ASB',
@@ -156,7 +214,11 @@ test('homepage airport matching uses generated aliases and expanded airport cove
   assert.equal(findBestMatch('Aşgabat', 'en')?.code, 'ASB')
   assert.equal(findBestMatch('Tiranë', 'en')?.code, 'TIA')
   assert.equal(findBestMatch('Aalborg', 'en')?.code, 'AAL')
+  assert.equal(findBestMatch('Hartford', 'en')?.code, 'BDL')
 
   const airportResults = searchAirports('ashgabat', 'en', 5)
   assert.ok(airportResults.some((airport) => airport.code === 'ASB'))
+
+  const hartfordResults = searchAirports('Hartford', 'en', 5)
+  assert.ok(hartfordResults.some((airport) => airport.code === 'BDL'))
 })
