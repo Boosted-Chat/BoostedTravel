@@ -1308,14 +1308,6 @@ _register(_base_cfg("IndiGo", "indigo_direct",
     ],
 ))
 
-_register(_base_cfg("SpiceJet", "spicejet_direct_api",
-    flight_cards_selector="[class*='flight'], [class*='result']",
-    fare_selectors=[
-        "button:has-text('Spice Value')",
-        "button:has-text('Select')",
-    ],
-))
-
 _register(_base_cfg("Akasa Air", "akasa_direct",
     flight_cards_selector="[class*='flight'], [class*='result']",
     fare_selectors=[
@@ -1901,7 +1893,7 @@ _register(_base_cfg("Virgin Australia", "virginaustralia_direct",
     ],
 ))
 
-# SpiceJet has dual source tags in engine (spicejet_direct vs spicejet_direct_api)
+# SpiceJet uses the canonical engine source tag for search and checkout.
 _register(_base_cfg("SpiceJet", "spicejet_direct",
     flight_cards_selector="[class*='flight'], [class*='result']",
     fare_selectors=[

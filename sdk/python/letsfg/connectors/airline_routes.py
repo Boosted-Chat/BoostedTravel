@@ -580,6 +580,8 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "KE", "TZ", "TR", "GB",
     },
     "akasa": {"IN", "SA", "QA", "KW", "BH"},
+    "allianceair": {"IN"},
+    "starair": {"IN"},
     "salamair": {
         "OM", "AE", "SA", "BH", "KW", "QA", "IN", "BD", "PK", "LK",
         "NP", "EG", "IR", "IQ", "SD", "KE", "TZ", "ET", "TH", "MY",
@@ -1320,6 +1322,9 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
         "SG", "TH", "MY", "LK", "NP", "BD", "PK",
         "US", "CA", "GB", "DE", "FR", "AU", "HK",
     },
+    "easemytrip": {
+        "IN",
+    },
     "auntbetty": {
         "AU", "NZ", "SG", "TH", "MY", "ID", "PH", "IN", "JP", "KR",
         "US", "CA", "GB", "AE", "FJ", "HK", "VN", "CN",
@@ -1428,6 +1433,7 @@ def get_relevant_connectors(
         "etraveli", "ixigo", "rehlat",
         "travelstart",
         "aviasales", "travix", "travelup", "lastminute", "byojet", "yatra",
+        "easemytrip",
         "auntbetty", "flightcatchers", "traveltrolley",
         "agoda", "almosafer", "bookingcom",
         "musafir",

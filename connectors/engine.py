@@ -398,6 +398,8 @@ _FAST_MODE_SOURCES: set[str] = {
     "ryanair_direct", "wizzair_direct", "easyjet_direct", "southwest_direct",
     "spirit_direct", "frontier_direct", "allegiant_direct", "jetblue_direct",
     "vueling_direct", "norwegian_direct", "transavia_direct",
+    # ── India domestic/international LCCs ──
+    "indigo_direct", "spicejet_direct", "akasa_direct", "airindiaexpress_direct",
     # ── Key full-service carriers (high user demand) ──
     "emirates_direct", "turkish_direct", "finnair_direct",
     # ── Kiwi is always included (global aggregator) ──

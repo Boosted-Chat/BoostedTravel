@@ -220,6 +220,7 @@ from .byojet import ByojetConnectorClient
 from .yatra import YatraConnectorClient
 from .etraveli import EtraveliConnectorClient, TravelgenioConnectorClient
 from .ixigo import IxigoConnectorClient
+from .easemytrip import EasemytripConnectorClient
 from .rehlat import RehlatConnectorClient
 from .travelstart import TravelstartConnectorClient
 from .auntbetty import AuntbettyConnectorClient
@@ -236,6 +237,8 @@ from .hopper import HopperConnectorClient
 from .esky import EskyConnectorClient
 from .hkexpress import HKExpressConnectorClient
 from .aircairo import AirCairoConnectorClient
+from .allianceair import AllianceAirConnectorClient
+from .starair import StarAirConnectorClient
 
 from ..models.flights import AirlineSummary, FlightOffer, FlightSearchRequest, FlightSearchResponse
 
@@ -390,6 +393,7 @@ _FAST_MODE_SOURCES: set[str] = {
     "travelstart_ota", "travix_ota", "travelup_ota", "lastminute_ota", "byojet_ota",
     "yatra_ota", "auntbetty_ota", "flightcatchers_ota", "traveltrolley_ota",
     "almosafer_ota", "bookingcom_ota", "musafir_ota", "akbartravels_ota",
+    "easemytrip_ota",
     "airasiamove_ota", "esky_ota",
     # ── Meta-search aggregators ──
     "wego_meta", "momondo_meta", "kayak_meta", "cheapflights_meta", "skyscanner_meta",
@@ -398,6 +402,10 @@ _FAST_MODE_SOURCES: set[str] = {
     "ryanair_direct", "wizzair_direct", "easyjet_direct", "southwest_direct",
     "spirit_direct", "frontier_direct", "allegiant_direct", "jetblue_direct",
     "vueling_direct", "norwegian_direct", "transavia_direct",
+    # ── India domestic/international LCCs ──
+    "indigo_direct", "spicejet_direct", "akasa_direct", "airindiaexpress_direct",
+    # ── India regional direct carriers ──
+    "allianceair_direct", "starair_direct",
     # ── Key full-service carriers (high user demand) ──
     "emirates_direct", "turkish_direct", "finnair_direct",
     # ── Kiwi is always included (global aggregator) ──
@@ -417,7 +425,7 @@ _ECONOMY_ONLY_SOURCES: set[str] = {
     "flyadeal_direct", "airarabia_direct", "salamair_direct",
     "indigo_direct", "spicejet_direct", "akasa_direct",
     "cebupacific_direct", "nokair_direct", "citilink_direct",
-    "airindiaexpress_direct", "peach_direct",
+    "airindiaexpress_direct", "allianceair_direct", "peach_direct",
     "spring_direct", "9air_direct", "luckyair_direct",
     "superairjet_direct", "transnusa_direct",
     "transavia_direct", "level_direct", "volotea_direct",
@@ -716,6 +724,7 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("lastminute_ota", LastminuteConnectorClient, 55.0),
     ("byojet_ota", ByojetConnectorClient, 55.0),
     ("yatra_ota", YatraConnectorClient, 55.0),
+    ("easemytrip_ota", EasemytripConnectorClient, 35.0),
     # ── OTA expansion batch (Instance A — CDP Chrome / Playwright) ──
     ("auntbetty_ota", AuntbettyConnectorClient, 55.0),
     ("flightcatchers_ota", FlightcatchersConnectorClient, 55.0),
@@ -735,7 +744,171 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("esky_ota", EskyConnectorClient, 55.0),
     ("hkexpress_direct", HKExpressConnectorClient, 25.0),
     ("aircairo_direct", AirCairoConnectorClient, 45.0),
+    ("allianceair_direct", AllianceAirConnectorClient, 35.0),
+    ("starair_direct", StarAirConnectorClient, 35.0),
 ]
+
+
+@dataclass(frozen=True)
+class SourceSelectionSnapshot:
+    """Deterministic connector source selection snapshot for tests/validators.
+
+    This intentionally exposes only source keys and classification buckets.  It
+    does not instantiate connectors, execute searches, or alter CLI/SDK output.
+    """
+
+    selected_sources: tuple[str, ...]
+    special_sources: tuple[str, ...]
+    connector_sources: tuple[str, ...]
+    api_sources: tuple[str, ...]
+    browser_sources: tuple[str, ...]
+    browser_skipped_sources: tuple[str, ...]
+    route_relevant_sources: tuple[str, ...]
+    disabled_skipped_sources: tuple[str, ...]
+    cabin_skipped_sources: tuple[str, ...]
+    fast_skipped_sources: tuple[str, ...]
+    fast_mode: bool
+    browsers_available: bool
+
+    @property
+    def attempted_sources(self) -> tuple[str, ...]:
+        """Alias for the normal one-way provider sources the engine would run."""
+        return self.selected_sources
+
+
+def _route_allows_special_source(
+    origin_country: str | None,
+    dest_country: str | None,
+    countries: set[str] | None,
+) -> bool:
+    """Return whether a special-cased source passes the engine route gate."""
+    return (
+        not origin_country
+        or not dest_country
+        or not countries
+        or (origin_country in countries and dest_country in countries)
+    )
+
+
+def source_selection_snapshot_for_validation(
+    req: FlightSearchRequest,
+    mode: str | None = None,
+    *,
+    browsers_available: bool | None = None,
+    include_backend: bool = False,
+) -> SourceSelectionSnapshot:
+    """Return source keys the local engine would schedule for a one-way search.
+
+    This helper is deliberately deterministic and side-effect free.  It mirrors
+    route filtering, fast-mode filtering, cabin filtering, browser availability,
+    and API-vs-browser ordering used by ``MultiProvider._search_flights_inner``
+    for the normal (non-combo) provider list.  Tests use it to assert selected
+    and attempted source sets without scraping CLI logs or changing public JSON.
+    """
+
+    fast_mode = mode == "fast"
+    browser_enabled = _BROWSERS_AVAILABLE if browsers_available is None else browsers_available
+    origin_country = get_country(req.origin)
+    dest_country = get_country(req.destination)
+    cabin_filter_active = bool(req.cabin_class and req.cabin_class != "M")
+
+    special_sources: list[str] = []
+    if include_backend:
+        special_sources.append("backend")
+
+    ryanair_countries = AIRLINE_COUNTRIES.get("ryanair")
+    if (
+        (not fast_mode or "ryanair_direct" in _FAST_MODE_SOURCES)
+        and (not cabin_filter_active or "ryanair_direct" not in _ECONOMY_ONLY_SOURCES)
+        and _route_allows_special_source(origin_country, dest_country, ryanair_countries)
+    ):
+        special_sources.append("ryanair_direct")
+
+    wizz_countries = AIRLINE_COUNTRIES.get("wizz")
+    if (
+        browser_enabled
+        and (not fast_mode or "wizzair_direct" in _FAST_MODE_SOURCES)
+        and (not cabin_filter_active or "wizzair_direct" not in _ECONOMY_ONLY_SOURCES)
+        and _route_allows_special_source(origin_country, dest_country, wizz_countries)
+    ):
+        special_sources.append("wizzair_direct")
+
+    if not fast_mode or "kiwi_connector" in _FAST_MODE_SOURCES:
+        special_sources.append("kiwi_connector")
+
+    route_relevant = get_relevant_connectors(req.origin, req.destination, _DIRECT_AIRLINE_connectorS)
+    route_relevant_sources = tuple(src for src, _, _ in route_relevant)
+
+    filtered_connectors = route_relevant
+
+    disabled_skipped_sources: tuple[str, ...] = ()
+    if _TEMPORARILY_DISABLED:
+        disabled_skipped_sources = tuple(
+            src for src, _, _ in filtered_connectors if src in _TEMPORARILY_DISABLED
+        )
+        filtered_connectors = [
+            (src, cls, timeout)
+            for src, cls, timeout in filtered_connectors
+            if src not in _TEMPORARILY_DISABLED
+        ]
+
+    cabin_skipped_sources: tuple[str, ...] = ()
+    if cabin_filter_active:
+        cabin_skipped_sources = tuple(
+            src for src, _, _ in filtered_connectors if src in _ECONOMY_ONLY_SOURCES
+        )
+        filtered_connectors = [
+            (src, cls, timeout)
+            for src, cls, timeout in filtered_connectors
+            if src not in _ECONOMY_ONLY_SOURCES
+        ]
+
+    fast_skipped_sources: tuple[str, ...] = ()
+    if fast_mode:
+        fast_skipped_sources = tuple(
+            src for src, _, _ in filtered_connectors if src not in _FAST_MODE_SOURCES
+        )
+        filtered_connectors = [
+            (src, cls, timeout)
+            for src, cls, timeout in filtered_connectors
+            if src in _FAST_MODE_SOURCES
+        ]
+
+    browser_skipped_sources: tuple[str, ...] = ()
+    if not browser_enabled:
+        browser_skipped_sources = tuple(
+            src for src, _, _ in filtered_connectors if src in _BROWSER_SOURCES
+        )
+        filtered_connectors = [
+            (src, cls, timeout)
+            for src, cls, timeout in filtered_connectors
+            if src not in _BROWSER_SOURCES
+        ]
+
+    api_sources = tuple(src for src, _, _ in filtered_connectors if src not in _BROWSER_SOURCES)
+    browser_sources = tuple(
+        src
+        for src, _, _ in sorted(
+            ((src, cls, timeout) for src, cls, timeout in filtered_connectors if src in _BROWSER_SOURCES),
+            key=lambda x: (x[0] not in _PRIORITY_BROWSER_SOURCES, x[2]),
+        )
+    )
+    connector_sources = api_sources + browser_sources
+
+    return SourceSelectionSnapshot(
+        selected_sources=tuple(special_sources) + connector_sources,
+        special_sources=tuple(special_sources),
+        connector_sources=connector_sources,
+        api_sources=api_sources,
+        browser_sources=browser_sources,
+        browser_skipped_sources=browser_skipped_sources,
+        route_relevant_sources=route_relevant_sources,
+        disabled_skipped_sources=disabled_skipped_sources,
+        cabin_skipped_sources=cabin_skipped_sources,
+        fast_skipped_sources=fast_skipped_sources,
+        fast_mode=fast_mode,
+        browsers_available=browser_enabled,
+    )
 
 
 def _extract_legs_from_roundtrip(

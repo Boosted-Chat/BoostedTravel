@@ -395,6 +395,23 @@ def _build_location_index() -> dict[str, list[dict]]:
             if simplified != part.lower():
                 _add(simplified, entry)
 
+    # Common legacy/current city aliases agents and travelers use in India.
+    # Keep these as aliases rather than replacing canonical display names so
+    # existing output remains stable while "Bengaluru" resolves to BLR.
+    _ALIASES: dict[str, str] = {
+        "bengaluru": "BLR",
+        "new delhi": "DEL",
+        "bombay": "BOM",
+        "madras": "MAA",
+        "calcutta": "CCU",
+    }
+    for alias, code in _ALIASES.items():
+        airport = _AIRPORTS.get(code)
+        if airport:
+            name, city, _type = airport
+            country = AIRPORT_COUNTRY.get(code, "")
+            _add(alias, {"iata_code": code, "name": name, "type": "airport", "city": city, "country": country})
+
     # Index city codes
     for code, (city_name, country) in _CITIES.items():
         airports = CITY_AIRPORTS.get(code, [])

@@ -2132,20 +2132,25 @@ class EmiratesConnectorClient:
             arr_dt = datetime(dep_date.year, dep_date.month, dep_date.day,
                               int(hm_arr[0]), int(hm_arr[1]))
             # Handle overnight flights
-            if arr_dt <= dep_dt:
+            if arr_dt <= dep_dt and not (dep_time == "00:00" and arr_time == "00:00"):
                 from datetime import timedelta
                 arr_dt += timedelta(days=1)
         except (ValueError, IndexError):
             arr_dt = dep_dt
 
-        duration_min = flight.get("duration", 0)
+        try:
+            duration_min = int(float(flight.get("duration", 0) or 0))
+        except (TypeError, ValueError):
+            duration_min = 0
+        if duration_min <= 0 and arr_dt > dep_dt:
+            duration_min = int((arr_dt - dep_dt).total_seconds() // 60)
         flight_no = flight.get("flightNo", "EK")
         origin = flight.get("origin", "") or req.origin
         destination = flight.get("destination", "") or req.destination
         price = flight.get("price", 0)
         currency = flight.get("currency", "AED")
 
-        if price <= 0:
+        if price <= 0 or duration_min <= 0:
             return None
 
         offer_id = hashlib.md5(
@@ -2198,6 +2203,10 @@ class EmiratesConnectorClient:
             except Exception:
                 ret_arr_dt = ret_dep_dt
 
+            inbound_duration_seconds = int((ret_arr_dt - ret_dep_dt).total_seconds()) if ret_arr_dt > ret_dep_dt else 0
+            if inbound_duration_seconds <= 0:
+                return None
+
             inbound_seg = FlightSegment(
                 airline="EK",
                 airline_name="Emirates",
@@ -2208,11 +2217,11 @@ class EmiratesConnectorClient:
                 destination_city="",
                 departure=ret_dep_dt,
                 arrival=ret_arr_dt,
-                duration_seconds=0,
+                duration_seconds=inbound_duration_seconds,
                 cabin_class=flight.get("cabin", "economy"),
                 aircraft="",
             )
-            inbound_route = FlightRoute(segments=[inbound_seg], total_duration_seconds=0, stopovers=0)
+            inbound_route = FlightRoute(segments=[inbound_seg], total_duration_seconds=inbound_duration_seconds, stopovers=0)
 
         return FlightOffer(
             id=f"ek_{offer_id}",

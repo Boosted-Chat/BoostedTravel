@@ -299,7 +299,7 @@ class SpiceJetConnectorClient:
                     owner_airline="SG",
                     booking_url=booking_url,
                     is_locked=False,
-                    source="spicejet_direct_api",
+                    source="spicejet_direct",
                     source_tier="protocol",
                 ))
 
@@ -381,7 +381,7 @@ class SpiceJetConnectorClient:
             owner_airline="SG",
             booking_url=booking_url,
             is_locked=False,
-            source="spicejet_direct_api",
+            source="spicejet_direct",
             source_tier="protocol",
         )
 
