@@ -5,12 +5,14 @@ import dynamic from 'next/dynamic'
 import { useTranslations } from 'next-intl'
 import Link from 'next/link'
 import Image from 'next/image'
+import CurrencyButton from '../../currency-button'
 import GlobeButton from '../../globe-button'
 import ResultsSearchForm from '../ResultsSearchForm'
 import ResultsPanel from './ResultsPanel'
+import { CURRENCY_CHANGE_EVENT, readBrowserCurrencyPreference, type CurrencyCode } from '../../../lib/currency-preference'
+import { formatOfferDisplayPrice, getOfferDisplayTotalPrice } from '../../../lib/display-price'
 import { trackSearchSessionEvent } from '../../../lib/search-session-analytics'
 import { readBrowserCachedResults, writeBrowserCachedResults } from '../../../lib/browser-offer-cache'
-import { getOfferKnownTotalPrice } from '../../../lib/offer-pricing'
 import { appendProbeParam, getTrackedSourcePath } from '../../../lib/probe-mode'
 
 const REPO_URL = 'https://github.com/LetsFG/LetsFG'
@@ -88,6 +90,7 @@ export interface SearchPageClientProps {
   searchId: string
   trackingSearchId?: string | null
   isTestSearch?: boolean
+  initialCurrency?: CurrencyCode
   query: string
   parsed: ParsedQuery
   initialStatus: 'searching' | 'completed' | 'expired'
@@ -124,6 +127,7 @@ export default function SearchPageClient({
   searchId,
   trackingSearchId,
   isTestSearch = false,
+  initialCurrency = 'EUR',
   query,
   parsed,
   initialStatus,
@@ -137,6 +141,7 @@ export default function SearchPageClient({
   const [status, setStatus] = useState(initialStatus)
   const [progress, setProgress] = useState(initialProgress)
   const [offers, setOffers] = useState(initialOffers)
+  const [displayCurrency, setDisplayCurrency] = useState(initialCurrency)
   const trackedResultsViewRef = useRef(false)
   const trackedExpiredRef = useRef(false)
   const scrollMilestonesRef = useRef<Set<number>>(new Set())
@@ -147,10 +152,36 @@ export default function SearchPageClient({
   const isSearching = status === 'searching'
   const isExpired = status === 'expired'
 
-  // If the server did not return completed results, immediately check browser
-  // storage for a previously cached completed result.
   useEffect(() => {
-    if (initialStatus === 'completed') return
+    trackedResultsViewRef.current = false
+    trackedExpiredRef.current = false
+    scrollMilestonesRef.current = new Set()
+    setStatus(initialStatus)
+    setProgress(initialProgress)
+    setOffers(initialOffers)
+    setDisplayCurrency(initialCurrency)
+  }, [searchId, initialCurrency])
+
+  // React to currency changes made via the CurrencyButton (persist behavior).
+  // Immediately reconvert displayed prices without rerunning the search.
+  useEffect(() => {
+    const handleCurrencyChange = () => {
+      const next = readBrowserCurrencyPreference(initialCurrency)
+      setDisplayCurrency(next)
+      const url = new URL(window.location.href)
+      url.searchParams.set('cur', next)
+      window.history.replaceState(null, '', url.toString())
+    }
+    window.addEventListener(CURRENCY_CHANGE_EVENT, handleCurrencyChange)
+    return () => window.removeEventListener(CURRENCY_CHANGE_EVENT, handleCurrencyChange)
+  }, [initialCurrency])
+
+  // If the server is still searching, recover a previously completed browser
+  // snapshot so a transient network miss does not blank the page. Do not do
+  // this for expired searches, otherwise stale cached EUR results can override
+  // an expired state or a currency-triggered rerun.
+  useEffect(() => {
+    if (initialStatus !== 'searching') return
     try {
       const cached = readBrowserCachedResults<FlightOffer>(searchId)
       if (cached?.status === 'completed' && Array.isArray(cached.offers)) {
@@ -308,9 +339,13 @@ export default function SearchPageClient({
 
   // Offer data for ResultsPanel
   const allOffers = offers
-  const offerCurrency = allOffers[0]?.currency || '€'
-  const priceMin = allOffers.length ? Math.min(...allOffers.map((offer) => getOfferKnownTotalPrice(offer))) : 0
-  const priceMax = allOffers.length ? Math.max(...allOffers.map((offer) => getOfferKnownTotalPrice(offer))) : 1000
+  const displaySortedOffers = allOffers.length
+    ? [...allOffers].sort((a, b) => getOfferDisplayTotalPrice(a, displayCurrency) - getOfferDisplayTotalPrice(b, displayCurrency))
+    : allOffers
+  const priceMin = displaySortedOffers.length ? getOfferDisplayTotalPrice(displaySortedOffers[0], displayCurrency) : 0
+  const priceMax = displaySortedOffers.length
+    ? Math.max(...displaySortedOffers.map((offer) => getOfferDisplayTotalPrice(offer, displayCurrency)))
+    : 1000
 
   const handleNavigateHome = () => {
     trackSearchSessionEvent(analyticsSearchId, 'navigate_home', {}, {
@@ -350,6 +385,7 @@ export default function SearchPageClient({
 
             <div className="res-topbar-actions">
               <GlobeButton inline />
+              <CurrencyButton inline behavior={isSearching ? 'rerun-search' : 'persist'} initialCurrency={displayCurrency} searchQuery={query} probeMode={isTestSearch} />
               <a
                 href={REPO_URL}
                 target="_blank"
@@ -365,14 +401,14 @@ export default function SearchPageClient({
 
           {status === 'completed' && (
             <div className="res-search-shell">
-              <ResultsSearchForm initialQuery={query} onSearchSubmit={handleSearchSubmit} probeMode={isTestSearch} />
+              <ResultsSearchForm initialQuery={query} initialCurrency={initialCurrency} onSearchSubmit={handleSearchSubmit} probeMode={isTestSearch} />
             </div>
           )}
 
           {isSearching ? (
             <>
               <div className="res-search-shell">
-                <ResultsSearchForm initialQuery={query} onSearchSubmit={handleSearchSubmit} probeMode={isTestSearch} />
+                <ResultsSearchForm initialQuery={query} initialCurrency={initialCurrency} onSearchSubmit={handleSearchSubmit} probeMode={isTestSearch} />
               </div>
 
               <div className="res-searching-stage">
@@ -433,7 +469,7 @@ export default function SearchPageClient({
       {status === 'completed' && allOffers.length > 0 && (
         <ResultsPanel
           allOffers={allOffers}
-          currency={offerCurrency}
+          currency={displayCurrency}
           priceMin={priceMin}
           priceMax={priceMax}
           searchId={searchId}
@@ -496,7 +532,7 @@ export default function SearchPageClient({
             <p>Status: COMPLETED — {allOffers.length} results found.</p>
             <p>Searched at: {searchedAt}</p>
             <p>Results valid until: {expiresAt} (approximately 15 minutes)</p>
-            <p>Cheapest: {allOffers[0]?.currency}{allOffers[0]?.price} on {allOffers[0]?.airline} ({allOffers[0]?.stops === 0 ? 'direct' : `${allOffers[0]?.stops} stop(s)`}, {formatDuration(allOffers[0]?.duration_minutes || 0)})</p>
+            <p>Cheapest: {formatOfferDisplayPrice(getOfferDisplayTotalPrice(displaySortedOffers[0], displayCurrency), displayCurrency, displayCurrency)} on {displaySortedOffers[0]?.airline} ({displaySortedOffers[0]?.stops === 0 ? 'direct' : `${displaySortedOffers[0]?.stops} stop(s)`}, {formatDuration(displaySortedOffers[0]?.duration_minutes || 0)})</p>
             <table>
               <thead>
                 <tr>
@@ -505,11 +541,11 @@ export default function SearchPageClient({
                 </tr>
               </thead>
               <tbody>
-                {allOffers.map((offer, i) => (
+                {displaySortedOffers.map((offer, i) => (
                   <tr key={offer.id}>
                     <td>{i + 1}</td>
                     <td>{offer.airline}</td>
-                    <td>{offer.currency}{offer.price}</td>
+                    <td>{formatOfferDisplayPrice(getOfferDisplayTotalPrice(offer, displayCurrency), displayCurrency, displayCurrency)}</td>
                     <td>{offer.origin}→{offer.destination}</td>
                     <td>{offer.departure_time}</td>
                     <td>{offer.arrival_time}</td>

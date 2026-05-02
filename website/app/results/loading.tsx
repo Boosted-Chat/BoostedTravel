@@ -4,9 +4,11 @@ import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
+import CurrencyButton from '../currency-button'
 import GlobeButton from '../globe-button'
 import ResultsSearchForm from './ResultsSearchForm'
 import SearchingTasks from './[searchId]/SearchingTasks'
+import { normalizeCurrencyCode } from '../../lib/currency-preference'
 import { parseNLQuery } from '../lib/searchParsing'
 
 // Shown immediately on client-side navigation to /results?q=...
@@ -15,6 +17,7 @@ import { parseNLQuery } from '../lib/searchParsing'
 function LoadingInner() {
   const params = useSearchParams()
   const query = params.get('q') || ''
+  const initialCurrency = normalizeCurrencyCode(params.get('cur')) || 'EUR'
   const parsed = parseNLQuery(query)
 
   return (
@@ -28,10 +31,11 @@ function LoadingInner() {
             </Link>
             <div className="res-topbar-actions">
               <GlobeButton inline />
+              <CurrencyButton inline behavior="rerun-search" initialCurrency={initialCurrency} searchQuery={query} />
             </div>
           </div>
           <div className="res-search-shell">
-            <ResultsSearchForm initialQuery={query} />
+            <ResultsSearchForm initialQuery={query} initialCurrency={initialCurrency} />
           </div>
           <div className="res-searching-stage">
             <SearchingTasks

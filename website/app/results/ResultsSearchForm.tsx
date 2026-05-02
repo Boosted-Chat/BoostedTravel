@@ -2,6 +2,11 @@
 
 import { FormEvent, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import {
+  CURRENCY_CHANGE_EVENT,
+  readBrowserSearchCurrency,
+  type CurrencyCode,
+} from '../../lib/currency-preference'
 import { trackSearchSessionEvent } from '../../lib/search-session-analytics'
 
 const DEMO_LOADING = false
@@ -25,6 +30,7 @@ function PlaneIcon() {
 
 interface ResultsSearchFormProps {
   initialQuery?: string
+  initialCurrency?: CurrencyCode
   onSearchSubmit?: (query: string) => void
   trackingSearchId?: string
   trackingSourcePath?: string
@@ -33,6 +39,7 @@ interface ResultsSearchFormProps {
 
 export default function ResultsSearchForm({
   initialQuery = '',
+  initialCurrency = 'EUR',
   onSearchSubmit,
   trackingSearchId,
   trackingSourcePath,
@@ -40,11 +47,19 @@ export default function ResultsSearchForm({
 }: ResultsSearchFormProps) {
   const router = useRouter()
   const [query, setQuery] = useState(initialQuery)
+  const [prefCurrency, setPrefCurrency] = useState<CurrencyCode>(initialCurrency)
   const [isLoading, setIsLoading] = useState(false)
 
   useEffect(() => {
     setQuery(initialQuery)
   }, [initialQuery])
+
+  useEffect(() => {
+    setPrefCurrency(readBrowserSearchCurrency(initialCurrency))
+    const sync = () => setPrefCurrency(readBrowserSearchCurrency(initialCurrency))
+    window.addEventListener(CURRENCY_CHANGE_EVENT, sync)
+    return () => window.removeEventListener(CURRENCY_CHANGE_EVENT, sync)
+  }, [initialCurrency])
 
   const handleSearch = (event: FormEvent) => {
     if (!query.trim()) {
@@ -70,6 +85,7 @@ export default function ResultsSearchForm({
     <div className="lp-sf-wrap lp-sf-wrap--compact lp-sf-wrap--results">
       <form action="/results" method="get" onSubmit={handleSearch} className="lp-sf-form">
         {probeMode && <input type="hidden" name="probe" value="1" />}
+        <input type="hidden" name="cur" value={prefCurrency} readOnly aria-hidden="true" />
         <div className="lp-sf-frame">
           <div className="lp-sf-input-wrap">
             <span className="lp-sf-leading" aria-hidden="true">

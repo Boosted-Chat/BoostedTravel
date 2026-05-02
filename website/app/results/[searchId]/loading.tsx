@@ -4,9 +4,11 @@ import { Suspense, useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
+import CurrencyButton from '../../currency-button'
 import GlobeButton from '../../globe-button'
 import ResultsSearchForm from '../ResultsSearchForm'
 import SearchingTasks from './SearchingTasks'
+import { normalizeCurrencyCode } from '../../../lib/currency-preference'
 
 // Shown immediately while [searchId]/page.tsx runs its server-side poll.
 // Polls /api/results/{searchId} on the client for live progress so the
@@ -26,6 +28,8 @@ function LoadingInner() {
   const searchParams = useSearchParams()
   const searchId = params.searchId as string
   const started = searchParams.get('started')
+  const initialCurrency = normalizeCurrencyCode(searchParams.get('cur')) || 'EUR'
+  const query = searchParams.get('q')?.trim() || ''
 
   const [info, setInfo] = useState<SearchInfo>({})
 
@@ -83,10 +87,16 @@ function LoadingInner() {
             </Link>
             <div className="res-topbar-actions">
               <GlobeButton inline />
+              <CurrencyButton
+                inline
+                behavior={query ? 'rerun-search' : 'persist'}
+                initialCurrency={initialCurrency}
+                searchQuery={query}
+              />
             </div>
           </div>
           <div className="res-search-shell">
-            <ResultsSearchForm initialQuery="" />
+            <ResultsSearchForm initialQuery={query} initialCurrency={initialCurrency} />
           </div>
           <div className="res-searching-stage">
             <SearchingTasks

@@ -3,13 +3,18 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { getAirlineCodeFromName, getAirlineLogoUrl, getAirlineNameFromCode, looksLikeIataCode } from '../../airlineLogos'
+import {
+  convertCurrencyAmount,
+  formatOfferDisplayPrice,
+  getOfferDisplayTotalPrice,
+  getOfferDisplayTotalWithAncillary,
+} from '../../../lib/display-price'
 import { extractFlightClockMinutes, formatFlightDateCompact, formatFlightTime } from '../../../lib/flight-datetime'
 import { formatGoogleFlightsSavings, getGoogleFlightsSavingsAmount } from '../../../lib/google-flights-savings'
 import { trackSearchSessionEvent } from '../../../lib/search-session-analytics'
 import { formatCurrencyAmount } from '../../../lib/user-currency'
 import {
   getOfferKnownTotalPrice,
-  getOfferTotalWithAncillary,
   hasIncludedAncillary,
   hasPaidAncillary,
 } from '../../../lib/offer-pricing'
@@ -234,8 +239,25 @@ function getSegmentAirlineLabel(segment: FlightSegment, fallbackAirline: string)
   return fallbackCarrier?.name || fallbackAirline
 }
 
-function fmtOfferPrice(amount: number, currency: string, locale?: string) {
-  return formatCurrencyAmount(amount, currency, locale)
+function fmtOfferPrice(amount: number, sourceCurrency: string, displayCurrency: string, locale?: string) {
+  return formatOfferDisplayPrice(amount, sourceCurrency, displayCurrency, locale)
+}
+
+function findCheapestOffer(offers: FlightOffer[], displayCurrency: string): FlightOffer | null {
+  if (offers.length === 0) return null
+
+  let cheapestOffer = offers[0]
+  let cheapestPrice = getOfferDisplayTotalPrice(cheapestOffer, displayCurrency)
+
+  for (const offer of offers.slice(1)) {
+    const offerPrice = getOfferDisplayTotalPrice(offer, displayCurrency)
+    if (offerPrice < cheapestPrice) {
+      cheapestOffer = offer
+      cheapestPrice = offerPrice
+    }
+  }
+
+  return cheapestOffer
 }
 
 // ── Airline logo with IATA-code fallback ──────────────────────────────────────
@@ -373,30 +395,36 @@ export default function ResultsPanel({
 
   // ── Sidebar stats (always based on all offers) ────────────────────────────
   const stopsStats = useMemo(() => {
-    const groups: Record<string, { count: number; min: number }> = {}
+    const groups: Record<string, { count: number; min: number; currency?: string }> = {}
     for (const key of ['0', '1', '2plus'] as const) {
       const arr = allOffers.filter(o =>
         key === '0' ? o.stops === 0 : key === '1' ? o.stops === 1 : o.stops >= 2
       )
+      const cheapestOffer = findCheapestOffer(arr, currency)
       groups[key] = {
         count: arr.length,
-        min: arr.length ? Math.min(...arr.map((offer) => getOfferKnownTotalPrice(offer))) : Infinity,
+        min: cheapestOffer ? getOfferDisplayTotalPrice(cheapestOffer, currency) : Infinity,
+        currency,
       }
     }
     return groups
-  }, [allOffers])
+  }, [allOffers, currency])
 
   const airlineOptions = useMemo(() => {
-    const map = new Map<string, number>()
+    const map = new Map<string, { minPrice: number; currency: string }>()
     for (const o of allOffers) {
-      const offerPrice = getOfferKnownTotalPrice(o)
+      const offerPrice = getOfferDisplayTotalPrice(o, currency)
       for (const carrier of getOfferCarriers(o)) {
-        const cur = map.get(carrier.name) ?? Infinity
-        if (offerPrice < cur) map.set(carrier.name, offerPrice)
+        const current = map.get(carrier.name)
+        if (!current || offerPrice < current.minPrice) {
+          map.set(carrier.name, { minPrice: offerPrice, currency })
+        }
       }
     }
-    return [...map.entries()].sort((a, b) => a[1] - b[1]).map(([airline, minPrice]) => ({ airline, minPrice }))
-  }, [allOffers])
+    return [...map.entries()]
+      .sort((a, b) => a[1].minPrice - b[1].minPrice)
+      .map(([airline, value]) => ({ airline, minPrice: value.minPrice, currency: value.currency }))
+  }, [allOffers, currency])
 
   const amenityStats = useMemo(() => {
     const stats = {
@@ -433,7 +461,7 @@ export default function ResultsPanel({
   // ── Filtered + sorted offers ──────────────────────────────────────────────
   const displayOffers = useMemo(() => {
     let list = allOffers.filter(o => {
-      const offerPrice = getOfferKnownTotalPrice(o)
+      const offerPrice = getOfferDisplayTotalPrice(o, currency)
       // Stops
       if (stopsFilter.length > 0) {
         const key = o.stops === 0 ? '0' : o.stops === 1 ? '1' : '2plus'
@@ -463,12 +491,16 @@ export default function ResultsPanel({
     if (sort === 'duration') {
       list = [...list].sort((a, b) => a.duration_minutes - b.duration_minutes)
     } else {
-      list = [...list].sort((a, b) => getOfferKnownTotalPrice(a) - getOfferKnownTotalPrice(b))
+      list = [...list].sort((a, b) => getOfferDisplayTotalPrice(a, currency) - getOfferDisplayTotalPrice(b, currency))
     }
     return list
-  }, [allOffers, stopsFilter, airlinesFilter, amenityFilters, priceRange, depRange, retRange, durationRange, sort])
+  }, [allOffers, stopsFilter, airlinesFilter, amenityFilters, priceRange, depRange, retRange, durationRange, sort, currency])
 
   const visibleOffers = useMemo(() => displayOffers.slice(0, visibleCount), [displayOffers, visibleCount])
+
+  useEffect(() => {
+    setPriceRange([priceMin, priceMax])
+  }, [priceMin, priceMax])
 
   const refreshUnlockState = useCallback(async () => {
     if (!searchId) {
@@ -694,7 +726,9 @@ export default function ResultsPanel({
                 onClick={() => toggleStop(key)}>
                 <span className={`rf-filter-check${active ? ' rf-filter-check--on' : ''}`} aria-hidden="true" />
                 <span className="rf-filter-label">{label}</span>
-                {stat.min !== Infinity && <span className="rf-filter-price">{fmt(stat.min)}</span>}
+                {stat.min !== Infinity && (
+                  <span className="rf-filter-price">{fmtOfferPrice(stat.min, stat.currency || currency, currency, locale)}</span>
+                )}
               </button>
             )
           })}
@@ -753,14 +787,14 @@ export default function ResultsPanel({
             <span>{t('airlines')}</span>
             <ChevronIcon open={airlinesOpen} />
           </button>
-          {airlinesOpen && airlineOptions.map(({ airline, minPrice }) => {
+          {airlinesOpen && airlineOptions.map(({ airline, minPrice, currency: airlineCurrency }) => {
             const active = airlinesFilter.includes(airline)
             return (
               <button key={airline} className={`rf-filter-row${active ? ' rf-filter-row--on' : ''}`}
                 onClick={() => toggleAirline(airline)}>
                 <span className={`rf-filter-check${active ? ' rf-filter-check--on' : ''}`} aria-hidden="true" />
                 <span className="rf-filter-label">{airline}</span>
-                <span className="rf-filter-price">{fmt(minPrice)}</span>
+                <span className="rf-filter-price">{fmtOfferPrice(minPrice, airlineCurrency || currency, currency, locale)}</span>
               </button>
             )
           })}
@@ -795,7 +829,9 @@ export default function ResultsPanel({
             </span>
             {displayOffers[0] && (
               <span className="rf-bar-from">
-                {t('fromPrice', { price: fmt(getOfferKnownTotalPrice(displayOffers[0])) })}
+                {t('fromPrice', {
+                  price: fmt(getOfferDisplayTotalPrice(displayOffers[0], currency)),
+                })}
               </span>
             )}
           </div>
@@ -837,12 +873,17 @@ export default function ResultsPanel({
             const outboundDestinationName = offer.destination_name || offer.destination
             const inboundOriginName = offer.inbound?.segments?.[0]?.origin_name || offer.destination_name || offer.inbound?.origin || ''
             const inboundDestinationName = offer.inbound?.segments?.[offer.inbound.segments.length - 1]?.destination_name || offer.origin_name || offer.inbound?.destination || ''
-            const fullOfferPrice = getOfferKnownTotalPrice(offer)
-            const googleFlightsSavings = getGoogleFlightsSavingsAmount(fullOfferPrice, offer.google_flights_price)
+            const rawOfferTotal = getOfferKnownTotalPrice(offer)
+            const fullOfferPrice = getOfferDisplayTotalPrice(offer, currency)
+            const googleFlightsSavings = getGoogleFlightsSavingsAmount(rawOfferTotal, offer.google_flights_price)
             const googleFlightsSavingsLabel = googleFlightsSavings === null
               ? null
               : t('cheaperThanGoogleFlights', {
-                  amount: formatGoogleFlightsSavings(googleFlightsSavings, offer.currency, locale),
+                  amount: formatGoogleFlightsSavings(
+                    convertCurrencyAmount(googleFlightsSavings, offer.currency, currency),
+                    currency,
+                    locale,
+                  ),
                 })
             const checkedBag = offer.ancillaries?.checked_bag
             const seatSelection = offer.ancillaries?.seat_selection
@@ -850,16 +891,16 @@ export default function ResultsPanel({
               hasIncludedAncillary(checkedBag)
                 ? t('checkedBagIncluded')
                 : hasPaidAncillary(checkedBag)
-                  ? t('checkedBagFee', { price: fmtOfferPrice(checkedBag!.price!, checkedBag!.currency || offer.currency, locale) })
+                  ? t('checkedBagFee', { price: fmtOfferPrice(checkedBag!.price!, checkedBag!.currency || offer.currency, currency, locale) })
                   : null,
               hasIncludedAncillary(seatSelection)
                 ? t('seatSelectionIncluded')
                 : hasPaidAncillary(seatSelection)
-                  ? t('seatSelectionFee', { price: fmtOfferPrice(seatSelection!.price!, seatSelection!.currency || offer.currency, locale) })
+                  ? t('seatSelectionFee', { price: fmtOfferPrice(seatSelection!.price!, seatSelection!.currency || offer.currency, currency, locale) })
                   : null,
             ].filter((value): value is string => Boolean(value))
-            const checkedBagTotal = getOfferTotalWithAncillary(offer, checkedBag)
-            const seatSelectionTotal = getOfferTotalWithAncillary(offer, seatSelection)
+            const checkedBagTotal = getOfferDisplayTotalWithAncillary(offer, checkedBag, currency)
+            const seatSelectionTotal = getOfferDisplayTotalWithAncillary(offer, seatSelection, currency)
             const sourceLabel = revealedSources[offer.id]
 
             return (
@@ -996,10 +1037,10 @@ export default function ResultsPanel({
                     {(checkedBagTotal || seatSelectionTotal) && (
                       <div className="rf-price-notes">
                         {checkedBagTotal && (
-                          <span className="rf-price-note">{t('withCheckedBag', { price: fmtOfferPrice(checkedBagTotal, offer.currency, locale) })}</span>
+                          <span className="rf-price-note">{t('withCheckedBag', { price: fmt(checkedBagTotal) })}</span>
                         )}
                         {seatSelectionTotal && (
-                          <span className="rf-price-note">{t('withSeatSelection', { price: fmtOfferPrice(seatSelectionTotal, offer.currency, locale) })}</span>
+                          <span className="rf-price-note">{t('withSeatSelection', { price: fmt(seatSelectionTotal) })}</span>
                         )}
                       </div>
                     )}

@@ -1,12 +1,19 @@
 import { Suspense } from 'react'
+import { cookies, headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
+import CurrencyButton from '../currency-button'
 import GlobeButton from '../globe-button'
 import ResultsSearchForm from './ResultsSearchForm'
 import ResultsPanel from './[searchId]/ResultsPanel'
 import SearchingTasks from './[searchId]/SearchingTasks'
 import CacheHitReveal from './CacheHitReveal'
+import {
+  LETSFG_CURRENCY_COOKIE,
+  resolveSearchCurrency,
+  type CurrencyCode,
+} from '../../lib/currency-preference'
 import { parseNLQuery } from '../lib/searchParsing'
 import { IATA_TO_NAME, getAirlineNameFromCode, looksLikeIataCode } from '../airlineLogos'
 import { startWebSearch } from '../../lib/fsw-search'
@@ -14,7 +21,6 @@ import { upsertSearchSessionServer } from '../../lib/search-session-analytics-se
 import { getGitHubStars, formatStars } from '../../lib/github-stars'
 import { getTrackedSourcePath, isProbeModeValue } from '../../lib/probe-mode'
 import { detectPreferredCurrency } from '../../lib/user-currency'
-import { headers } from 'next/headers'
 
 const FSW_SECRET = process.env.FSW_SECRET || ''
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://letsfg.co'
@@ -258,20 +264,20 @@ async function startFSWSearch(
   parsed: ReturnType<typeof parseNLQuery>,
   query?: string,
   isProbe = false,
+  currency: CurrencyCode = 'EUR',
 ): Promise<{ searchId: string | null; cache: 'hit' | 'miss' }> {
   if (!parsed.origin || !parsed.destination || !parsed.date) {
     return { searchId: null, cache: 'miss' }
   }
 
   try {
-    const requestHeaders = await headers()
     const result = await startWebSearch({
       origin: parsed.origin,
       destination: parsed.destination,
       date_from: parsed.date,
       return_date: parsed.return_date || undefined,
       adults: 1,
-      currency: detectPreferredCurrency(requestHeaders),
+      currency,
       ...(parsed.stops !== undefined ? { max_stops: parsed.stops } : {}),
       ...(parsed.cabin ? { cabin: parsed.cabin } : {}),
     }, {
@@ -315,7 +321,17 @@ async function pollFSW(searchId: string, maxWaitMs: number): Promise<{ offers: R
 
 // ── Page components ───────────────────────────────────────────────────────────
 
-async function PageTopbar({ query, homeHref = '/en' }: { query: string; homeHref?: string }) {
+async function PageTopbar({
+  homeHref = '/en',
+  initialCurrency,
+  searchQuery,
+  probeMode = false,
+}: {
+  homeHref?: string
+  initialCurrency: CurrencyCode
+  searchQuery?: string
+  probeMode?: boolean
+}) {
   const stars = await getGitHubStars()
   return (
     <div className="res-topbar res-topbar--results">
@@ -324,6 +340,13 @@ async function PageTopbar({ query, homeHref = '/en' }: { query: string; homeHref
       </Link>
       <div className="res-topbar-actions">
         <GlobeButton inline />
+        <CurrencyButton
+          inline
+          behavior={searchQuery?.trim() ? 'rerun-search' : 'refresh'}
+          initialCurrency={initialCurrency}
+          searchQuery={searchQuery}
+          probeMode={probeMode}
+        />
         <a href={REPO_URL} target="_blank" rel="noreferrer" className={stars !== null ? 'res-icon-btn res-icon-btn--gh' : 'res-icon-btn'} aria-label="GitHub" title="GitHub">
           <GitHubIcon />
           {stars !== null && <span className="res-gh-stars"><span className="res-gh-star" aria-hidden="true">⭐</span>{formatStars(stars)}</span>}
@@ -354,7 +377,19 @@ function PageFooter() {
 
 // ── Main async search component (runs server-side) ────────────────────────────
 
-async function SearchContent({ query, sid, started, isProbe }: { query: string; sid?: string; started?: string; isProbe: boolean }) {
+async function SearchContent({
+  query,
+  sid,
+  started,
+  isProbe,
+  currency,
+}: {
+  query: string
+  sid?: string
+  started?: string
+  isProbe: boolean
+  currency: CurrencyCode
+}) {
   const parsed = parseNLQuery(query)
   const routeLabel = [
     parsed.origin_name || parsed.origin,
@@ -393,9 +428,9 @@ async function SearchContent({ query, sid, started, isProbe }: { query: string; 
           <section className="res-hero res-hero--results">
             <div className="res-hero-backdrop" aria-hidden="true" />
             <div className="res-hero-inner">
-              <PageTopbar query={query} homeHref={homeHref} />
+              <PageTopbar homeHref={homeHref} initialCurrency={currency} searchQuery={query} probeMode={isProbe} />
               <div className="res-search-shell">
-                <ResultsSearchForm initialQuery={query} trackingSearchId={searchId} trackingSourcePath={getTrackedSourcePath('/results', isProbe)} probeMode={isProbe} />
+                <ResultsSearchForm initialQuery={query} initialCurrency={currency} trackingSearchId={searchId} trackingSourcePath={getTrackedSourcePath('/results', isProbe)} probeMode={isProbe} />
               </div>
               <div className="res-hero-copy">
                 <p className="res-hero-kicker">{errKicker}</p>
@@ -408,7 +443,7 @@ async function SearchContent({ query, sid, started, isProbe }: { query: string; 
       )
     }
 
-    const fswResult = await startFSWSearch(parsed, query, isProbe)
+    const fswResult = await startFSWSearch(parsed, query, isProbe, currency)
     searchId = fswResult.searchId ?? undefined
     cacheHit = fswResult.cache === 'hit'
     if (!searchId) {
@@ -417,9 +452,9 @@ async function SearchContent({ query, sid, started, isProbe }: { query: string; 
           <section className="res-hero res-hero--results">
             <div className="res-hero-backdrop" aria-hidden="true" />
             <div className="res-hero-inner">
-              <PageTopbar query={query} homeHref={homeHref} />
+              <PageTopbar homeHref={homeHref} initialCurrency={currency} searchQuery={query} probeMode={isProbe} />
               <div className="res-search-shell">
-                <ResultsSearchForm initialQuery={query} trackingSearchId={searchId} trackingSourcePath={getTrackedSourcePath('/results', isProbe)} probeMode={isProbe} />
+                <ResultsSearchForm initialQuery={query} initialCurrency={currency} trackingSearchId={searchId} trackingSourcePath={getTrackedSourcePath('/results', isProbe)} probeMode={isProbe} />
               </div>
               <div className="res-hero-copy">
                 <p className="res-hero-kicker">Search unavailable</p>
@@ -441,12 +476,12 @@ async function SearchContent({ query, sid, started, isProbe }: { query: string; 
   // Hand off immediately to the stable search page so the browser can leave
   // the homepage without waiting for server-side polling on /results.
   const startedTs = started || Date.now().toString()
-  redirect(getTrackedSourcePath(`/results/${searchId}?started=${startedTs}`, isProbe))
+  redirect(getTrackedSourcePath(`/results/${searchId}?started=${startedTs}&cur=${encodeURIComponent(currency)}&q=${encodeURIComponent(query)}`, isProbe))
 }
 
 // ── Suspense fallback (shown instantly while SearchContent runs) ───────────────
 
-function SearchFallback({ query, isProbe }: { query: string; isProbe: boolean }) {
+function SearchFallback({ query, isProbe, initialCurrency }: { query: string; isProbe: boolean; initialCurrency: CurrencyCode }) {
   const parsed = parseNLQuery(query)
   const routeLabel = [
     parsed.origin_name || parsed.origin,
@@ -465,10 +500,11 @@ function SearchFallback({ query, isProbe }: { query: string; isProbe: boolean })
             </Link>
             <div className="res-topbar-actions">
               <GlobeButton inline />
+              <CurrencyButton inline behavior="rerun-search" initialCurrency={initialCurrency} searchQuery={query} probeMode={isProbe} />
             </div>
           </div>
           <div className="res-search-shell">
-            <ResultsSearchForm initialQuery={query} probeMode={isProbe} />
+            <ResultsSearchForm initialQuery={query} initialCurrency={initialCurrency} probeMode={isProbe} />
           </div>
           <div className="res-searching-stage">
             <SearchingTasks
@@ -500,10 +536,17 @@ export async function generateMetadata({ searchParams }: { searchParams: Promise
 export default async function ResultsQueryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; sid?: string; started?: string; probe?: string }>
+  searchParams: Promise<{ q?: string; sid?: string; started?: string; probe?: string; cur?: string }>
 }) {
-  const { q, sid, started, probe } = await searchParams
+  const { q, sid, started, probe, cur } = await searchParams
   const isProbe = isProbeModeValue(probe)
+  const requestHeaders = await headers()
+  const cookieStore = await cookies()
+  const resolvedCurrency = resolveSearchCurrency({
+    queryParam: cur?.trim(),
+    cookieValue: cookieStore.get(LETSFG_CURRENCY_COOKIE)?.value,
+    fallback: detectPreferredCurrency(requestHeaders),
+  })
 
   if (!q?.trim()) {
     redirect(isProbe ? '/en?probe=1' : '/')
@@ -512,8 +555,8 @@ export default async function ResultsQueryPage({
   const query = q.trim()
 
   return (
-    <Suspense fallback={<SearchFallback query={query} isProbe={isProbe} />}>
-      <SearchContent query={query} sid={sid?.trim()} started={started?.trim()} isProbe={isProbe} />
+    <Suspense fallback={<SearchFallback query={query} isProbe={isProbe} initialCurrency={resolvedCurrency} />}>
+      <SearchContent query={query} sid={sid?.trim()} started={started?.trim()} isProbe={isProbe} currency={resolvedCurrency} />
     </Suspense>
   )
 }

@@ -1,9 +1,12 @@
 import { Metadata } from 'next'
-import { headers } from 'next/headers'
+import { cookies, headers } from 'next/headers'
 import { notFound } from 'next/navigation'
 import SearchPageClient from './SearchPageClient'
-import { getOfferKnownTotalPrice } from '../../../lib/offer-pricing'
+import { LETSFG_CURRENCY_COOKIE, resolveSearchCurrency } from '../../../lib/currency-preference'
+import { getOfferDisplayTotalPrice } from '../../../lib/display-price'
+import { formatCurrencyAmount } from '../../../lib/user-currency'
 import { appendProbeParam, getTrackingSearchId, isProbeModeValue } from '../../../lib/probe-mode'
+import { detectPreferredCurrency } from '../../../lib/user-currency'
 
 // Types for our search results
 interface FlightOffer {
@@ -48,6 +51,22 @@ interface SearchResult {
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://letsfg.co'
 
+function buildFallbackSearchQuery(parsed: SearchResult['parsed']): string {
+  const origin = parsed.origin || parsed.origin_name
+  const destination = parsed.destination || parsed.destination_name
+
+  if (!origin || !destination) {
+    return ''
+  }
+
+  const parts = [`${origin} to ${destination}`]
+
+  if (parsed.date) parts.push(parsed.date)
+  if (parsed.return_date) parts.push(`return ${parsed.return_date}`)
+
+  return parts.join(' ').trim()
+}
+
 async function getApiBase(): Promise<string> {
   const explicitBase = process.env.API_URL?.trim()
   if (explicitBase) {
@@ -78,10 +97,30 @@ async function getSearchResults(searchId: string, isProbe: boolean): Promise<Sea
   }
 }
 
+async function resolveRequestCurrency(queryParam?: string): Promise<string> {
+  const requestHeaders = await headers()
+  const cookieStore = await cookies()
+
+  return resolveSearchCurrency({
+    queryParam: queryParam?.trim(),
+    cookieValue: cookieStore.get(LETSFG_CURRENCY_COOKIE)?.value,
+    fallback: detectPreferredCurrency(requestHeaders),
+  })
+}
+
 // Generate metadata for SEO and social sharing
-export async function generateMetadata({ params }: { params: Promise<{ searchId: string }> }): Promise<Metadata> {
+export async function generateMetadata({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ searchId: string }>
+  searchParams: Promise<{ probe?: string; cur?: string }>
+}): Promise<Metadata> {
   const { searchId } = await params
-  const result = await getSearchResults(searchId, false)
+  const sp = await searchParams
+  const isProbe = isProbeModeValue(sp?.probe)
+  const displayCurrency = await resolveRequestCurrency(sp?.cur)
+  const result = await getSearchResults(searchId, isProbe)
   
   if (!result) {
     return { title: 'Search not found — LetsFG' }
@@ -105,23 +144,25 @@ export async function generateMetadata({ params }: { params: Promise<{ searchId:
   
   const cheapest = offers?.reduce((best, offer) => {
     if (!best) return offer
-    return getOfferKnownTotalPrice(offer) < getOfferKnownTotalPrice(best) ? offer : best
+    return getOfferDisplayTotalPrice(offer, displayCurrency) < getOfferDisplayTotalPrice(best, displayCurrency) ? offer : best
   }, offers?.[0])
-  const cheapestDisplayPrice = cheapest ? Math.round(getOfferKnownTotalPrice(cheapest)) : null
+  const cheapestDisplayPrice = cheapest ? getOfferDisplayTotalPrice(cheapest, displayCurrency) : null
+  const cheapestFormattedPrice = cheapestDisplayPrice === null ? null : formatCurrencyAmount(cheapestDisplayPrice, displayCurrency)
   const title = cheapest 
-    ? `${offers?.length} flights ${parsed.origin_name || parsed.origin} → ${parsed.destination_name || parsed.destination} from ${cheapest.currency}${cheapestDisplayPrice}`
+    ? `${offers?.length} flights ${parsed.origin_name || parsed.origin} → ${parsed.destination_name || parsed.destination} from ${cheapestFormattedPrice}`
     : `Flights ${parsed.origin} → ${parsed.destination}`
   
   return {
     title: `${title} — LetsFG`,
-    description: `Found ${offers?.length || 0} flights. Cheapest: ${cheapest?.currency}${cheapestDisplayPrice} on ${cheapest?.airline}. Zero markup, raw airline prices.`,
+    description: `Found ${offers?.length || 0} flights. Cheapest: ${cheapestFormattedPrice} on ${cheapest?.airline}. Zero markup, raw airline prices.`,
   }
 }
 
-export default async function ResultsPage({ params, searchParams }: { params: Promise<{ searchId: string }>; searchParams: Promise<{ sort?: string; filter?: string; started?: string; probe?: string }> }) {
+export default async function ResultsPage({ params, searchParams }: { params: Promise<{ searchId: string }>; searchParams: Promise<{ sort?: string; filter?: string; started?: string; probe?: string; cur?: string; q?: string }> }) {
   const { searchId } = await params
   const sp = await searchParams
   const isProbe = isProbeModeValue(sp?.probe)
+  const initialCurrency = await resolveRequestCurrency(sp?.cur)
   const trackingSearchId = getTrackingSearchId(searchId, isProbe)
   // Render immediately with the current snapshot and let SearchPageClient poll.
   // Blocking here traps users on loading.tsx while the server waits.
@@ -131,7 +172,8 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
     notFound()
   }
 
-  const { status, query, parsed, progress, offers, searched_at, expires_at } = result
+  const { status, query: resultQuery, parsed, progress, offers, searched_at, expires_at } = result
+  const query = resultQuery?.trim() || sp?.q?.trim() || buildFallbackSearchQuery(parsed)
 
   const isSearching = status === 'searching'
   const routeLabel = [parsed.origin_name || parsed.origin, parsed.destination_name || parsed.destination]
@@ -165,8 +207,8 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
             name: `${offer.airline} ${offer.origin}→${offer.destination}`,
             offers: {
               '@type': 'Offer',
-              price: String(Math.round(getOfferKnownTotalPrice(offer))),
-              priceCurrency: offer.currency,
+              price: String(Math.round(getOfferDisplayTotalPrice(offer, initialCurrency))),
+              priceCurrency: initialCurrency,
               availability: 'https://schema.org/InStock',
             },
           },
@@ -190,6 +232,7 @@ export default async function ResultsPage({ params, searchParams }: { params: Pr
         searchId={searchId}
         trackingSearchId={trackingSearchId}
         isTestSearch={isProbe}
+        initialCurrency={initialCurrency}
         query={query}
         parsed={parsed}
         initialStatus={status}
