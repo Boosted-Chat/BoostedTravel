@@ -109,9 +109,11 @@ def _build_listing_url(req: FlightSearchRequest) -> str:
     dep = req.date_from.strftime("%d/%m/%Y")
     ret = f"-{req.return_from.strftime('%d/%m/%Y')}" if req.return_from else ""
     cabin = _CABIN_MAP.get(req.cabin_class or "M", 0)
+    # Country label in srch varies by route; omit to keep deep-link valid for
+    # both domestic and international flights (EaseMyTrip accepts code-only).
     srch = (
-        f"{req.origin}-{_city_label(req.origin)}-India|"
-        f"{req.destination}-{_city_label(req.destination)}-India|"
+        f"{req.origin}-{_city_label(req.origin)}|"
+        f"{req.destination}-{_city_label(req.destination)}|"
         f"{dep}{ret}"
     )
     return (
