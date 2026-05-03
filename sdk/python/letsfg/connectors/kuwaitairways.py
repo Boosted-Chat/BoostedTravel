@@ -649,9 +649,10 @@ class KuwaitAirwaysConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        # Kuwait Airways KU — Economy: 23 kg checked bag included; seat selection included
+        # Kuwait Airways KU — Economy: 23 kg checked bag included; cabin bag + personal item included
         return {
-            "checked_bag_note": "23 kg included",
+            "checked_bag_note": "23 kg checked bag included",
+            "bags_note": "cabin bag + personal item included",
             "seat_note": "seat selection included",
             "currency": "KWD",
         }

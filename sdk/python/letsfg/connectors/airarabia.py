@@ -262,8 +262,13 @@ class AirArabiaConnectorClient:
                         rt_combined.sort(key=lambda o: o.price)
                         unique = rt_combined[:50]
 
-        _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
-        unique = [o for o in unique if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
+        # FeaturedOffers returns cheapest-date-in-month; accept any date in the queried month
+        _req_month = req.date_from.month
+        unique = [
+            o for o in unique
+            if o.outbound and o.outbound.segments
+            and o.outbound.segments[0].departure.month == _req_month
+        ]
         unique.sort(key=lambda o: o.price)
 
         logger.info(
@@ -422,12 +427,12 @@ class AirArabiaConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        # Air Arabia G9 — Light fare: cabin bag 7 kg free, checked bag add-on
+        # Air Arabia G9 — Light fare: cabin bag 7 kg free, checked bag add-on from 40 AED
         return {
-            "checked_bag_note": "not included (Light fare – cabin bag 7 kg free)",
-            "bags_note": "checked bag 20 kg add-on from ~40 AED",
+            "checked_bag_note": "checked bag 20 kg not included – add-on from ~40 AED",
+            "bags_note": "cabin bag 7 kg included free (Light fare)",
             "seat_note": "seat selection add-on from ~15 AED",
-            "bags_from": 40.0,
+            "checked_bag_from": 40.0,
             "currency": "AED",
         }
 
@@ -435,7 +440,7 @@ class AirArabiaConnectorClient:
         checked_bag_note = ancillary.get("checked_bag_note")
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
-        bags_from = ancillary.get("bags_from")
+        checked_bag_from = ancillary.get("checked_bag_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if checked_bag_note:
@@ -444,8 +449,8 @@ class AirArabiaConnectorClient:
                 offer.conditions["carry_on"] = bags_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+            if checked_bag_from is not None:
+                offer.bags_price["checked_bag"] = checked_bag_from
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(

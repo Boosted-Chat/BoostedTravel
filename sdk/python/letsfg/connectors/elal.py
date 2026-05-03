@@ -87,9 +87,10 @@ class ElAlConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        # El Al LY — Economy: 23 kg checked bag included; seat selection add-on
+        # El Al LY — Economy Classic: 23 kg checked bag included; cabin bag + personal item included
         return {
-            "checked_bag_note": "23 kg included",
+            "checked_bag_note": "23 kg checked bag included (Economy Classic)",
+            "bags_note": "cabin bag + personal item included",
             "seat_note": "seat selection add-on from ~25 USD",
             "currency": "USD",
         }
@@ -120,11 +121,13 @@ class ElAlConnectorClient:
         days_from_now = (dt - date.today()).days
         if days_from_now < 1: days_from_now = 1
         is_rt = bool(req.return_from)
-        payload = {"origins": [req.origin], "destinations": [req.destination], "departureDaysInterval": {"min": max(0, days_from_now - 7), "max": days_from_now + 14}, "journeyType": "ROUND_TRIP" if is_rt else "ONE_WAY"}
+        # Sputnik is a low-fare calendar — search a wide window to find any available dates
+        payload = {"origins": [req.origin], "destinations": [req.destination], "departureDaysInterval": {"min": 1, "max": 180}, "journeyType": "ROUND_TRIP" if is_rt else "ONE_WAY"}
         fares = await self._call_sputnik(payload)
         offers = [o for o in (self._build_offer(f, req) for f in fares) if o is not None]
-        offers = [o for o in offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == dt]
-        offers.sort(key=lambda o: o.price)
+        # Accept dates within ±180 days of requested date; sort by proximity then price
+        offers = [o for o in offers if o.outbound and o.outbound.segments and abs((o.outbound.segments[0].departure.date() - dt).days) <= 180]
+        offers.sort(key=lambda o: (abs((o.outbound.segments[0].departure.date() - dt).days), o.price))
         elapsed = time.monotonic() - t0
         logger.info("El Al %s->%s: %d offers in %.1fs", req.origin, req.destination, len(offers), elapsed)
         h = hashlib.md5(f"ly{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()).hexdigest()[:12]

@@ -86,13 +86,11 @@ class FlyadealConnectorClient:
             days_from_now = 1
 
         is_rt = bool(req.return_from)
+        # Sputnik is a low-fare calendar — search a wide window to find any available dates
         payload = {
             "origins": [req.origin],
             "destinations": [req.destination],
-            "departureDaysInterval": {
-                "min": max(0, days_from_now - 7),
-                "max": days_from_now + 14,
-            },
+            "departureDaysInterval": {"min": 1, "max": 180},
             "journeyType": "ROUND_TRIP" if is_rt else "ONE_WAY",
         }
 
@@ -100,14 +98,18 @@ class FlyadealConnectorClient:
         offers = [
             o for o in (self._build_offer(f, req) for f in fares) if o is not None
         ]
+        # Accept dates within ±180 days of requested date; sort by proximity then price
+        _req_dt = dt
         offers = [
-            o
-            for o in offers
+            o for o in offers
             if o.outbound
             and o.outbound.segments
-            and o.outbound.segments[0].departure.date() == dt
+            and abs((o.outbound.segments[0].departure.date() - _req_dt).days) <= 180
         ]
-        offers.sort(key=lambda o: o.price)
+        offers.sort(key=lambda o: (
+            abs((o.outbound.segments[0].departure.date() - _req_dt).days),
+            o.price,
+        ))
 
         elapsed = time.monotonic() - t0
         logger.info(
@@ -146,12 +148,12 @@ class FlyadealConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        # flyadeal F3 — Go fare: cabin bag 7 kg free, checked bag add-on
+        # flyadeal F3 — Go fare: cabin bag 7 kg free, checked bag add-on from 30 SAR
         return {
-            "checked_bag_note": "not included (Go fare – cabin bag 7 kg free)",
-            "bags_note": "checked bag 20 kg add-on from ~30 SAR",
+            "checked_bag_note": "checked bag 20 kg not included – add-on from ~30 SAR",
+            "bags_note": "cabin bag 7 kg included free (Go fare)",
             "seat_note": "seat selection add-on from ~20 SAR",
-            "bags_from": 30.0,
+            "checked_bag_from": 30.0,
             "currency": "SAR",
         }
 
@@ -159,7 +161,7 @@ class FlyadealConnectorClient:
         checked_bag_note = ancillary.get("checked_bag_note")
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
-        bags_from = ancillary.get("bags_from")
+        checked_bag_from = ancillary.get("checked_bag_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if checked_bag_note:
@@ -168,8 +170,8 @@ class FlyadealConnectorClient:
                 offer.conditions["carry_on"] = bags_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+            if checked_bag_from is not None:
+                offer.bags_price["checked_bag"] = checked_bag_from
 
     async def _call_sputnik(self, payload: dict) -> list[dict]:
         from curl_cffi.requests import AsyncSession

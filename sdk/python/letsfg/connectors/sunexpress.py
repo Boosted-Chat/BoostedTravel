@@ -674,12 +674,12 @@ class SunExpressConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        # SunExpress XQ — Essential fare: cabin bag 8 kg free, checked bag add-on
+        # SunExpress XQ — Essential fare: cabin bag 8 kg free, checked bag add-on from 10 EUR
         return {
-            "checked_bag_note": "not included (Essential fare – cabin bag 8 kg free)",
-            "bags_note": "checked bag 20 kg add-on from ~10 EUR",
+            "checked_bag_note": "checked bag 20 kg not included – add-on from ~10 EUR",
+            "bags_note": "cabin bag 8 kg included free (Essential fare)",
             "seat_note": "seat selection add-on from ~5 EUR",
-            "bags_from": 10.0,
+            "checked_bag_from": 10.0,
             "currency": "EUR",
         }
 
@@ -687,7 +687,7 @@ class SunExpressConnectorClient:
         checked_bag_note = ancillary.get("checked_bag_note")
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
-        bags_from = ancillary.get("bags_from")
+        checked_bag_from = ancillary.get("checked_bag_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if checked_bag_note:
@@ -696,8 +696,8 @@ class SunExpressConnectorClient:
                 offer.conditions["carry_on"] = bags_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+            if checked_bag_from is not None:
+                offer.bags_price["checked_bag"] = checked_bag_from
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(f"sunexpress{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]
