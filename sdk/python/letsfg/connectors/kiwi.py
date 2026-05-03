@@ -359,20 +359,27 @@ class KiwiConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        return None
+        # Kiwi adds its own ancillary layer on top of the airline ticket price.
+        # Bags and seats are sold by Kiwi at marked-up prices — not the airline's
+        # own prices. Personal item (small backpack) is free; everything else costs
+        # extra at Kiwi's checkout, regardless of what the airline charges directly.
+        return {
+            "checked_bag_note": "not included – add-on from ~52 € at Kiwi checkout (Kiwi markup; book airline direct for lower bag fees)",
+            "bags_note": "personal item free; cabin bag add-on from ~49 € at Kiwi checkout",
+            "seat_note": "seat add-on from ~21 € at Kiwi checkout; skip for free random seat",
+        }
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
+        checked_bag_note = ancillary.get("checked_bag_note")
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
-        bags_from = ancillary.get("bags_from")
-        anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
+            if checked_bag_note:
+                offer.conditions["checked_bag"] = checked_bag_note
             if bags_note:
                 offer.conditions["carry_on"] = bags_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """Search flights via Kiwi.com's frontend GraphQL API."""
