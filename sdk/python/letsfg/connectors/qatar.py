@@ -229,17 +229,18 @@ def _extract_qr_ancillaries(fare_obj: dict) -> dict:
 
     fare_label = family_code.replace("_", " ").title() if family_code else "Economy"
 
+    carry_on_note = "Carry-on bag included (7 kg hand baggage)."
     if checked_kg is not None and checked_kg > 0:
-        bag_note = f"{fare_label}: 1 checked bag included ({checked_kg} kg). Carry-on 7 kg included."
+        checked_note = f"{fare_label}: 1 checked bag included ({checked_kg} kg)."
     else:
-        bag_note = f"{fare_label}: no checked bag included. First checked bag fee applies."
+        checked_note = f"{fare_label}: no checked bag included. First checked bag fee applies."
 
     seat_note = (
         "Seat selection: included." if seat_free
         else "Seat selection: standard from USD 12. Preferred seats from USD 60. Free at check-in."
     )
 
-    return {"carry_on": bag_note, "seat": seat_note}
+    return {"carry_on": carry_on_note, "checked_bag": checked_note, "seat": seat_note}
 
 
 class QatarConnectorClient:
@@ -264,20 +265,9 @@ class QatarConnectorClient:
                 ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
                 ob_result.total_results = len(ob_result.offers)
         if ob_result.offers:
-            segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
-            anc_origin = segs[0].origin if segs else req.origin
-            anc_dest = segs[-1].destination if segs else req.destination
-            try:
-                ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, ob_result.currency),
-                    timeout=45.0,
-                )
-                if ancillary:
-                    self._apply_ancillaries(ob_result.offers, ancillary)
-            except (asyncio.TimeoutError, TimeoutError):
-                logger.debug("Ancillary fetch timed out for %s\u2192%s", anc_origin, anc_dest)
-            except Exception as _anc_err:
-                logger.debug("Ancillary fetch error for %s\u2192%s: %s", anc_origin, anc_dest, _anc_err)
+            # Bag/seat data is now parsed inline from fareFamilyFeatures in _parse_offers.
+            # No need to call _fetch_ancillaries — conditions are already set per-offer.
+            pass
         return ob_result
 
     async def _fetch_ancillaries(
@@ -285,7 +275,8 @@ class QatarConnectorClient:
     ) -> dict | None:
         # Qatar includes checked bag on Economy fares.
         return {
-            "bags_note": "1 checked bag included (23 kg Economy). Carry-on 7 kg included.",
+            "bags_note": "Carry-on bag included (7 kg hand baggage).",
+            "checked_bag": "1 checked bag included (23 kg Economy).",
             "seat_note": "Seat selection: standard from USD 12. Preferred seats from USD 60. Free at check-in.",
             "bags_from": None,
             "currency": currency,
@@ -293,16 +284,22 @@ class QatarConnectorClient:
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
+        checked_note = ancillary.get("checked_bag") or bags_note
         seat_note = ancillary.get("seat_note")
         bags_from = ancillary.get("bags_from")
+        checked_from = ancillary.get("checked_bag_price")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
                 offer.conditions["carry_on"] = bags_note
+            if checked_note:
+                offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price["checked"] = bags_from
+            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
+                offer.bags_price["checked"] = checked_from
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         global _homepage_warmed

@@ -544,7 +544,8 @@ class LatamConnectorClient:
         if "checked_bag" not in conditions and fare_name:
             name_upper = fare_name.upper()
             if "LIGHT" in name_upper or "BASIC" in name_upper:
-                conditions["checked_bag"] = "no free checked bag (Light/Basic fare)"
+                conditions["checked_bag"] = "no free checked bag — add-on from ~USD 40"
+                bags_price["checked_bag"] = 40.0
             elif any(k in name_upper for k in ("ECONOMY", "ECONOM", "PLUS", "FLEX")):
                 if "PLUS" in name_upper or "FLEX" in name_upper:
                     conditions["checked_bag"] = "2x 23kg bags included"
@@ -555,7 +556,43 @@ class LatamConnectorClient:
             elif "PREMIUM" in name_upper or "BUSINESS" in name_upper or "TOP" in name_upper:
                 conditions["checked_bag"] = "2x 32kg bags included"
                 bags_price["checked_bag"] = 0.0
+        # Carry-on: check API response first, then infer from fare family name
+        if "carry_on" not in conditions:
+            cabin_allow = (
+                cheapest_family.get("cabinBagAllowance") or cheapest_family.get("cabinBag")
+                or cheapest_family.get("handBagAllowance") or cheapest_family.get("handBag") or {}
+            )
+            if isinstance(cabin_allow, dict) and cabin_allow:
+                qty = cabin_allow.get("quantity") or cabin_allow.get("pieces")
+                if qty is not None:
+                    try:
+                        qty_int = int(qty)
+                        weight = cabin_allow.get("weight") or cabin_allow.get("maxWeight") or 10
+                        if qty_int == 0:
+                            conditions["carry_on"] = "no free overhead carry-on — add-on from ~USD 40"
+                            bags_price["carry_on"] = 40.0
+                        else:
+                            conditions["carry_on"] = f"{qty_int}x {weight}kg carry-on included"
+                            bags_price["carry_on"] = 0.0
+                    except (TypeError, ValueError):
+                        pass
+            if "carry_on" not in conditions:
+                name_upper = fare_name.upper() if fare_name else ""
+                if any(k in name_upper for k in ("LIGHT", "BASIC")):
+                    conditions["carry_on"] = "no free overhead carry-on (Light/Basic) — add-on from ~USD 40"
+                    bags_price["carry_on"] = 40.0
+                elif any(k in name_upper for k in ("PREMIUM", "BUSINESS", "TOP")):
+                    conditions["carry_on"] = "2x carry-on bags included"
+                    bags_price["carry_on"] = 0.0
+                else:
+                    conditions["carry_on"] = "1x 10kg carry-on included"
+                    bags_price["carry_on"] = 0.0
 
+        # Seat selection
+        if "seat" not in conditions:
+            conditions["seat"] = "seat selection from ~USD 15 — add at checkout"
+        conditions.setdefault("carry_on", "1 cabin bag (10 kg) + 1 personal item included")
+        conditions.setdefault("seat", "seat selection from ~USD 15; included on Flex/Business fares")
         return conditions, bags_price
 
     def _extract_segments(self, flight: dict, req: FlightSearchRequest) -> list[FlightSegment]:

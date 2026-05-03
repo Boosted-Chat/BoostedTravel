@@ -199,12 +199,20 @@ class WingoConnectorClient:
             # Wingo fare families (Copa spin-off): LIGHT/BASIC=no bag, CLASSIC=1 bag, FLEX=2 bags
             if any(k in name_upper for k in ("LIGHT", "BASIC", "BASE", "ZERO", "MINI")):
                 conditions["checked_bag"] = "no free checked bag"
+                conditions["carry_on"] = "no free overhead carry-on (add-on from ~USD 10)"
             elif any(k in name_upper for k in ("FLEX", "PLUS", "PREMIUM", "BUSINESS", "FULL")):
                 conditions["checked_bag"] = "2x 23kg bags included"
+                conditions["carry_on"] = "1x 10kg carry-on included"
             elif any(k in name_upper for k in ("CLASSIC", "ECONOMY", "STANDARD", "REGULAR")):
                 conditions["checked_bag"] = "1x 23kg bag included"
+                conditions["carry_on"] = "1x 10kg carry-on included"
+            else:
+                conditions["carry_on"] = "carry-on policy depends on fare — check at checkout"
         else:
             conditions["fare_upgrade_note"] = "Route page exposes base fare only; no baggage or seat pricing"
+            conditions["carry_on"] = "carry-on add-on from ~USD 10"
+            conditions["checked_bag"] = "checked bag add-on from ~USD 25 — check at checkout"
+        conditions.setdefault("seat", "seat selection from ~USD 6 — add at checkout")
         return conditions
 
     def _build_offers(self, fares: list[dict], req: FlightSearchRequest,
@@ -286,8 +294,15 @@ class WingoConnectorClient:
             else:
                 nearby_fares.append(fare)
 
-        # Prefer exact-date fares; fall back to all route fares
-        use_fares = exact_fares
+        # Prefer exact-date fares; fall back to cheapest nearby fare as indicative price
+        if exact_fares:
+            use_fares = exact_fares
+        elif nearby_fares:
+            # airTRFX pages show cached prices — use lowest-priced nearby fare as estimate
+            cheapest = min(nearby_fares, key=lambda f: float(f.get("totalPrice") or 999999))
+            use_fares = [cheapest]
+        else:
+            use_fares = []
 
         for fare in use_fares:
             orig = fare.get("originAirportCode", "")
@@ -331,6 +346,18 @@ class WingoConnectorClient:
             total_price = round(price_f + ib_price, 2) if is_rt and ib_route else price_f
             prefix = "p5_rt_" if is_rt and ib_route else "p5_"
             conditions = self._extract_fare_conditions(fare)
+            # Derive USD-reference bags_price directly (COP offers won't match USD ref in engine)
+            _cb = conditions.get("checked_bag", "").lower()
+            _co = conditions.get("carry_on", "").lower()
+            bags_price: dict[str, float] = {"seat_selection": 6.0}
+            if "2x 23kg" in _cb or "1x 23kg" in _cb:
+                bags_price["checked_bag"] = 0.0
+            elif "no free" in _cb or "add-on" in _cb:
+                bags_price["checked_bag"] = 20.0
+            if "1x 10kg" in _co or "carry-on included" in _co:
+                bags_price["carry_on"] = 0.0
+            elif "no free" in _co or "add-on" in _co:
+                bags_price["carry_on"] = 10.0
 
             offers.append(FlightOffer(
                 id=f"{prefix}{fid}",
@@ -342,6 +369,7 @@ class WingoConnectorClient:
                 airlines=["Wingo"],
                 owner_airline="P5",
                 conditions=conditions,
+                bags_price=bags_price,
                 booking_url=(
                     f"https://booking.wingo.com/search/"
                     f"?origin={req.origin}&destination={req.destination}"

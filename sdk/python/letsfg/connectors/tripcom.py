@@ -105,16 +105,35 @@ class TripcomConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        return None
+        # Trip.com (Ctrip) books via GDS/airline systems and generally passes through
+        # the airline's own ancillary prices. A small service fee may be added per
+        # booking (0–15 € depending on route). Bag and seat prices are airline-rate.
+        return {
+            "carry_on": (
+                "cabin bag: included or extra depending on airline fare —"
+                " check Trip.com checkout for exact allowance"
+            ),
+            "checked_bag": (
+                "checked bag: extra cost — price shown at Trip.com checkout at airline rates"
+                " (Trip.com may add a small service fee per booking)"
+            ),
+            "seat": (
+                "seat selection: available at Trip.com checkout at airline’s own rates"
+                " (standard economy seats often free; preferred/extra legroom cost more)"
+            ),
+        }
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
-        bags_note = ancillary.get("bags_note")
-        seat_note = ancillary.get("seat_note")
+        bags_note = ancillary.get("carry_on") or ancillary.get("bags_note")
+        checked_note = ancillary.get("checked_bag")
+        seat_note = ancillary.get("seat") or ancillary.get("seat_note")
         bags_from = ancillary.get("bags_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
                 offer.conditions["carry_on"] = bags_note
+            if checked_note:
+                offer.conditions["checked_bag"] = checked_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():

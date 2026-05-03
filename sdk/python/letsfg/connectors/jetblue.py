@@ -575,14 +575,14 @@ class JetBlueConnectorClient:
             if now - ts < _ANCILLARY_CACHE_TTL:
                 return cached
         # JetBlue: Blue Basic fare has no carry-on or checked bag included.
-        # Carry-on from ~$35, first checked bag ~$35.
+        # Carry-on ~$45 on most routes; first checked bag ~$35.
         result: dict = {
-            "carry_on_from": 35.0,
-            "carry_on_note": "carry-on from +USD 35 (Blue Basic — Blue/Extra fares include carry-on)",
+            "carry_on_from": 45.0,
+            "carry_on_note": "carry-on from +USD 45 (Blue Basic — Blue/Extra fares include carry-on)",
             "checked_from": 35.0,
             "checked_note": "first checked bag from +USD 35 (Blue Basic — Blue/Extra fares include 1 bag)",
-            "seat_from": 15.0,
-            "seat_note": "seat selection from +USD 15 (Blue Basic)",
+            "seat_from": 0.0,
+            "seat_note": "standard seat included at check-in (Blue Basic — preferred from +USD 15)",
             "currency": "USD",
         }
         _ancillary_cache[cache_key] = (now, result)

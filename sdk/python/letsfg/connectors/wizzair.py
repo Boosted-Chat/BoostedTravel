@@ -201,14 +201,17 @@ class WizzairConnectorClient:
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions["cabin_bag"] = bags_note
             if seat_note:
-                offer.conditions["seat_from"] = seat_note
+                offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
+            # Set numeric reference prices regardless of currency: these are
+            # approximate EUR reference values.  Only skip if currency matches
+            # and value is non-zero (so we don't show wrong amounts for 0.0).
+            if bags_from is not None and (bags_from == 0.0 or offer.currency.upper() == anc_currency.upper()):
+                offer.bags_price["cabin_bag"] = bags_from
+            if checked_bag_from is not None:
                 offer.bags_price["checked_bag"] = checked_bag_from
 
 

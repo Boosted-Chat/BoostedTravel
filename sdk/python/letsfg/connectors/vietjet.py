@@ -914,11 +914,14 @@ class VietJetConnectorClient:
 
             # Extract pricing from fareOptions
             if fare_options:
-                best_price, best_currency, _ = self._cheapest_fare(fare_options, currency)
+                best_price, best_currency, _, fare_type = self._cheapest_fare(fare_options, currency)
                 if best_price is not None and best_price > 0:
+                    # Map fareType identifier → live bag conditions
+                    bag_conds = self._fare_type_to_conditions(fare_type)
                     offer_key = opt.get("key", seg_key)
                     offers.append(self._make_offer(
                         offer_key, best_price, best_currency, route, booking_url,
+                        conditions=bag_conds,
                     ))
                     continue
 
@@ -949,11 +952,12 @@ class VietJetConnectorClient:
     def _cheapest_fare(fare_options: list[dict], default_currency: str) -> tuple:
         """Extract cheapest adult fare from fareOptions[].fareCharges[].currencyAmounts[].
 
-        Returns (price, currency, cabin_class) or (None, default_currency, "Economy").
+        Returns (price, currency, cabin_class, fare_type_identifier) or (None, default_currency, "Economy", "").
         """
         best_price = None
         best_currency = default_currency
         best_cabin = "Economy"
+        best_fare_type = ""
 
         for fo in fare_options:
             # Skip invalid / sold out fares
@@ -964,6 +968,13 @@ class VietJetConnectorClient:
 
             cabin = fo.get("cabinClass", {})
             cabin_desc = cabin.get("description", "Economy") if isinstance(cabin, dict) else "Economy"
+
+            # Capture fareType identifier for this option
+            fare_type_raw = fo.get("fareType", {})
+            fare_type_id = (
+                fare_type_raw.get("identifier", "") if isinstance(fare_type_raw, dict)
+                else str(fare_type_raw or "")
+            ).upper()
 
             # VietJet uses fareCharges[].currencyAmounts[].totalAmount
             for charge in fo.get("fareCharges", []):
@@ -985,6 +996,7 @@ class VietJetConnectorClient:
                                 best_currency = (cur.get("code", default_currency)
                                                  if isinstance(cur, dict) else str(cur or default_currency))
                                 best_cabin = cabin_desc
+                                best_fare_type = fare_type_id
                         except (TypeError, ValueError):
                             pass
 
@@ -1000,10 +1012,11 @@ class VietJetConnectorClient:
                             if v > 0 and (best_price is None or v < best_price):
                                 best_price = v
                                 best_cabin = cabin_desc
+                                best_fare_type = fare_type_id
                         except (TypeError, ValueError):
                             pass
 
-        return best_price, best_currency, best_cabin
+        return best_price, best_currency, best_cabin, best_fare_type
 
     @staticmethod
     def _extract_lowest_fare(lowest_fares: dict, target_date: str) -> Optional[float]:
@@ -1064,8 +1077,37 @@ class VietJetConnectorClient:
         )
 
     @staticmethod
+    def _fare_type_to_conditions(fare_type: str) -> dict:
+        """Map VietJet fareType identifier to live bag conditions.
+
+        VietJet fare families (from API fareType.identifier):
+          ECO / ECONOMY  — no carry-on overhead; personal item only; all bags extra
+          STANDARD / SMART  — 7 kg carry-on + 20 kg checked bag included
+          FLEX / FLEXI / COMBO  — 7 kg carry-on + 20 kg checked bag + seat selection included
+        """
+        ft = (fare_type or "").upper()
+        if ft in {"ECO", "ECONOMY", "LITE"}:
+            return {
+                "carry_on": "no free carry-on (ECO fare — add from ~VND 200,000/7 kg)",
+                "checked_bag": "no checked bag (ECO fare — add from ~VND 400,000/20 kg)",
+            }
+        if ft in {"STANDARD", "SMART"}:
+            return {
+                "carry_on": "7 kg carry-on included",
+                "checked_bag": "20 kg checked bag included (SMART fare)",
+            }
+        if ft in {"FLEX", "FLEXI", "COMBO"}:
+            return {
+                "carry_on": "7 kg carry-on included",
+                "checked_bag": "20 kg checked bag included",
+                "seat": "seat selection included (FLEXI fare)",
+            }
+        return {}
+
+    @staticmethod
     def _make_offer(
         key: str, price: float, currency: str, route: FlightRoute, booking_url: str,
+        *, conditions: dict | None = None,
     ) -> FlightOffer:
         offer_id = hashlib.md5(str(key).encode()).hexdigest()[:12]
         return FlightOffer(
@@ -1081,6 +1123,7 @@ class VietJetConnectorClient:
             is_locked=False,
             source="vietjet_direct",
             source_tier="free",
+            conditions=dict(conditions) if conditions else {},
         )
 
     # ------------------------------------------------------------------
@@ -1188,18 +1231,19 @@ class VietJetConnectorClient:
         seat_from = ancillary.get("seat_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
+            # Use setdefault so live fare-type conditions (set in _parse_travel_options) are not overwritten
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
-                offer.conditions["checked_bag"] = checked_note
+                offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
+                offer.conditions.setdefault("seat", seat_note)
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price.setdefault("carry_on", bags_from)
             if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.bags_price.setdefault("checked_bag", checked_from)
             if seat_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["seat"] = seat_from
+                offer.bags_price.setdefault("seat", seat_from)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"vietjet{req.origin}{req.destination}{req.date_from}{req.return_from}".encode()).hexdigest()[:12]

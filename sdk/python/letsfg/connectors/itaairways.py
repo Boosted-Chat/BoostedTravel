@@ -1491,8 +1491,8 @@ class ITAAirwaysConnectorClient:
                     if desc not in cabin_bag_parts:
                         cabin_bag_parts.append(desc)
         if cabin_bag_parts:
-            conditions["cabin_bag"] = f"included - {'; '.join(cabin_bag_parts)}"
-            bags_price["cabin_bag"] = 0.0
+            conditions["carry_on"] = f"included - {'; '.join(cabin_bag_parts)}"
+            bags_price["carry_on"] = 0.0
 
         for service in air_bound.get("services", []):
             if not isinstance(service, dict):

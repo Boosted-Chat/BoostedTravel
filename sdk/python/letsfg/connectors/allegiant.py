@@ -663,13 +663,13 @@ class AllegiantConnectorClient:
             ts, cached = _ancillary_cache[cache_key]
             if now - ts < _ANCILLARY_CACHE_TTL:
                 return cached
-        # Allegiant: all fares are pay-per-bag. Carry-on from ~$10–$25 if
-        # purchased at booking (much more at the gate or day-of).
+        # Allegiant: all fares are pay-per-bag. Typical booking-time prices:
+        # carry-on ~$22, first checked bag ~$25. Gate prices are 2–3× higher.
         result: dict = {
-            "carry_on_from": 10.0,
-            "carry_on_note": "carry-on from +USD 10 (add at booking — cheaper than airport prices)",
-            "checked_from": 10.0,
-            "checked_note": "first checked bag from +USD 10 (add at booking)",
+            "carry_on_from": 22.0,
+            "carry_on_note": "carry-on from +USD 22 (add at booking — no bags on base fare)",
+            "checked_from": 25.0,
+            "checked_note": "first checked bag from +USD 25 (add at booking)",
             "seat_from": 5.0,
             "seat_note": "seat selection from +USD 5",
             "currency": "USD",

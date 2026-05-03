@@ -100,6 +100,66 @@ _ECONOMY_FARES = ["SAVER", "MAIN", "REFUNDABLE_MAIN"]
 _PREMIUM_FARES = ["PREMIUM", "REFUNDABLE_PREMIUM"]
 _FIRST_FARES = ["FIRST", "REFUNDABLE_FIRST"]
 
+# Live bag/seat pricing per fare class (from Alaska fare policy)
+_AS_FARE_BAGS: dict[str, dict] = {
+    "SAVER": {
+        "carry_on": 0.0,
+        "carry_on_note": "Carry-on included (Saver fare)",
+        "checked_bag": 30.0,
+        "checked_bag_note": "1st checked bag +USD 30 (Saver — no free bag included)",
+        "seat": None,
+        "seat_note": "Seat assigned at check-in (Saver — no advance selection)",
+    },
+    "MAIN": {
+        "carry_on": 0.0,
+        "carry_on_note": "Carry-on included (Main fare)",
+        "checked_bag": 0.0,
+        "checked_bag_note": "1st checked bag included free (Main fare)",
+        "seat": 0.0,
+        "seat_note": "Standard seat included (Main — preferred from +USD 15)",
+    },
+    "REFUNDABLE_MAIN": {
+        "carry_on": 0.0,
+        "carry_on_note": "Carry-on included (Refundable Main)",
+        "checked_bag": 0.0,
+        "checked_bag_note": "1st checked bag included free (Refundable Main)",
+        "seat": 0.0,
+        "seat_note": "Standard seat included (preferred from +USD 15)",
+    },
+    "PREMIUM": {
+        "carry_on": 0.0,
+        "carry_on_note": "Carry-on included (Premium Class)",
+        "checked_bag": 0.0,
+        "checked_bag_note": "2 checked bags included free (Premium Class)",
+        "seat": 0.0,
+        "seat_note": "Premium seat included",
+    },
+    "REFUNDABLE_PREMIUM": {
+        "carry_on": 0.0,
+        "carry_on_note": "Carry-on included (Refundable Premium)",
+        "checked_bag": 0.0,
+        "checked_bag_note": "2 checked bags included free (Refundable Premium)",
+        "seat": 0.0,
+        "seat_note": "Premium seat included",
+    },
+    "FIRST": {
+        "carry_on": 0.0,
+        "carry_on_note": "Carry-on included (First Class)",
+        "checked_bag": 0.0,
+        "checked_bag_note": "2 checked bags included free (First Class)",
+        "seat": 0.0,
+        "seat_note": "Seat included (First Class)",
+    },
+    "REFUNDABLE_FIRST": {
+        "carry_on": 0.0,
+        "carry_on_note": "Carry-on included (Refundable First Class)",
+        "checked_bag": 0.0,
+        "checked_bag_note": "2 checked bags included free (Refundable First Class)",
+        "seat": 0.0,
+        "seat_note": "Seat included (Refundable First Class)",
+    },
+}
+
 
 class AlaskaConnectorClient:
     """Alaska Airlines connector — Playwright + flightresults API."""
@@ -309,9 +369,11 @@ class AlaskaConnectorClient:
                 "C": _FIRST_FARES, "F": _FIRST_FARES,
             }.get(req.cabin_class or "M", _ECONOMY_FARES)
             fare = None
-            for fare_key in _cabin_fares:
-                if fare_key in solutions:
-                    fare = solutions[fare_key]
+            selected_fare_key: str | None = None
+            for fk in _cabin_fares:
+                if fk in solutions:
+                    fare = solutions[fk]
+                    selected_fare_key = fk
                     break
             if not fare:
                 continue
@@ -321,10 +383,7 @@ class AlaskaConnectorClient:
                 continue
 
             seats = fare.get("seatsRemaining")
-            cabin_class = _CABIN_MAP.get(
-                next((k for k in _cabin_fares if k in solutions), "MAIN"),
-                "economy",
-            )
+            cabin_class = _CABIN_MAP.get(selected_fare_key or "MAIN", "economy")
 
             # Build segments
             segments: list[FlightSegment] = []
@@ -379,7 +438,7 @@ class AlaskaConnectorClient:
             # Collect all carriers
             airlines = list({s.airline_name for s in segments})
 
-            offers.append(FlightOffer(
+            offer = FlightOffer(
                 id=offer_id,
                 price=round(price, 2),
                 currency="USD",
@@ -393,7 +452,21 @@ class AlaskaConnectorClient:
                 source="alaska_direct",
                 source_tier="free",
                 availability_seats=seats if isinstance(seats, int) else None,
-            ))
+            )
+
+            # Inline bag/seat pricing from live fare class (SAVER/MAIN/FIRST/etc.)
+            fare_bags = _AS_FARE_BAGS.get(selected_fare_key or "SAVER")
+            if fare_bags:
+                offer.conditions["carry_on"] = fare_bags["carry_on_note"]
+                offer.conditions["checked_bag"] = fare_bags["checked_bag_note"]
+                if fare_bags["seat_note"]:
+                    offer.conditions["seat"] = fare_bags["seat_note"]
+                offer.bags_price["carry_on"] = fare_bags["carry_on"]
+                offer.bags_price["checked_bag"] = fare_bags["checked_bag"]
+                if fare_bags["seat"] is not None:
+                    offer.bags_price["seat_selection"] = fare_bags["seat"]
+
+            offers.append(offer)
 
         return offers
 
@@ -466,14 +539,15 @@ class AlaskaConnectorClient:
             if now - ts < _ANCILLARY_CACHE_TTL:
                 return cached
         # Alaska: Saver fare has no free checked bags (first bag ~$30).
-        # Main fare includes 1 free checked bag.
+        # Main fare includes 1 free checked bag. Carry-on is included on all fares.
+        # These are fallback values only — inline per-fare pricing is set in _parse_rows.
         result: dict = {
-            "carry_on_from": 35.0,
-            "carry_on_note": "carry-on from +USD 35 (Saver fare — Main fare includes carry-on)",
-            "checked_from": 35.0,
-            "checked_note": "first checked bag from +USD 35 (Saver fare — Main fare includes 1 bag)",
+            "carry_on_from": 0.0,
+            "carry_on_note": "Carry-on included on all Alaska fares",
+            "checked_from": 30.0,
+            "checked_note": "1st checked bag from +USD 30 (Saver fare — Main fare includes 1 bag free)",
             "seat_from": 15.0,
-            "seat_note": "seat selection from +USD 15 (Saver fare)",
+            "seat_note": "Seat from +USD 15 (Saver/Main — preferred seats extra)",
             "currency": "USD",
         }
         _ancillary_cache[cache_key] = (now, result)
@@ -489,15 +563,16 @@ class AlaskaConnectorClient:
         anc_currency = ancillary.get("currency", "USD")
         for offer in offers:
             ccy_ok = offer.currency.upper() == anc_currency.upper()
-            if carry_on_note:
+            # Skip if already set inline (inline per-fare pricing takes precedence)
+            if carry_on_note and "carry_on" not in offer.conditions:
                 offer.conditions["carry_on"] = carry_on_note
-            if checked_note:
+            if checked_note and "checked_bag" not in offer.conditions:
                 offer.conditions["checked_bag"] = checked_note
-            if seat_note:
+            if seat_note and "seat" not in offer.conditions:
                 offer.conditions["seat"] = seat_note
-            if carry_on_from is not None and (carry_on_from == 0.0 or ccy_ok):
+            if carry_on_from is not None and (carry_on_from == 0.0 or ccy_ok) and "carry_on" not in offer.bags_price:
                 offer.bags_price["carry_on"] = carry_on_from
-            if checked_from is not None and (checked_from == 0.0 or ccy_ok):
+            if checked_from is not None and (checked_from == 0.0 or ccy_ok) and "checked_bag" not in offer.bags_price:
                 offer.bags_price["checked_bag"] = checked_from
-            if seat_from is not None and (seat_from == 0.0 or ccy_ok):
+            if seat_from is not None and (seat_from == 0.0 or ccy_ok) and "seat_selection" not in offer.bags_price:
                 offer.bags_price["seat_selection"] = seat_from

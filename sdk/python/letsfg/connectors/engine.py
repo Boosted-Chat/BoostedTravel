@@ -27,7 +27,7 @@ import httpx
 from .combo_engine import build_combos
 from .currency import fetch_rates, _fallback_convert
 from .airline_routes import get_country, get_relevant_connectors, AIRLINE_COUNTRIES
-from .ancillary_ref import get_ancillary_ref
+from .ancillary_ref import get_ancillary_ref, apply_ref_ancillaries
 from .browser import is_browser_available
 from .ryanair import RyanairConnectorClient
 from .wizzair import WizzairConnectorClient
@@ -1411,6 +1411,18 @@ class MultiProvider:
         deduped = self._diverse_select(deduped, req.sort, req.limit)
         self._log_pipeline_stage("after diverse_select (final)", deduped)
 
+        # ── Enrich every offer with per-airline bag/seat conditions ──────────
+        # Fills in carry_on / checked_bag / seat conditions from the static
+        # reference table for any offer that doesn't already have live data.
+        # Live-parsed data (e.g. Kiwi's per-offer tierPrice, Qatar's
+        # fareFamilyFeatures) is never overwritten — apply_ref_ancillaries is
+        # a no-op for keys that are already present.
+        for _offer in deduped:
+            try:
+                apply_ref_ancillaries(_offer)
+            except Exception:
+                pass  # Never crash the search over enrichment
+
         # Build airlines summary (cheapest per airline across ALL deduped offers)
         airlines_summary = self._build_airlines_summary(all_offers)
 
@@ -2176,29 +2188,31 @@ class MultiProvider:
 
     @staticmethod
     def _enrich_ancillaries(offers: list[FlightOffer]) -> None:
-        """Populate bags_price (and conditions text) for every offer.
+        """Populate bags_price and conditions text for every offer.
 
-        Only fills in reference data for offers whose connector did NOT already
-        set bags_price (i.e. bags_price is empty).  Connectors that extract
-        live ancillary prices from their APIs are never overwritten.
+        bags_price (numeric):
+          - cabin_bag / checked_bag: populated from the reference table only
+            when the connector set NO bags_price at all (completely empty).
+          - seat_selection: always populated from the reference table when
+            "seat_selection" is not already set, even if the connector set
+            cabin_bag / checked_bag.  This ensures every offer gets a seat
+            price regardless of what the connector provided.
+
+        conditions (human-readable text): always filled for missing keys,
+        even when bags_price was already set by the connector.
+
+        Falls back to generic notes when the airline IATA code is unknown.
+        Migrates legacy ``seat_from`` key to the canonical ``seat``.
 
         Uses the central ``ancillary_ref._AIRLINE_ANCILLARY`` lookup table
         keyed by IATA carrier code.  Prices in ref are in the airline's
         native currency; only 0.0 ("included") is currency-agnostic.
         """
         for offer in offers:
-            # Skip if connector already populated live ancillary data
-            if offer.bags_price:
-                continue
-
-            # Determine the operating carrier
+            # Determine the operating carrier IATA code
             iata = offer.owner_airline or (offer.airlines[0] if offer.airlines else "")
-            if not iata:
-                continue
 
-            ref = get_ancillary_ref(iata)
-            if not ref:
-                continue
+            ref = get_ancillary_ref(iata) if iata else {}
 
             ref_currency = ref.get("currency", "")
             currency_matches = (
@@ -2206,67 +2220,118 @@ class MultiProvider:
                 or ref_currency.upper() == offer.currency.upper()
             )
 
-            # --- carry_on bags_price (only write when currency matches or included) ---
-            carry_on = ref.get("carry_on")
-            if carry_on is not None:
-                if carry_on == 0.0 or currency_matches:
-                    offer.bags_price["carry_on"] = carry_on
+            carry_on = ref.get("carry_on") if ref else None
+            checked_bag = ref.get("checked_bag") if ref else None
+            seat = ref.get("seat") if ref else None
 
-            # --- checked_bag bags_price ---
-            checked_bag = ref.get("checked_bag")
-            if checked_bag is not None:
-                if checked_bag == 0.0 or currency_matches:
-                    offer.bags_price["checked_bag"] = checked_bag
+            # -- bags_price numeric data ------------------------------------------
+            # Carry-on / checked-bag: only populate from ref when connector did
+            # NOT set any live bag data (bags_price is completely empty).
+            if not offer.bags_price and ref:
+                if carry_on is not None:
+                    if carry_on == 0.0 or currency_matches:
+                        offer.bags_price["carry_on"] = carry_on
+                if checked_bag is not None:
+                    if checked_bag == 0.0 or currency_matches:
+                        offer.bags_price["checked_bag"] = checked_bag
 
-            # --- Generate conditions text ---
-            def _carry_on_text() -> str | None:
-                # Use verbatim note if provided
-                note = ref.get("carry_on_note")
-                if note:
-                    return note
-                if carry_on is None:
-                    return None
-                kg = ref.get("carry_on_kg")
-                kg_str = f" ({kg} kg)" if kg is not None else ""
-                if carry_on == 0.0:
-                    return f"1 cabin bag included{kg_str}"
-                if currency_matches:
-                    return f"from ~{ref_currency} {carry_on:.0f}{kg_str}"
-                return None
+            # Seat: always fill from ref when "seat_selection" is not yet set,
+            # even if the connector already provided cabin/checked bag prices.
+            if "seat_selection" not in offer.bags_price and ref:
+                if seat is not None and (seat == 0.0 or currency_matches):
+                    offer.bags_price["seat_selection"] = seat
 
-            def _checked_bag_text() -> str | None:
-                note = ref.get("checked_bag_note")
-                if note:
-                    return note
-                if checked_bag is None:
-                    return None
-                kg = ref.get("checked_bag_kg")
-                kg_str = f" ({kg} kg)" if kg is not None else ""
-                if checked_bag == 0.0:
-                    return f"1 checked bag included{kg_str}"
-                if currency_matches:
-                    return f"from ~{ref_currency} {checked_bag:.0f}{kg_str}"
-                return None
+            # -- conditions text --------------------------------------------------
+            # Always fill missing keys regardless of bags_price state so that
+            # connectors which set live bags_price still get human-readable text.
 
+            # carry_on
             if "carry_on" not in offer.conditions:
-                text = _carry_on_text()
-                if text:
-                    offer.conditions["carry_on"] = text
+                cot: str | None = None
+                if ref:
+                    note = ref.get("carry_on_note")
+                    if note:
+                        cot = note
+                    elif carry_on is not None:
+                        kg = ref.get("carry_on_kg")
+                        kg_str = f" ({kg} kg)" if kg is not None else ""
+                        if carry_on == 0.0:
+                            cot = f"1 cabin bag included{kg_str}"
+                        elif currency_matches:
+                            cot = f"from ~{ref_currency} {carry_on:.0f}{kg_str}"
+                if cot is None and "bags" not in offer.conditions:
+                    cot = "cabin bag policy depends on airline fare — check at checkout"
+                if cot:
+                    offer.conditions["carry_on"] = cot
 
+            # checked_bag
             if "checked_bag" not in offer.conditions:
-                text = _checked_bag_text()
-                if text:
-                    offer.conditions["checked_bag"] = text
+                cbt: str | None = None
+                if ref:
+                    note = ref.get("checked_bag_note")
+                    if note:
+                        cbt = note
+                    elif checked_bag is not None:
+                        kg = ref.get("checked_bag_kg")
+                        kg_str = f" ({kg} kg)" if kg is not None else ""
+                        if checked_bag == 0.0:
+                            cbt = f"1 checked bag included{kg_str}"
+                        elif currency_matches:
+                            cbt = f"from ~{ref_currency} {checked_bag:.0f}{kg_str}"
+                if cbt is None and "bags" not in offer.conditions:
+                    cbt = "checked bag fee depends on airline fare — add at checkout"
+                if cbt:
+                    offer.conditions["checked_bag"] = cbt
 
-            # --- Seat pricing ---
-            seat = ref.get("seat")
-            if "seat_from" not in offer.conditions and seat is not None:
-                if seat == 0.0:
-                    offer.conditions["seat_from"] = "included"
-                elif currency_matches:
-                    offer.conditions["seat_from"] = (
-                        f"from ~{ref_currency} {seat:.0f}"
-                    )
+            # seat — canonical key is "seat"; migrate legacy "seat_from" if present
+            has_seat = "seat" in offer.conditions
+            if not has_seat and "seat_from" in offer.conditions:
+                offer.conditions["seat"] = offer.conditions.pop("seat_from")
+                has_seat = True
+            if not has_seat:
+                st: str | None = None
+                if ref:
+                    if seat == 0.0:
+                        st = "seat selection included"
+                    elif seat is not None and currency_matches:
+                        st = f"from ~{ref_currency} {seat:.0f}"
+                    else:
+                        st = "seat selection price varies — check at checkout"
+                else:
+                    st = "seat selection price varies — check at checkout"
+                offer.conditions["seat"] = st
+
+            # -- Enrich "no free" / paid-add-on conditions with ref prices --------
+            # When a connector set "no free checked bag" or "overhead carry-on is a
+            # paid add-on" but didn't include the actual add-on price, append it from
+            # the reference table so agents can see what the passenger would pay.
+            if ref and currency_matches:
+                _co_text = offer.conditions.get("carry_on", "")
+                _cb_text = offer.conditions.get("checked_bag", "")
+
+                _no_free_co = any(k in _co_text.lower() for k in (
+                    "no free", "paid add-on", "overhead carry-on is a paid",
+                ))
+                _no_free_cb = any(k in _cb_text.lower() for k in (
+                    "no free", "paid add-on",
+                ))
+
+                if _no_free_co and carry_on is not None and carry_on > 0.0:
+                    # Append price if not already present in the text
+                    if f"{carry_on:.0f}" not in _co_text and "from ~" not in _co_text:
+                        offer.conditions["carry_on"] = (
+                            f"{_co_text}; add-on from ~{ref_currency} {carry_on:.0f}"
+                        )
+                    if "carry_on" not in offer.bags_price:
+                        offer.bags_price["carry_on"] = carry_on
+
+                if _no_free_cb and checked_bag is not None and checked_bag > 0.0:
+                    if f"{checked_bag:.0f}" not in _cb_text and "from ~" not in _cb_text:
+                        offer.conditions["checked_bag"] = (
+                            f"{_cb_text}; add-on from ~{ref_currency} {checked_bag:.0f}"
+                        )
+                    if "checked_bag" not in offer.bags_price:
+                        offer.bags_price["checked_bag"] = checked_bag
 
     def _diverse_select(
         self, offers: list[FlightOffer], sort: str, limit: int

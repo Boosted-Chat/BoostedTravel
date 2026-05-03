@@ -452,6 +452,19 @@ class AzulConnectorClient:
                         bags_price["checked_bag"] = 0.0
                         break
 
+        # Carry-on: infer from Azul bundle code
+        if "carry_on" not in conditions:
+            if "AZUL" in bundle_code or bundle_code in ("A", "AZ"):
+                conditions["carry_on"] = "1x 10kg carry-on included (no free checked bag on base fare)"
+                bags_price["carry_on"] = 0.0
+            else:
+                conditions["carry_on"] = "1x 10kg carry-on included"
+                bags_price["carry_on"] = 0.0
+
+        # Seat selection
+        if "seat" not in conditions:
+            conditions["seat"] = "seat selection from ~BRL 30 — add at checkout"
+
         return conditions, bags_price
 
     def _parse_segment(self, seg: dict, req: FlightSearchRequest) -> FlightSegment:

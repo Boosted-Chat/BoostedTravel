@@ -273,24 +273,32 @@ class AmericanConnectorClient:
     ) -> dict | None:
         # AA: Main Cabin first bag from USD 35 for most passengers. Basic Economy: no bag.
         return {
-            "bags_note": "Economy Main Cabin: first checked bag from USD 35 (waived for AAdvantage cardholders/elite). Basic Economy: no free checked bag, first bag from USD 35.",
-            "seat_note": "Seat selection: standard seats at booking. Preferred/Main Cabin Extra from USD 20–60.",
-            "bags_from": 35.0,
+            "bags_note": "1 carry-on bag included free (22\u00d714\u00d79 in, overhead bin).",
+            "checked_bag": "Economy Main Cabin: first checked bag from USD 35 (waived for AAdvantage cardholders/elite). Basic Economy: no free checked bag, first bag from USD 35.",
+            "seat_note": "Seat selection: standard seats at booking. Preferred/Main Cabin Extra from USD 20\u201360.",
+            "bags_from": None,
+            "checked_bag_price": 35.0,
             "currency": "USD",
         }
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
+        checked_note = ancillary.get("checked_bag") or bags_note
         seat_note = ancillary.get("seat_note")
         bags_from = ancillary.get("bags_from")
+        checked_from = ancillary.get("checked_bag_price")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
                 offer.conditions["carry_on"] = bags_note
+            if checked_note:
+                offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price["checked"] = bags_from
+            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
+                offer.bags_price["checked"] = checked_from
 
     async def _search_ow(
         self, req: FlightSearchRequest
@@ -755,10 +763,11 @@ class AmericanConnectorClient:
                     f"&departDate={req.date_from}"
                 ),
             )
-            offer.conditions["carry_on"] = _aa_bag_note
-            offer.conditions["seat"] = "Seat selection: standard seats at booking. Preferred/Main Cabin Extra from USD 20–60."
+            offer.conditions["carry_on"] = "1 carry-on bag included free (22\u00d714\u00d79 in, overhead bin)."
+            offer.conditions["checked_bag"] = _aa_bag_note
+            offer.conditions["seat"] = "Seat selection: standard seats at booking. Preferred/Main Cabin Extra from USD 20\u201360."
             if _aa_bag_price is not None:
-                offer.bags_price["carry_on"] = _aa_bag_price
+                offer.bags_price["checked"] = _aa_bag_price
             return offer
 
         except Exception as e:

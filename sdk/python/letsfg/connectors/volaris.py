@@ -758,6 +758,9 @@ class VolarisConnectorClient:
     ) -> tuple[dict[str, str], dict[str, float]]:
         conditions: dict[str, str] = {}
         bags_price: dict[str, float] = {}
+        # Static carry-on and seat notes — overridden only if live bundle data sets them
+        conditions["carry_on"] = f"1 personal item (under seat) included; cabin bag add-on from ~{currency} 250"
+        conditions["seat"] = f"seat selection from ~{currency} 150; included in higher bundles"
 
         fare_family = self._extract_fare_family(selected_fare)
         if fare_family:
@@ -803,10 +806,15 @@ class VolarisConnectorClient:
                 continue
 
             note_parts = [bundle_code or bundle_ref]
+            addon_price: float | None = None
             if bundle_total is not None and bundle_total > numeric_base_price:
-                note_parts.append(f"(+{bundle_total - numeric_base_price:.2f} {currency})")
+                addon_price = round(bundle_total - numeric_base_price, 2)
+                note_parts.append(f"(+{addon_price:.0f} {currency})")
             if has_checked_bag:
                 note_parts.append(f"checked bag ({', '.join(checked_bag_ssrs)})")
+                # Store the cheapest bundle-with-bag delta as the live add-on price
+                if addon_price is not None and "checked_bag" not in bags_price:
+                    bags_price["checked_bag"] = addon_price
             note = " ".join(part for part in note_parts if part).strip()
             if note and note not in upgrade_notes:
                 upgrade_notes.append(note)
@@ -818,8 +826,15 @@ class VolarisConnectorClient:
             conditions["fare_upgrade_note"] = "; ".join(upgrade_notes[:3])
 
         if saw_checked_bag_upgrade and "checked_bag" not in conditions:
-            conditions["checked_bag"] = "available via bundle upgrade; no standalone search price"
+            if "checked_bag" in bags_price:
+                conditions["checked_bag"] = f"checked bag add-on from +{currency} {bags_price['checked_bag']:.0f} (bundle upgrade)"
+            else:
+                conditions["checked_bag"] = f"no free checked bag (add-on from ~{currency} 500; upgrade via bundle)"
+                bags_price.setdefault("checked_bag", 500.0)
 
+        if "checked_bag" not in conditions:
+            conditions["checked_bag"] = f"no free checked bag (add-on from ~{currency} 500; select bundle at checkout)"
+            bags_price.setdefault("checked_bag", 500.0)
         return conditions, bags_price
 
     @staticmethod

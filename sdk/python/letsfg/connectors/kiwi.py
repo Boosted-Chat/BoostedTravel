@@ -15,7 +15,7 @@ and all the Kiwi virtual interlining magic (combining LCC one-way fares).
 from __future__ import annotations
 
 import asyncio
-
+import re
 import hashlib
 import logging
 import time
@@ -88,6 +88,24 @@ _ONEWAY_QUERY = """query SearchOnewayItinerariesQuery(
           }
           bookingOptions { edges { node { bookingUrl price { amount } } } }
           travelHack { isVirtualInterlining isThrowawayTicket isTrueHiddenCity }
+          paidGuaranteePrice { amount }
+          bagsInfo {
+            includedHandBags
+            includedCheckedBags
+            includedPersonalItem
+            hasNoCheckedBaggage
+            checkedBagTiers { tierPrice { amount } }
+            handBagTiers { tierPrice { amount } }
+            personalItemTiers { tierPrice { amount } }
+          }
+          benefitsData {
+            guaranteeAvailable
+            guaranteeFee { amount }
+          }
+          extendedFareOptionsPricing {
+            standardFarePriceOnly { amount }
+            flexiFarePriceOnly { amount }
+          }
         }
       }
     }
@@ -147,6 +165,24 @@ _RETURN_QUERY = """query SearchReturnItinerariesQuery(
           }
           bookingOptions { edges { node { bookingUrl price { amount } } } }
           travelHack { isVirtualInterlining isThrowawayTicket isTrueHiddenCity }
+          paidGuaranteePrice { amount }
+          bagsInfo {
+            includedHandBags
+            includedCheckedBags
+            includedPersonalItem
+            hasNoCheckedBaggage
+            checkedBagTiers { tierPrice { amount } }
+            handBagTiers { tierPrice { amount } }
+            personalItemTiers { tierPrice { amount } }
+          }
+          benefitsData {
+            guaranteeAvailable
+            guaranteeFee { amount }
+          }
+          extendedFareOptionsPricing {
+            standardFarePriceOnly { amount }
+            flexiFarePriceOnly { amount }
+          }
         }
       }
     }
@@ -168,6 +204,8 @@ class KiwiConnectorClient:
     def __init__(self, timeout: float = 25.0):
         self.timeout = timeout
         self._http: Optional[httpx.AsyncClient] = None
+        # Booking token captured from last _search_ow call (for live ancillary price fetch)
+        self._last_token: str = ""
 
     @property
     def available(self) -> bool:
@@ -343,43 +381,198 @@ class KiwiConnectorClient:
             segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
             anc_origin = segs[0].origin if segs else req.origin
             anc_dest = segs[-1].destination if segs else req.destination
-            try:
-                ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, ob_result.currency),
-                    timeout=45.0,
-                )
-                if ancillary:
-                    self._apply_ancillaries(ob_result.offers, ancillary)
-            except (asyncio.TimeoutError, TimeoutError):
-                logger.debug("Ancillary fetch timed out for %s→%s", anc_origin, anc_dest)
-            except Exception as _anc_err:
-                logger.debug("Ancillary fetch error for %s→%s: %s", anc_origin, anc_dest, _anc_err)
+            _ = anc_origin, anc_dest  # noqa: F841 — kept for future logging
         return ob_result
 
     async def _fetch_ancillaries(
-        self, origin: str, dest: str, date_str: str, adults: int, currency: str
+        self, origin: str, dest: str, date_str: str, adults: int, currency: str,
+        booking_token: str = "",
     ) -> dict | None:
-        # Kiwi adds its own ancillary layer on top of the airline ticket price.
-        # Bags and seats are sold by Kiwi at marked-up prices — not the airline's
-        # own prices. Personal item (small backpack) is free; everything else costs
-        # extra at Kiwi's checkout, regardless of what the airline charges directly.
-        return {
-            "checked_bag_note": "not included – add-on from ~52 € at Kiwi checkout (Kiwi markup; book airline direct for lower bag fees)",
-            "bags_note": "personal item free; cabin bag add-on from ~49 € at Kiwi checkout",
-            "seat_note": "seat add-on from ~21 € at Kiwi checkout; skip for free random seat",
+        """Fetch live bag/seat prices from Kiwi's check_flights API.
+
+        If a booking_token is available (extracted from search results), calls the
+        check_flights endpoint to get route-specific live prices.  Falls back to
+        conservative static estimates on failure.  Results are cached 30 min.
+
+        Always surfaces:
+        - kiwi_guarantee: Kiwi adds ~9 € at checkout by default (can deselect)
+        - carry_on: personal item vs cabin bag add-on price
+        - checked_bag: hold bag add-on price (Kiwi markup — higher than airline direct)
+        - seat: seat selection add-on range at Kiwi checkout
+        """
+        cache_key = f"{origin}:{dest}:{date_str}:{currency}"
+        cached = _ancillary_cache.get(cache_key)
+        if cached and (time.monotonic() - cached[0] < _ANCILLARY_CACHE_TTL):
+            return cached[1]
+
+        if booking_token:
+            try:
+                result = await self._live_ancillary_prices(booking_token, adults, currency)
+                if result:
+                    _ancillary_cache[cache_key] = (time.monotonic(), result)
+                    logger.debug("Kiwi live ancillary prices fetched for %s→%s", origin, dest)
+                    return result
+            except Exception as _e:
+                logger.debug("Kiwi check_flights failed for %s→%s: %s", origin, dest, _e)
+
+        # Static fallback — based on observed Kiwi checkout prices (LHR→BCN May 2026)
+        static: dict = {
+            "kiwi_guarantee": (
+                "Kiwi adds ~9 € Guarantee fee by default at checkout —"
+                " select \u2018Basic\u2019 to remove it"
+            ),
+            "carry_on": (
+                "personal item (under-seat): free; "
+                "cabin bag add-on from ~49 € at Kiwi checkout"
+            ),
+            "checked_bag": (
+                "checked bag: add-on from ~52 € at Kiwi checkout —"
+                " Kiwi markup; book airline direct for lower fees"
+            ),
+            "seat": (
+                "seat selection: standard from ~21 €, extra legroom from ~50 € up to ~65 € at Kiwi checkout"
+                " (skip to get a free random seat)"
+            ),
+            # Numeric fields used by _apply_ancillaries to set bags_price
+            # (prevents engine from applying wrong airline-direct ref prices)
+            "cabin_bag_price": 49.0,
+            "checked_bag_price": 52.0,
+            "seat_from_price": 21.0,
+            "currency": "EUR",
+        }
+        _ancillary_cache[cache_key] = (time.monotonic(), static)
+        return static
+
+    async def _live_ancillary_prices(self, booking_token: str, adults: int, currency: str) -> dict | None:
+        """Call Kiwi check_flights API to get actual bag prices for this offer.
+
+        Endpoint: GET https://api.skypicker.com/check_flights
+        Returns bags_fee (hold bags) and hand_bags (cabin bags) with prices.
+        """
+        client = await self._client()
+        resp = await client.get(
+            "https://api.skypicker.com/check_flights",
+            params={
+                "booking_token": booking_token,
+                "bnum": "0",
+                "adults": str(adults),
+                "children": "0",
+                "infants": "0",
+                "curr": currency.lower(),
+                "v": "2",
+            },
+            headers={"Referer": "https://www.kiwi.com/", "Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+
+        if not data.get("flights_checked"):
+            return None
+
+        curr_key = currency.lower()
+
+        def _price_from(entry: dict) -> float | None:
+            """Extract a price value from a Kiwi price dict, trying multiple keys."""
+            for k in (curr_key, "amount", "eur"):
+                v = entry.get(k)
+                if v is not None:
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        pass
+            return None
+
+        # bags_fee: checked hold bags {"1": {"eur": 49.93}, ...}
+        bags_fee = data.get("bags_fee") or {}
+        bag1_entry = bags_fee.get("1") or bags_fee.get(1) or {}
+        bag1_price = _price_from(bag1_entry) if isinstance(bag1_entry, dict) else None
+
+        # hand_bags: cabin bags {"0": {"eur": 0}, "1": {"eur": 48.57}}
+        hand_bags = data.get("hand_bags") or {}
+        hb1_entry = hand_bags.get("1") or hand_bags.get(1) or {}
+        hb1_price = _price_from(hb1_entry) if isinstance(hb1_entry, dict) else None
+
+        if bag1_price is None and hb1_price is None:
+            return None
+
+        curr_sym = currency.upper()
+        result: dict = {
+            "kiwi_guarantee": (
+                "Kiwi adds ~9 € Guarantee fee by default at checkout —"
+                " select \u2018Basic\u2019 to remove it"
+            ),
+            "seat": (
+                "seat selection: standard from ~21 €, extra legroom from ~50 € up to ~65 € at Kiwi checkout"
+                " (skip to get a free random seat)"
+            ),
         }
 
+        if hb1_price is not None:
+            if hb1_price == 0:
+                result["carry_on"] = "personal item & cabin bag: included"
+                result["cabin_bag_price"] = 0.0
+            else:
+                result["carry_on"] = (
+                    f"personal item (under-seat): free; "
+                    f"cabin bag: +{hb1_price:.0f} {curr_sym} at Kiwi checkout"
+                )
+                result["cabin_bag_price"] = hb1_price
+        else:
+            result["carry_on"] = "personal item: free; cabin bag add-on from ~49 € at Kiwi checkout"
+            result["cabin_bag_price"] = 49.0
+
+        if bag1_price is not None:
+            result["checked_bag"] = (
+                f"checked bag: +{bag1_price:.0f} {curr_sym} at Kiwi checkout —"
+                " Kiwi markup; book airline direct for lower fees"
+            )
+            result["checked_bag_price"] = bag1_price
+        else:
+            result["checked_bag"] = (
+                "checked bag: add-on from ~52 € at Kiwi checkout —"
+                " Kiwi markup; book airline direct for lower fees"
+            )
+            result["checked_bag_price"] = 52.0
+
+        result["seat_from_price"] = 21.0
+        result["currency"] = currency.upper()
+        return result
+
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
-        checked_bag_note = ancillary.get("checked_bag_note")
-        bags_note = ancillary.get("bags_note")
-        seat_note = ancillary.get("seat_note")
+        carry_on = ancillary.get("carry_on") or ancillary.get("bags_note")
+        checked_bag = ancillary.get("checked_bag") or ancillary.get("checked_bag_note")
+        seat = ancillary.get("seat") or ancillary.get("seat_note")
+        kiwi_guarantee = ancillary.get("kiwi_guarantee")
+        cabin_bag_price = ancillary.get("cabin_bag_price")
+        checked_bag_price = ancillary.get("checked_bag_price")
+        seat_from_price = ancillary.get("seat_from_price")
+        anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
-            if checked_bag_note:
-                offer.conditions["checked_bag"] = checked_bag_note
-            if bags_note:
-                offer.conditions["carry_on"] = bags_note
-            if seat_note:
-                offer.conditions["seat"] = seat_note
+            currency_matches = getattr(offer, "currency", "").upper() == anc_currency.upper()
+            # Set numeric bags_price values — prevents engine from applying wrong
+            # airline-direct ref prices (e.g., Vueling 6 EUR seat) to Kiwi offers
+            # where Kiwi charges its own higher prices (21 EUR+ for seats).
+            if currency_matches:
+                if cabin_bag_price is not None:
+                    offer.bags_price["carry_on"] = cabin_bag_price
+                if checked_bag_price is not None:
+                    offer.bags_price["checked_bag"] = checked_bag_price
+                if seat_from_price is not None:
+                    offer.bags_price["seat_selection"] = seat_from_price
+            # Always set descriptive condition notes
+            if carry_on:
+                offer.conditions["cabin_bag"] = carry_on
+            if checked_bag:
+                offer.conditions["checked_bag"] = checked_bag
+            if seat:
+                offer.conditions["seat"] = seat
+            if kiwi_guarantee:
+                offer.conditions["kiwi_guarantee"] = kiwi_guarantee
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """Search flights via Kiwi.com's frontend GraphQL API."""
@@ -442,6 +635,17 @@ class KiwiConnectorClient:
         origin_slug = await self._resolve_slug(req.origin)
         dest_slug = await self._resolve_slug(req.destination)
 
+        # Extract first booking token for live ancillary pricing (check_flights API)
+        self._last_token = ""
+        for _itin in itineraries:
+            edges = (_itin.get("bookingOptions") or {}).get("edges") or []
+            if edges:
+                _raw_url = (edges[0].get("node") or {}).get("bookingUrl", "")
+                _m = re.search(r'[?&](?:booking_)?token=([^&\s]+)', _raw_url)
+                if _m:
+                    self._last_token = _m.group(1)
+                    break
+
         for itin in itineraries:
             try:
                 offer = self._parse_itinerary(itin, req, is_return, origin_slug, dest_slug)
@@ -463,6 +667,108 @@ class KiwiConnectorClient:
             offers=offers,
             total_results=total,
         )
+
+    def _parse_kiwi_ancillaries(self, itin: dict, currency: str) -> tuple[dict, dict]:
+        """Extract live bag/fee conditions and bags_price from a Kiwi GraphQL itinerary.
+
+        Returns (conditions_dict, bags_price_dict).  All prices are per-offer live values
+        fetched inline from the search response — no extra API call required.
+        """
+        curr = currency.upper()
+        conditions: dict = {}
+        bags_price: dict = {}
+
+        bags_info = itin.get("bagsInfo") or {}
+        hand_included = int(bags_info.get("includedHandBags") or 0)
+        checked_included = int(bags_info.get("includedCheckedBags") or 0)
+
+        # Cabin bag (hand baggage)
+        hand_tiers = bags_info.get("handBagTiers") or []
+        if hand_included > 0:
+            conditions["carry_on"] = "personal item & cabin bag: included"
+            bags_price["carry_on"] = 0.0
+        elif hand_tiers:
+            try:
+                hp = float(hand_tiers[0].get("tierPrice", {}).get("amount", 0))
+                conditions["carry_on"] = (
+                    f"personal item (under-seat): free; "
+                    f"cabin bag add-on: +{hp:.0f} {curr} at Kiwi checkout"
+                )
+                bags_price["carry_on"] = hp
+            except (TypeError, ValueError):
+                conditions["carry_on"] = "personal item: free; cabin bag: add-on at Kiwi checkout"
+        else:
+            conditions["carry_on"] = "personal item (under-seat): free; cabin bag: add-on at Kiwi checkout"
+
+        # Checked bag
+        checked_tiers = bags_info.get("checkedBagTiers") or []
+        if checked_included > 0:
+            conditions["checked_bag"] = f"{checked_included} checked bag(s): included"
+            bags_price["checked_bag"] = 0.0
+        elif checked_tiers:
+            try:
+                cp = float(checked_tiers[0].get("tierPrice", {}).get("amount", 0))
+                conditions["checked_bag"] = (
+                    f"checked bag add-on: +{cp:.0f} {curr} at Kiwi checkout"
+                )
+                bags_price["checked_bag"] = cp
+            except (TypeError, ValueError):
+                conditions["checked_bag"] = "checked bag: add-on at Kiwi checkout"
+        else:
+            conditions["checked_bag"] = "checked bag: add-on at Kiwi checkout"
+
+        # Kiwi Guarantee fee — use benefitsData.guaranteeFee (what user actually pays)
+        # paidGuaranteePrice is the coverage payout amount, NOT the fee charged to user
+        benefits = itin.get("benefitsData") or {}
+        gfee_raw = (benefits.get("guaranteeFee") or {}).get("amount")
+        if gfee_raw is not None:
+            try:
+                gf = float(gfee_raw)
+                conditions["kiwi_guarantee"] = (
+                    f"Kiwi Guarantee: +{gf:.2f} {curr} (optional at checkout; choose \u2018Basic\u2019 to skip)"
+                )
+            except (TypeError, ValueError):
+                pass
+
+        if "kiwi_guarantee" not in conditions:
+            # Fallback: paidGuaranteePrice is an approximation (coverage amount, not fee)
+            guarantee_price = itin.get("paidGuaranteePrice") or {}
+            gf_raw = guarantee_price.get("amount")
+            if gf_raw is not None:
+                try:
+                    gf = float(gf_raw)
+                    conditions["kiwi_guarantee"] = (
+                        f"Kiwi Guarantee: ~{gf:.0f} {curr} (optional at checkout; choose \u2018Basic\u2019 to skip)"
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+        # Fare flexibility upgrades
+        fare_pricing = itin.get("extendedFareOptionsPricing") or {}
+        std_up_raw = (fare_pricing.get("standardFarePriceOnly") or {}).get("amount")
+        flexi_up_raw = (fare_pricing.get("flexiFarePriceOnly") or {}).get("amount")
+        parts = []
+        if std_up_raw is not None:
+            try:
+                parts.append(f"Standard +{float(std_up_raw):.0f} {curr}")
+            except (TypeError, ValueError):
+                pass
+        if flexi_up_raw is not None:
+            try:
+                parts.append(f"Flexi +{float(flexi_up_raw):.0f} {curr}")
+            except (TypeError, ValueError):
+                pass
+        if parts:
+            conditions["fare_options"] = "Flexibility upgrades: " + ", ".join(parts)
+
+        # Seat selection — prices not in search API; static estimate to block ancillary_ref.py
+        conditions["seat"] = (
+            "seat selection: standard from ~\u20ac21, extra legroom from ~\u20ac50 "
+            "(optional at Kiwi checkout; skip for free random seat)"
+        )
+        bags_price["seat_selection"] = 21.0
+
+        return conditions, bags_price
 
     def _parse_itinerary(
         self, itin: dict, req: FlightSearchRequest, is_return: bool,
@@ -550,6 +856,10 @@ class KiwiConnectorClient:
         itin_id = itin.get("id", "")
         offer_id = f"ks_{hashlib.md5(itin_id.encode()).hexdigest()[:12]}" if itin_id else f"ks_{hashlib.md5(f'{price}{airlines}'.encode()).hexdigest()[:12]}"
 
+        # Parse live ancillary prices (bag/guarantee/fare tiers) from search response
+        anc_conditions, anc_bags_price = self._parse_kiwi_ancillaries(itin, currency)
+        conditions.update(anc_conditions)
+
         return FlightOffer(
             id=offer_id,
             price=price,
@@ -562,6 +872,7 @@ class KiwiConnectorClient:
             booking_url=booking_url,
             is_locked=False,
             conditions=conditions,
+            bags_price=anc_bags_price,
             source="kiwi_connector",
             source_tier="free",
         )

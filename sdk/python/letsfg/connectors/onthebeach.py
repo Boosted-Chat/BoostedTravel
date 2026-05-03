@@ -485,13 +485,4 @@ class OnthebeachConnectorClient:
             "seat_note": "seat selection add-on at checkout; skip for free random seat",
         }
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
-        checked_bag_note = ancillary.get("checked_bag_note")
-        bags_note = ancillary.get("bags_note")
-        seat_note = ancillary.get("seat_note")
-        for offer in offers:
-            if checked_bag_note:
-                offer.conditions["checked_bag"] = checked_bag_note
-            if bags_note:
-                offer.conditions["carry_on"] = bags_note
-            if seat_note:
-                offer.conditions["seat"] = seat_note
+        pass  # conditions + bags_price set per-offer by engine's apply_ref_ancillaries via owner_airline

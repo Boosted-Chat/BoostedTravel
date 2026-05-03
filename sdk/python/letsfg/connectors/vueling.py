@@ -258,38 +258,11 @@ class VuelingConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        from .ancillary_ref import get_ancillary_ref
-        ref = get_ancillary_ref("VY")
-        if not ref:
-            return None
-        cur = ref.get("currency", "EUR")
-        carry_on = ref.get("carry_on")
-        checked_bag = ref.get("checked_bag")
-        seat = ref.get("seat")
-        carry_on_note = ref.get("carry_on_note") or (
-            "1 cabin bag included" if carry_on == 0.0
-            else f"Carry-on add-on from ~{cur} {carry_on:.0f}" if carry_on is not None
-            else None
-        )
-        checked_note = ref.get("checked_bag_note") or (
-            "1 checked bag included" if checked_bag == 0.0
-            else f"First checked bag from ~{cur} {checked_bag:.0f}" if checked_bag is not None
-            else None
-        )
-        seat_note = (
-            "Seat selection included" if seat == 0.0
-            else f"Seat selection from ~{cur} {seat:.0f}" if seat is not None
-            else None
-        )
-        return {
-            "bags_from": carry_on,
-            "bags_note": carry_on_note,
-            "checked_bag_from": checked_bag,
-            "checked_bag_note": checked_note,
-            "seat_from": seat,
-            "seat_note": seat_note,
-            "currency": cur,
-        }
+        # Ancillary prices are now extracted inline in _parse_graphql / _parse_graphql_return
+        # (IB fare price - BB fare price = live checked bag cost per journey).
+        # Returning None lets the engine's _enrich_ancillaries act as fallback for
+        # offers where both BB and IB were not available (i.e. bags_price is empty).
+        return None
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
@@ -299,13 +272,13 @@ class VuelingConnectorClient:
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions["cabin_bag"] = bags_note
             if seat_note:
-                offer.conditions["seat_from"] = seat_note
+                offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price["cabin_bag"] = bags_from
             if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
                 offer.bags_price["checked_bag"] = checked_bag_from
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
@@ -773,7 +746,10 @@ class VuelingConnectorClient:
                 offer.conditions["checked_bag"] = (
                     f"First checked bag: {currency} {live_bag_price:.0f} (live)"
                 )
-                offer.conditions["carry_on"] = "10 kg cabin bag included in all fares"
+                offer.bags_price["cabin_bag"] = 10.0
+                offer.conditions["cabin_bag"] = "10 kg cabin bag included in all fares"
+                offer.bags_price["seat"] = 6.0
+                offer.conditions["seat"] = f"Seat selection from ~{currency} 6"
             offers.append(offer)
 
         logger.info(
@@ -893,7 +869,10 @@ class VuelingConnectorClient:
                 offer.conditions["checked_bag"] = (
                     f"First checked bag: {currency} {live_bag_price:.0f} (live)"
                 )
-                offer.conditions["carry_on"] = "10 kg cabin bag included in all fares"
+                offer.bags_price["cabin_bag"] = 10.0
+                offer.conditions["cabin_bag"] = "10 kg cabin bag included in all fares"
+                offer.bags_price["seat"] = 6.0
+                offer.conditions["seat"] = f"Seat selection from ~{currency} 6"
             offers.append(offer)
         return offers
 

@@ -104,7 +104,12 @@ async def _ensure_persistent_page():
 
     logger.info("GOL: loading Angular SPA...")
     await page.goto(f"{_GOL_BASE}/compra", wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(3)
+    # Wait for network to settle so Angular boots fully and populates sessionStorage
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        pass
+    await asyncio.sleep(2)
 
     # Dismiss LGPD/cookie overlays
     await _dismiss_cookies(page)
@@ -112,13 +117,18 @@ async def _ensure_persistent_page():
     # Wait for Angular to boot and populate session UUID
     try:
         uuid = await page.wait_for_function("""() => {
+            // GOL stores UUID in currentTabUUID key directly
+            const directUUID = sessionStorage.getItem('currentTabUUID');
+            if (directUUID && /^[0-9a-f-]{36}$/.test(directUUID)) return directUUID;
+            // Fallback: find UUID from namespaced key prefixes
             for (let i = 0; i < sessionStorage.length; i++) {
                 const key = sessionStorage.key(i);
-                const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
+                const m = key.match(/^([0-9a-f-]{36})_@SiteGolB2C/)
+                    || key.match(/^([0-9a-f-]{36})[@_](?:SiteGol|GolSite|gol)/i);
                 if (m) return m[1];
             }
             return null;
-        }""", timeout=15000)
+        }""", timeout=25000)
         uuid_val = await uuid.json_value()
         if uuid_val:
             logger.info("GOL: Angular SPA ready (UUID=%s...)", uuid_val[:8])
@@ -194,9 +204,12 @@ class GolConnectorClient:
 
         # Extract session UUID
         uuid = await page.evaluate("""() => {
+            const directUUID = sessionStorage.getItem('currentTabUUID');
+            if (directUUID && /^[0-9a-f-]{36}$/.test(directUUID)) return directUUID;
             for (let i = 0; i < sessionStorage.length; i++) {
                 const key = sessionStorage.key(i);
-                const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
+                const m = key.match(/^([0-9a-f-]{36})_@SiteGolB2C/)
+                    || key.match(/^([0-9a-f-]{36})[@_](?:SiteGol|GolSite|gol)/i);
                 if (m) return m[1];
             }
             return null;
@@ -206,9 +219,12 @@ class GolConnectorClient:
             _persistent_page = None
             page = await _ensure_persistent_page()
             uuid = await page.evaluate("""() => {
+                const directUUID = sessionStorage.getItem('currentTabUUID');
+                if (directUUID && /^[0-9a-f-]{36}$/.test(directUUID)) return directUUID;
                 for (let i = 0; i < sessionStorage.length; i++) {
                     const key = sessionStorage.key(i);
-                    const m = key.match(/^([0-9a-f-]+)_@SiteGolB2C/);
+                    const m = key.match(/^([0-9a-f-]{36})_@SiteGolB2C/)
+                        || key.match(/^([0-9a-f-]{36})[@_](?:SiteGol|GolSite|gol)/i);
                     if (m) return m[1];
                 }
                 return null;
@@ -592,6 +608,23 @@ class GolConnectorClient:
             ):
                 conditions["checked_bag"] = "2x 23kg bags included"
                 bags_price["checked_bag"] = 0.0
+
+        # Carry-on: infer from GOL fare family name
+        if "carry_on" not in conditions:
+            name_upper = fare_name.upper() if fare_name else ""
+            if "LIGHT" in name_upper or name_upper in ("LI", "LITE", "PROMO"):
+                conditions["carry_on"] = "1x 10kg carry-on included (no free checked bag on Light fare)"
+                bags_price["carry_on"] = 0.0
+            elif any(k in name_upper for k in ("MAX", "EXECUTIVO", "PREMIUM")):
+                conditions["carry_on"] = "2x carry-on bags included"
+                bags_price["carry_on"] = 0.0
+            else:
+                conditions["carry_on"] = "1x 10kg carry-on included"
+                bags_price["carry_on"] = 0.0
+
+        # Seat selection
+        if "seat" not in conditions:
+            conditions["seat"] = f"seat selection from ~{currency} 30 — add at checkout"
 
         return conditions, bags_price
 

@@ -813,6 +813,7 @@ class IndiGoConnectorClient:
         # Get cheapest fare from passengerFares (productClass R = economy regular)
         passenger_fares = journey.get("passengerFares") or []
         best_price = float("inf")
+        best_product_class = ""
         for pf in passenger_fares:
             amt = pf.get("totalFareAmount")
             if amt is not None:
@@ -820,10 +821,28 @@ class IndiGoConnectorClient:
                     v = float(amt)
                     if 0 < v < best_price:
                         best_price = v
+                        best_product_class = str(pf.get("productClass") or "").upper()
                 except (TypeError, ValueError):
                     pass
         if best_price == float("inf"):
             return None
+
+        # Map live productClass → bag conditions so _apply_ancillaries sees pre-set values
+        _6E_CLASS_BAGS: dict[str, tuple[str, str]] = {
+            # Unbundled SAVER/LITE fares — carry-on only
+            "SAVER": ("7 kg carry-on included", "no checked bag (SAVER fare — add from ~INR 700/15 kg)"),
+            "LITE": ("7 kg carry-on included", "no checked bag (Lite fare — add from ~INR 700/15 kg)"),
+            # Standard Economy / Regular — includes 15 kg checked bag
+            "R": ("7 kg carry-on included", "15 kg checked bag included"),
+            "REGULAR": ("7 kg carry-on included", "15 kg checked bag included"),
+            # Flexi / Super6E — includes 30 kg checked bag
+            "FLEXI": ("7 kg carry-on included", "30 kg checked bag included (Flexi)"),
+            "SUPER6E": ("7 kg carry-on included", "30 kg checked bag included (Super6E)"),
+        }
+        bag_conds: dict = {}
+        if best_product_class in _6E_CLASS_BAGS:
+            carry_str, checked_str = _6E_CLASS_BAGS[best_product_class]
+            bag_conds = {"carry_on": carry_str, "checked_bag": checked_str}
 
         # Build segments from journey.segments[]
         _6e_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(req.cabin_class or "M", "economy")
@@ -876,6 +895,7 @@ class IndiGoConnectorClient:
             is_locked=False,
             source="indigo_direct",
             source_tier="free",
+            conditions=bag_conds,
         )
 
     def _build_response(self, offers: list[FlightOffer], req: FlightSearchRequest, elapsed: float) -> FlightSearchResponse:
@@ -977,18 +997,19 @@ class IndiGoConnectorClient:
         seat_from = ancillary.get("seat_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
+            # Use setdefault so live fare-class conditions (set in _parse_journey) are not overwritten
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
-                offer.conditions["checked_bag"] = checked_note
+                offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
+                offer.conditions.setdefault("seat", seat_note)
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price.setdefault("carry_on", bags_from)
             if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.bags_price.setdefault("checked_bag", checked_from)
             if seat_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["seat"] = seat_from
+                offer.bags_price.setdefault("seat", seat_from)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"indigo{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]

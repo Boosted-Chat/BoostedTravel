@@ -1,13 +1,13 @@
 """
-Air Serbia (JU) — CDP Chrome connector — form fill + API intercept.
+Air Serbia (JU) — Patchright browser connector — form fill + API intercept.
 
 Air Serbia's website at www.airserbia.com uses a search widget with autocomplete
 airport fields and calendar date picker. Direct API calls are blocked;
-headed CDP Chrome with form fill + API interception is required.
+headed Patchright browser with form fill + API interception is required.
 
-Strategy (CDP Chrome + API interception):
-1. Launch headed Chrome via CDP (off-screen, stealth).
-2. Navigate to airserbia.com → SPA loads with search widget.
+Strategy (Patchright persistent context + API interception):
+1. Launch headed Patchright browser (persistent profile, bypasses CF Turnstile).
+2. Navigate to airserbia.com → CF Turnstile auto-solves in real browser.
 3. Accept cookies → set one-way → fill origin/dest → select date → search.
 4. Intercept the search API response (flight availability JSON).
 5. If API not captured, fall back to DOM scraping on results page.
@@ -22,7 +22,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import time
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -34,19 +33,16 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import find_chrome, stealth_popen_kwargs, _launched_procs, proxy_chrome_args, auto_block_if_proxied
+from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
-_DEBUG_PORT = 9497
 _USER_DATA_DIR = os.path.join(
-    os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")), ".airserbia_chrome_data"
+    os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")), ".airserbia_patchright_data"
 )
 
-_browser = None
 _context = None
 _pw_instance = None
-_chrome_proc = None
 _browser_lock: Optional[asyncio.Lock] = None
 
 
@@ -58,75 +54,65 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_context():
-    global _browser, _context, _pw_instance, _chrome_proc
+    global _context, _pw_instance
     lock = _get_lock()
     async with lock:
-        if _browser:
+        if _context is not None:
             try:
-                if _browser.is_connected():
-                    if _context:
-                        try:
-                            _ = _context.pages
-                            return _context
-                        except Exception:
-                            pass
-                    contexts = _browser.contexts
-                    if contexts:
-                        _context = contexts[0]
-                        return _context
+                _ = _context.pages  # check still alive
+                return _context
             except Exception:
-                pass
+                _context = None
 
-        from playwright.async_api import async_playwright
+        from patchright.async_api import async_playwright
 
-        pw = None
+        proxy = None
+        _proxy_args = proxy_chrome_args()
+        if _proxy_args:
+            for _pa in _proxy_args:
+                if _pa.startswith("--proxy-server="):
+                    proxy = {"server": _pa.split("=", 1)[1]}
+                    break
+
         try:
-            pw = await async_playwright().start()
-            _browser = await pw.chromium.connect_over_cdp(
-                f"http://127.0.0.1:{_DEBUG_PORT}"
-            )
-            _pw_instance = pw
-            logger.info("AirSerbia: connected to existing Chrome on port %d", _DEBUG_PORT)
-        except Exception:
-            if pw:
-                try:
-                    await pw.stop()
-                except Exception:
-                    pass
-            chrome = find_chrome()
-            os.makedirs(_USER_DATA_DIR, exist_ok=True)
-            args = [
-                chrome,
-                f"--remote-debugging-port={_DEBUG_PORT}",
-                f"--user-data-dir={_USER_DATA_DIR}",
-                "--no-first-run",
-                *proxy_chrome_args(),
-                "--no-default-browser-check",
-                "--disable-blink-features=AutomationControlled",
-                "--window-position=-2400,-2400",
-                "--window-size=1400,900",
-                "about:blank",
-            ]
-            _chrome_proc = subprocess.Popen(args, **stealth_popen_kwargs())
-            _launched_procs.append(_chrome_proc)
-            await asyncio.sleep(2.0)
-            pw = await async_playwright().start()
-            _pw_instance = pw
-            _browser = await pw.chromium.connect_over_cdp(
-                f"http://127.0.0.1:{_DEBUG_PORT}"
-            )
-            logger.info("AirSerbia: Chrome launched on CDP port %d", _DEBUG_PORT)
+            chrome_path = find_chrome()
+        except RuntimeError:
+            chrome_path = None
 
-        contexts = _browser.contexts
-        _context = contexts[0] if contexts else await _browser.new_context()
+        pw = await async_playwright().start()
+        _pw_instance = pw
+
+        os.makedirs(_USER_DATA_DIR, exist_ok=True)
+        launch_kwargs: dict = {
+            "headless": False,
+            "args": [
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--window-size=1400,900",
+            ],
+        }
+        if chrome_path:
+            launch_kwargs["executable_path"] = chrome_path
+        if proxy:
+            launch_kwargs["proxy"] = proxy
+
+        _context = await pw.chromium.launch_persistent_context(
+            _USER_DATA_DIR,
+            viewport={"width": 1400, "height": 900},
+            locale="en-US",
+            timezone_id="Europe/London",
+            color_scheme="light",
+            **launch_kwargs,
+        )
+        logger.info("AirSerbia: Patchright persistent context launched")
         return _context
 
 
 async def _reset_profile():
-    global _browser, _context, _pw_instance, _chrome_proc
+    global _context, _pw_instance
     try:
-        if _browser:
-            await _browser.close()
+        if _context:
+            await _context.close()
     except Exception:
         pass
     try:
@@ -134,12 +120,7 @@ async def _reset_profile():
             await _pw_instance.stop()
     except Exception:
         pass
-    if _chrome_proc:
-        try:
-            _chrome_proc.terminate()
-        except Exception:
-            pass
-    _browser = _context = _pw_instance = _chrome_proc = None
+    _context = _pw_instance = None
     if os.path.isdir(_USER_DATA_DIR):
         try:
             shutil.rmtree(_USER_DATA_DIR)
@@ -287,15 +268,15 @@ class AirSerbiaConnectorClient:
         try:
             logger.info("AirSerbia: loading homepage for %s→%s", req.origin, req.destination)
             await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=30000)
-            # Wait for selectize.js search widget to render — Cloudflare challenge
-            # may fire first (403 then auto-solve), so poll for form visibility.
-            for _wait in range(20):  # up to 20s total
+            # Wait for selectize.js search widget to render — Cloudflare Turnstile
+            # challenge auto-solves in Patchright headed browser (usually <10s).
+            for _wait in range(35):  # up to 35s for CF to auto-solve
                 await asyncio.sleep(1.0)
                 vis = await page.locator('input[placeholder="From"]:visible').count()
                 if vis > 0:
                     break
             else:
-                logger.warning("AirSerbia: From input never became visible")
+                logger.warning("AirSerbia: From input never became visible after CF wait")
             await _dismiss_overlays(page)
 
             # One-way toggle — Air Serbia uses pill tab buttons

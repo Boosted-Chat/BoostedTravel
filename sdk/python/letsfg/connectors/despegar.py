@@ -116,6 +116,16 @@ def _extract_despegar_bag_info(bag_info: dict, ancillaries: list, currency: str)
                     except (TypeError, ValueError):
                         pass
 
+    # Carry-on and seat are always set as notes (engine fallback may fill prices)
+    conditions.setdefault(
+        "carry_on",
+        "carry-on bag: typically included for full-service airlines — confirm allowance at Despegar checkout",
+    )
+    conditions.setdefault(
+        "seat",
+        "seat selection: available at Despegar checkout — prices vary by airline and route",
+    )
+
     return conditions, bags_price
 
 

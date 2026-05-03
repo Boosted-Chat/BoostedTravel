@@ -613,8 +613,10 @@ class SpiritConnectorClient:
 
             if carry_on_price is not None and carry_on_price > 0:
                 return {
-                    "bags_from": carry_on_price,
-                    "bags_note": f"carry-on from +USD {carry_on_price:.0f} (add bundle at booking)",
+                    "carry_on_from": carry_on_price,
+                    "carry_on_note": f"carry-on from +USD {carry_on_price:.0f} (Standard bundle — add at booking)",
+                    "checked_from": 45.0,
+                    "checked_note": "first checked bag from +USD 45 (separate add-on at booking)",
                     "seat_from": 1.0,
                     "seat_note": "seat selection from +USD 1",
                     "currency": "USD",

@@ -332,15 +332,44 @@ class SpiceJetConnectorClient:
         """Parse a single journey from the availability response."""
         fares = journey.get("fares", {})
         best_price = float("inf")
+        best_fare_key = ""
         for fare_key, fare_info in fares.items():
             if isinstance(fare_info, dict):
                 key_str = fare_info.get("fareAvailabilityKey", "")
                 decoded_price = _decode_fare_price(key_str)
                 if decoded_price and 0 < decoded_price < best_price:
                     best_price = decoded_price
+                    # Prefer explicit productClass field; fall back to the dict key
+                    pc = str(fare_info.get("productClass") or fare_key or "").upper()
+                    best_fare_key = pc
 
         if best_price == float("inf") or best_price <= 0:
             return None
+
+        # Map SpiceJet fare family → live bag conditions
+        # Fare families: LITE/L — no bag; SAVER/S — no bag; COMFORT/C — 15 kg; FLEXI/F/SPICEFLEX — 20 kg
+        _SG_FARE_BAGS: dict[str, tuple[str, str]] = {
+            "LITE": ("7 kg carry-on included", "no checked bag (Lite fare — add from ~INR 1200/15 kg)"),
+            "L": ("7 kg carry-on included", "no checked bag (Lite fare — add from ~INR 1200/15 kg)"),
+            "SAVER": ("7 kg carry-on included", "no checked bag (Saver fare — add from ~INR 1200/15 kg)"),
+            "S": ("7 kg carry-on included", "no checked bag (Saver fare — add from ~INR 1200/15 kg)"),
+            "SPICESAVER": ("7 kg carry-on included", "no checked bag (SpiceSaver — add from ~INR 1200/15 kg)"),
+            "COMFORT": ("7 kg carry-on included", "15 kg checked bag included"),
+            "C": ("7 kg carry-on included", "15 kg checked bag included"),
+            "SPICECOMFORT": ("7 kg carry-on included", "15 kg checked bag included"),
+            "FLEXI": ("7 kg carry-on included", "20 kg checked bag included (Flexi fare)"),
+            "F": ("7 kg carry-on included", "20 kg checked bag included (Flexi fare)"),
+            "SPICEFLEX": ("7 kg carry-on included", "20 kg checked bag included (SpiceFlex)"),
+            "SPICEPLUS": ("7 kg carry-on included", "20 kg checked bag included (SpicePlus)"),
+            "P": ("7 kg carry-on included", "20 kg checked bag included"),
+            "MAX": ("7 kg carry-on included", "30 kg checked bag included (SpiceMax)"),
+            "M": ("7 kg carry-on included", "30 kg checked bag included (SpiceMax)"),
+            "SPICEMAX": ("7 kg carry-on included", "30 kg checked bag included (SpiceMax)"),
+        }
+        bag_conds: dict = {}
+        if best_fare_key in _SG_FARE_BAGS:
+            carry_str, checked_str = _SG_FARE_BAGS[best_fare_key]
+            bag_conds = {"carry_on": carry_str, "checked_bag": checked_str}
 
         designator = journey.get("designator", {})
         is_international = journey.get("isInternational", False)
@@ -402,6 +431,7 @@ class SpiceJetConnectorClient:
             is_locked=False,
             source="spicejet_direct",
             source_tier="protocol",
+            conditions=bag_conds,
         )
 
     def _parse_segment(self, seg: dict, req: FlightSearchRequest) -> Optional[FlightSegment]:
@@ -553,18 +583,19 @@ class SpiceJetConnectorClient:
         seat_from = ancillary.get("seat_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
+            # Use setdefault so live fare-key conditions (set in _parse_journey) are not overwritten
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
-                offer.conditions["checked_bag"] = checked_note
+                offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
+                offer.conditions.setdefault("seat", seat_note)
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price.setdefault("carry_on", bags_from)
             if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.bags_price.setdefault("checked_bag", checked_from)
             if seat_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["seat"] = seat_from
+                offer.bags_price.setdefault("seat", seat_from)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"spicejet{req.origin}{req.destination}{req.date_from}{req.return_from or ''}".encode()).hexdigest()[:12]

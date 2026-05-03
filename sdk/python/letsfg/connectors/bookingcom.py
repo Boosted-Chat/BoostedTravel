@@ -522,6 +522,10 @@ class BookingcomConnectorClient:
                     airlines=airlines, owner_airline=airlines[0],
                     booking_url=booking_url,
                     is_locked=False, source="bookingcom_ota", source_tier="free",
+                    conditions={
+                        "bags": "baggage costs depend on airline fare — check at checkout (may not be included)",
+                        "booking_fee": "Booking.com may add a small service fee at checkout on top of the price shown",
+                    },
                 ))
             except Exception:
                 continue
@@ -623,6 +627,10 @@ class BookingcomConnectorClient:
                         airlines=[airline], owner_airline=airline,
                         booking_url=f"https://www.booking.com/flights/{req.origin}-{req.destination}/",
                         is_locked=False, source="bookingcom_ota", source_tier="free",
+                        conditions={
+                            "bags": "baggage costs depend on airline fare — check at checkout (may not be included)",
+                            "booking_fee": "Booking.com may add a small service fee at checkout on top of the price shown",
+                        },
                     ))
                 except Exception:
                     continue

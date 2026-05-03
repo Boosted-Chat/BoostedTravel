@@ -539,13 +539,14 @@ class LHGroupBaseConnector:
             if now - ts < _ANCILLARY_CACHE_TTL:
                 return data
         result: dict = {
-            "bags_note": (
-                "Economy Light (starting fare): no checked bag, "
-                f"first bag from {self.DEFAULT_CURRENCY} 15\u201325. "
+            "bags_note": "Carry-on bag (12 kg) included in all economy fares.",
+            "checked_bag": (
+                "Economy Light: no free checked bag "
+                f"(first bag from {self.DEFAULT_CURRENCY} 25 add-on). "
                 "Economy Classic/Flex: 1\u00d723 kg included."
             ),
             "seat_note": (
-                f"Seat selection: from {self.DEFAULT_CURRENCY} 10 (Light). "
+                f"Seat selection: from {self.DEFAULT_CURRENCY} 10 (Light fare). "
                 "Included in Classic/Flex fares."
             ),
             "bags_from": None,
@@ -556,13 +557,19 @@ class LHGroupBaseConnector:
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note", "")
+        checked_note = ancillary.get("checked_bag") or bags_note
         seat_note = ancillary.get("seat_note", "")
         bags_from = ancillary.get("bags_from")
+        checked_from = ancillary.get("checked_bag_price")
         anc_currency = ancillary.get("currency", self.DEFAULT_CURRENCY)
         for offer in offers:
             if bags_note:
                 offer.conditions["carry_on"] = bags_note
+            if checked_note:
+                offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
             if bags_from is not None and offer.currency == anc_currency:
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price["checked"] = bags_from
+            if checked_from is not None and offer.currency == anc_currency:
+                offer.bags_price["checked"] = checked_from

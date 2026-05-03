@@ -424,13 +424,13 @@ _AIRLINE_ANCILLARY: dict[str, dict[str, Any]] = {
         "checked_bag": 35.0, "checked_bag_kg": 23,
         "seat": 10.0, "currency": "USD",
     },
-    "Y4": {  # Volaris
-        "carry_on": 12.0, "carry_on_kg": 10, "checked_bag": 25.0, "checked_bag_kg": 25,
-        "seat": 8.0, "currency": "USD",
+    "Y4": {  # Volaris — prices in MXN (domestic Mexico LCC, API returns MXN)
+        "carry_on": 250.0, "carry_on_kg": 10, "checked_bag": 500.0, "checked_bag_kg": 25,
+        "seat": 150.0, "currency": "MXN",
     },
-    "VB": {  # VivaAerobus
-        "carry_on": 15.0, "carry_on_kg": 10, "checked_bag": 20.0, "checked_bag_kg": 25,
-        "seat": 8.0, "currency": "USD",
+    "VB": {  # VivaAerobus — prices in MXN (domestic Mexico LCC)
+        "carry_on": 280.0, "carry_on_kg": 10, "checked_bag": 400.0, "checked_bag_kg": 25,
+        "seat": 150.0, "currency": "MXN",
     },
     "DM": {  # Arajet
         "carry_on": 15.0, "carry_on_kg": 10, "checked_bag": 25.0, "checked_bag_kg": 20,
@@ -792,6 +792,113 @@ _AIRLINE_ANCILLARY: dict[str, dict[str, Any]] = {
         "carry_on": 0.0, "carry_on_kg": 7, "checked_bag": 0.0, "checked_bag_kg": 20,
         "seat": 5.0, "currency": "USD",
     },
+
+    # ── Pacific / Regional ─────────────────────────────────────────────────
+    "SB": {  # Air Caledonie Internationale — bags included
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "XPF",
+    },
+    "TL": {  # Air North (Canada) — bags included
+        "carry_on": 0.0, "carry_on_kg": None, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "CAD",
+    },
+    "CG": {  # PNG Air — bags included
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "USD",
+    },
+    "IE": {  # Solomon Airlines — bags included
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "USD",
+    },
+    "OL": {  # Samoa Airways — bags included
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "USD",
+    },
+
+    # ── Indian regional ────────────────────────────────────────────────────
+    "9I": {  # Alliance Air India — bags included
+        "carry_on": 0.0, "carry_on_kg": 7, "checked_bag": 0.0, "checked_bag_kg": 15,
+        "seat": 200.0, "currency": "INR",
+    },
+
+    # ── Nigerian ───────────────────────────────────────────────────────────
+    "QI": {  # Ibom Air (Nigeria) — bags included
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 5.0, "currency": "USD",
+    },
+
+    # ── European ───────────────────────────────────────────────────────────
+    "4U": {  # Eurowings Discovery (formerly Germanwings) — LCC
+        "carry_on": 10.0, "carry_on_kg": 10, "checked_bag": 22.0, "checked_bag_kg": 23,
+        "seat": 5.0, "currency": "EUR",
+    },
+    "DK": {  # Star Air (Denmark) — bags included (regional/charter)
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "DKK",
+    },
+    "FC": {  # Link Airways (Australia) — bags included
+        "carry_on": 0.0, "carry_on_kg": None, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "AUD",
+    },
+
+    # ── Pakistani ──────────────────────────────────────────────────────────
+    "9N": {  # Nine Air (Pakistan) — bags included
+        "carry_on": 0.0, "carry_on_kg": 7, "checked_bag": 0.0, "checked_bag_kg": 20,
+        "seat": 5.0, "currency": "PKR",
+    },
+
+    # ── Indonesian LCC ─────────────────────────────────────────────────────
+    "RS": {  # Super Air Jet (Indonesia) — LCC
+        "carry_on": 0.0, "carry_on_kg": 7,
+        "carry_on_note": "1 cabin bag (7 kg) included",
+        "checked_bag": 150000.0, "checked_bag_kg": 20,
+        "seat": 50000.0, "currency": "IDR",
+    },
+    "IU": {  # Super Air Jet (Indonesia) — alternate IATA code alias
+        "carry_on": 0.0, "carry_on_kg": 7,
+        "carry_on_note": "1 cabin bag (7 kg) included",
+        "checked_bag": 150000.0, "checked_bag_kg": 20,
+        "seat": 50000.0, "currency": "IDR",
+    },
+
+    # ── Chinese LCC ────────────────────────────────────────────────────────
+    "AQ": {  # 9Air (Nine Air, China) — LCC
+        "carry_on": 0.0, "carry_on_kg": 7, "checked_bag": 50.0, "checked_bag_kg": 23,
+        "seat": 30.0, "currency": "CNY",
+    },
+
+    # ── Central Asian / Caucasus ───────────────────────────────────────────
+    "J2": {  # Azerbaijan Airlines (AZAL) — flag carrier, bags included
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 15.0, "currency": "USD",
+    },
+
+    # ── German leisure / LTQ ──────────────────────────────────────────────
+    "4Y": {  # Discover Airlines (Germany, formerly Eurowings Discover)
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 35.0, "checked_bag_kg": 23,
+        "seat": 15.0, "currency": "EUR",
+    },
+
+    # ── Danish regional ───────────────────────────────────────────────────
+    "S5": {  # Star Air (Denmark, regional turboprop) — bags included
+        "carry_on": 0.0, "carry_on_kg": None, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "DKK",
+    },
+
+    # ── Pacific (Samoa) ───────────────────────────────────────────────────
+    "PH": {  # Samoa Airways (alternate IATA code alias for OL)
+        "carry_on": 0.0, "carry_on_kg": 10, "checked_bag": 0.0, "checked_bag_kg": 23,
+        "seat": 0.0, "currency": "USD",
+    },
+
+    # ── Italy ─────────────────────────────────────────────────────────────
+    "AZ": {  # ITA Airways (formerly Alitalia) — full-service flag carrier
+        "carry_on": 0.0, "carry_on_kg": 8,
+        "carry_on_note": "1 cabin bag (8 kg) + 1 personal item included",
+        "checked_bag": 40.0, "checked_bag_kg": 23,
+        "checked_bag_note": "Eco Light: add-on from ~€40; Eco and above: 1 × 23 kg included",
+        "seat": 10.0, "currency": "EUR",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -817,3 +924,67 @@ def get_bags_price(airline_iata: str) -> dict[str, Any]:
     if ref.get("seat") is not None:
         result["seat"] = ref["seat"]
     return result
+
+
+def apply_ref_ancillaries(offer: Any) -> None:  # offer: FlightOffer (avoid circular import)
+    """Enrich *offer* with bag/seat conditions from the static reference table.
+
+    Only fills in keys that are not already set — live-parsed data (e.g. Kiwi's
+    per-offer tierPrice, Qatar's fareFamilyFeatures) is never overwritten.
+
+    Uses *offer.owner_airline* as the IATA carrier code lookup key.
+    """
+    iata = (offer.owner_airline or "").upper()
+    ref = _AIRLINE_ANCILLARY.get(iata)
+    if not ref:
+        return
+
+    curr = ref.get("currency", "EUR")
+
+    # ── Carry-on / cabin bag ────────────────────────────────────────────────
+    if "carry_on" not in offer.conditions:
+        note = ref.get("carry_on_note")
+        if not note:
+            val = ref.get("carry_on")
+            kg = ref.get("carry_on_kg", 10)
+            if val is None:
+                note = "cabin bag: varies by route and fare class"
+            elif val == 0.0:
+                kg_str = f", up to {kg} kg" if kg else ""
+                note = f"1 cabin bag included{kg_str}"
+            else:
+                kg_str = f", {kg} kg" if kg else ""
+                note = f"cabin bag add-on from ~{val:.0f} {curr}{kg_str}"
+        offer.conditions["carry_on"] = note
+        # Numeric for downstream aggregation
+        if "carry_on" not in offer.bags_price and ref.get("carry_on") is not None:
+            offer.bags_price["carry_on"] = ref["carry_on"]
+
+    # ── Checked bag ─────────────────────────────────────────────────────────
+    if "checked_bag" not in offer.conditions:
+        note = ref.get("checked_bag_note")
+        if not note:
+            val = ref.get("checked_bag")
+            kg = ref.get("checked_bag_kg", 23)
+            if val is None:
+                note = f"checked bag ({kg} kg): price varies by fare class"
+            elif val == 0.0:
+                note = f"1 checked bag ({kg} kg) included"
+            else:
+                note = f"checked bag add-on from ~{val:.0f} {curr} ({kg} kg)"
+        offer.conditions["checked_bag"] = note
+        if "checked_bag" not in offer.bags_price and ref.get("checked_bag") is not None:
+            offer.bags_price["checked_bag"] = ref["checked_bag"]
+
+    # ── Seat selection ───────────────────────────────────────────────────────
+    if "seat" not in offer.conditions:
+        val = ref.get("seat")
+        if val is None:
+            note = "seat selection: varies by fare class"
+        elif val == 0.0:
+            note = "seat selection: free (assigned at check-in)"
+        else:
+            note = f"seat selection: from ~{val:.0f} {curr}"
+        offer.conditions["seat"] = note
+        if "seat_selection" not in offer.bags_price and val is not None:
+            offer.bags_price["seat_selection"] = val

@@ -918,6 +918,9 @@ class JetSmartConnectorClient:
     @staticmethod
     def _build_base_fare_conditions() -> dict[str, str]:
         return {
+            "carry_on": "overhead carry-on is a paid add-on (from ~USD 10)",
+            "checked_bag": "checked bag is a paid add-on (from ~USD 25)",
+            "seat": "seat selection from ~USD 8 — add at checkout",
             "fare_upgrade_note": "Search surface exposes base fare only; no baggage or seat pricing",
         }
 

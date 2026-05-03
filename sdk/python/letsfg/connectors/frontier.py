@@ -181,7 +181,15 @@ class FrontierConnectorClient:
             logger.warning("Frontier SSR: JSON parse error: %s", e)
             return None
 
-        return self._parse_response(data, req)
+        offers = self._parse_response(data, req)
+
+        # Cache live bundle ancillary pricing from SSR response
+        bundle_anc = FrontierConnectorClient._parse_bundle_ancillary(data)
+        if bundle_anc:
+            _anc_key = f"f9_{req.origin}_{req.destination}_{req.date_from}"
+            _ancillary_cache[_anc_key] = (time.time(), bundle_anc)
+
+        return offers
 
     # ------------------------------------------------------------------ #
     #  FALLBACK PATH: Playwright                                          #
@@ -252,7 +260,15 @@ class FrontierConnectorClient:
             if not flight_data:
                 return None
 
-            return self._parse_response(flight_data, req)
+            offers = self._parse_response(flight_data, req)
+
+            # Cache live bundle ancillary pricing from Playwright-extracted FlightData
+            bundle_anc = FrontierConnectorClient._parse_bundle_ancillary(flight_data)
+            if bundle_anc:
+                _anc_key = f"f9_{req.origin}_{req.destination}_{req.date_from}"
+                _ancillary_cache[_anc_key] = (time.time(), bundle_anc)
+
+            return offers
         finally:
             await context.close()
 
@@ -483,6 +499,48 @@ class FrontierConnectorClient:
     # ------------------------------------------------------------------
     # Ancillary pricing
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_bundle_ancillary(data: dict) -> dict | None:
+        """Extract live WORKS bundle price from Frontier FlightData SSR response.
+
+        The WORKS bundle (Economy) covers carry-on + first checked bag together.
+        ``economyBundleFare`` is the per-passenger add-on price over the base fare.
+        """
+        try:
+            journeys = data.get("journeys") or []
+            bundle_price: float | None = None
+            for journey in journeys:
+                for flight in (journey.get("flights") or []):
+                    for key in ("economyBundleFare", "premiumBundleFare", "bizedBundleFare"):
+                        val = flight.get(key)
+                        if val is None:
+                            continue
+                        try:
+                            v = float(val)
+                        except (TypeError, ValueError):
+                            continue
+                        if v > 0 and (bundle_price is None or v < bundle_price):
+                            bundle_price = v
+                if bundle_price is not None:
+                    break  # use only the first journey's data
+            if bundle_price:
+                note = (
+                    f"WORKS bundle from +USD {bundle_price:.0f} "
+                    "(carry-on + 1 checked bag — cheapest bag option)"
+                )
+                return {
+                    "carry_on_from": bundle_price,
+                    "carry_on_note": f"carry-on from +USD {bundle_price:.0f} (WORKS bundle incl. carry-on + checked bag)",
+                    "checked_from": bundle_price,
+                    "checked_note": f"checked bag from +USD {bundle_price:.0f} (WORKS bundle incl. carry-on + checked bag)",
+                    "seat_from": 5.0,
+                    "seat_note": "seat selection from +USD 5 (add at booking)",
+                    "currency": "USD",
+                }
+        except Exception:
+            pass
+        return None
 
     async def _fetch_ancillaries(
         self,

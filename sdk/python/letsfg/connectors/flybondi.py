@@ -37,7 +37,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import stealth_args, auto_block_if_proxied, get_curl_cffi_proxies
+from .browser import stealth_args, auto_block_if_proxied, get_curl_cffi_proxies, get_default_proxy, find_chrome
 
 logger = logging.getLogger(__name__)
 
@@ -56,33 +56,9 @@ _TIMEZONES = [
 
 _MAX_ATTEMPTS = 2
 
-_pw_instance = None
-_browser = None
-_browser_lock: Optional[asyncio.Lock] = None
-
-
-def _get_lock() -> asyncio.Lock:
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
-
-
-async def _get_browser():
-    """Shared headed Chromium (launched once, reused across searches)."""
-    global _pw_instance, _browser
-    lock = _get_lock()
-    async with lock:
-        if _browser and _browser.is_connected():
-            return _browser
-        from .browser import launch_headed_browser
-        _browser = await launch_headed_browser()
-        logger.info("Flybondi: browser launched")
-        return _browser
-
 
 class FlybondiConnectorClient:
-    """Flybondi hybrid scraper -- curl_cffi SSR extraction + Playwright fallback."""
+    """Flybondi hybrid scraper -- curl_cffi SSR extraction + Patchright fallback."""
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
@@ -245,25 +221,43 @@ class FlybondiConnectorClient:
     async def _attempt_search(
         self, url: str, req: FlightSearchRequest
     ) -> Optional[list[FlightOffer]]:
-        browser = await _get_browser()
+        """Use Patchright (undetected Chrome) to bypass Cloudflare Turnstile,
+        then intercept ANY JSON response from flybondi.com that contains flight edges."""
+        from patchright.async_api import async_playwright as patchright_playwright
+        from .browser import get_default_proxy, find_chrome
+
+        proxy = get_default_proxy()
+        viewport = random.choice(_VIEWPORTS)
+        launch_kwargs: dict = {
+            "headless": False,
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--window-size={viewport['width']},{viewport['height']}",
+            ],
+            "proxy": proxy,
+        }
+        try:
+            chrome_path = find_chrome()
+            if chrome_path:
+                launch_kwargs["executable_path"] = chrome_path
+        except Exception:
+            pass
+
+        pw = await patchright_playwright().start()
+        browser = await pw.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
-            viewport=random.choice(_VIEWPORTS),
+            viewport=viewport,
             locale=random.choice(_LOCALES),
             timezone_id=random.choice(_TIMEZONES),
-            service_workers="block",
         )
 
         try:
-            try:
-                from playwright_stealth import stealth_async
-                page = await context.new_page()
-                await auto_block_if_proxied(page)
-                await stealth_async(page)
-            except ImportError:
-                page = await context.new_page()
-                await auto_block_if_proxied(page)
+            page = await context.new_page()
+            await auto_block_if_proxied(page)
 
-            # Set up GraphQL interception as fallback
             captured_flights: dict = {}
             api_event = asyncio.Event()
 
@@ -271,64 +265,84 @@ class FlybondiConnectorClient:
                 try:
                     if response.status != 200:
                         return
-                    rq = response.request
-                    if rq.method != "POST" or "graphql" not in response.url.lower():
-                        return
-                    post = rq.post_data or ""
-                    if "FlightSearchContainerQuery" not in post:
+                    rurl = response.url
+                    # Intercept any JSON from flybondi.com that might contain flight data
+                    if "flybondi.com" not in rurl:
                         return
                     ct = response.headers.get("content-type", "")
                     if "json" not in ct:
                         return
                     data = await response.json()
+                    if not isinstance(data, dict):
+                        return
+                    # SSR-embedded path: data.viewer.flights.edges
                     edges = (
                         data.get("data", {})
                         .get("viewer", {})
                         .get("flights", {})
                         .get("edges", [])
+                    ) or (
+                        data.get("viewer", {})
+                        .get("flights", {})
+                        .get("edges", [])
                     )
+                    if not edges:
+                        # Try alternate top-level or Relay paths
+                        for top_val in data.values():
+                            if isinstance(top_val, dict):
+                                for v in top_val.values():
+                                    if isinstance(v, dict):
+                                        candidate = v.get("flights", {}).get("edges", [])
+                                        if candidate:
+                                            edges = candidate
+                                            break
+                                if edges:
+                                    break
+                    if not edges:
+                        # Try REST-style: look for a list of flights under any key
+                        for v in data.values():
+                            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                                if any(k in v[0] for k in ("departureDateTime", "departure", "origin", "flightNumber")):
+                                    captured_flights["raw_list"] = v
+                                    api_event.set()
+                                    logger.info("Flybondi: captured %d flights (REST list) from %s", len(v), rurl[:80])
+                                    return
                     if edges:
                         captured_flights["edges"] = edges
                         api_event.set()
-                        logger.info("Flybondi: captured %d flights from GraphQL", len(edges))
+                        logger.info("Flybondi: captured %d flight edges from %s", len(edges), rurl[:80])
                 except Exception:
                     pass
 
             page.on("response", on_response)
 
-            logger.info("Flybondi: loading %s", url[:120])
-            await page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=int(self.timeout * 1000),
-            )
+            logger.info("Flybondi: loading with Patchright %s", url[:120])
+            await page.goto(url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
 
-            # Dismiss cookies if present
             await self._dismiss_cookies(page)
 
-            # Wait for page to finish rendering
-            await page.wait_for_load_state("networkidle", timeout=15000)
-
-            # Strategy 1: Extract SSR data from inline script tag
-            edges = await self._extract_ssr_edges(page)
-            if edges:
-                logger.info("Flybondi: extracted %d flights from SSR", len(edges))
-                return self._parse_edges(edges, req)
-
-            # Strategy 2: Wait for GraphQL interception (e.g. if user interaction triggered it)
+            # Wait up to 30s for Cloudflare Turnstile to pass and flight data to arrive
             try:
-                await asyncio.wait_for(api_event.wait(), timeout=10)
+                await asyncio.wait_for(api_event.wait(), timeout=30)
             except asyncio.TimeoutError:
                 pass
 
-            gql_edges = captured_flights.get("edges", [])
-            if gql_edges:
-                return self._parse_edges(gql_edges, req)
+            # Also try SSR extraction after the full page load
+            if not captured_flights:
+                edges = await self._extract_ssr_edges(page)
+                if edges:
+                    logger.info("Flybondi: extracted %d flights from SSR (Patchright)", len(edges))
+                    return self._parse_edges(edges, req)
+
+            if "edges" in captured_flights:
+                return self._parse_edges(captured_flights["edges"], req)
 
             logger.warning("Flybondi: no flight data found via SSR or GraphQL")
             return None
         finally:
             await context.close()
+            await browser.close()
+            await pw.stop()
 
     async def _extract_ssr_edges(self, page) -> Optional[list[dict]]:
         """Extract flight edges from SSR data embedded in a script tag."""
@@ -523,6 +537,14 @@ class FlybondiConnectorClient:
         # Flybondi STANDARD base fare has no free checked bag (ultra-LCC)
         if "checked_bag" not in conditions:
             conditions["checked_bag"] = "no free checked bag (ultra-LCC fare)"
+
+        # Carry-on: Flybondi is ultra-LCC — overhead bag always a paid add-on
+        if "carry_on" not in conditions:
+            conditions["carry_on"] = "overhead carry-on is a paid add-on (from ~USD 10)"
+
+        # Seat selection
+        if "seat" not in conditions:
+            conditions["seat"] = "seat selection from ~USD 5 — add at checkout"
 
         return conditions, bags_price
 

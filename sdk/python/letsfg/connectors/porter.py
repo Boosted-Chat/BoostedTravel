@@ -480,14 +480,15 @@ class PorterConnectorClient:
             ts, cached = _ancillary_cache[cache_key]
             if now - ts < _ANCILLARY_CACHE_TTL:
                 return cached
-        # Porter: carry-on and 1 checked bag included on all Economy fares.
+        # Porter: Porter Basic (cheapest fare) has NO free bags.
+        # Carry-on and checked bag are included on PorterClassic and above.
         result: dict = {
-            "carry_on_from": 0.0,
-            "carry_on_note": "1 carry-on bag included on all fares",
-            "checked_from": 0.0,
-            "checked_note": "1 checked bag included (PorterClassic and above)",
+            "carry_on_from": 30.0,
+            "carry_on_note": "carry-on from +CAD 30 (Porter Basic — PorterClassic and above include carry-on)",
+            "checked_from": 35.0,
+            "checked_note": "first checked bag from +CAD 35 (Porter Basic — PorterClassic and above include 1 bag)",
             "seat_from": 0.0,
-            "seat_note": "seat selection included with booking",
+            "seat_note": "standard seat included (PorterClassic — preferred from +CAD 15)",
             "currency": "CAD",
         }
         _ancillary_cache[cache_key] = (now, result)

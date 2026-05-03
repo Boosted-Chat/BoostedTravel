@@ -246,7 +246,8 @@ class TurkishConnectorClient:
     ) -> dict | None:
         # Turkish Airlines includes checked bag on all economy fares.
         return {
-            "bags_note": "1 checked bag included (20 kg domestic / 23 kg international). Carry-on 8 kg included.",
+            "bags_note": "Carry-on bag (8 kg) included in all economy fares.",
+            "checked_bag": "1 checked bag included (20 kg domestic / 23 kg international).",
             "seat_note": "Seat selection: free at online check-in (72 h before). Preferred/extra-legroom from USD 15.",
             "bags_from": None,
             "currency": currency,
@@ -254,16 +255,22 @@ class TurkishConnectorClient:
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
+        checked_note = ancillary.get("checked_bag") or bags_note
         seat_note = ancillary.get("seat_note")
         bags_from = ancillary.get("bags_from")
+        checked_from = ancillary.get("checked_bag_price")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
                 offer.conditions["carry_on"] = bags_note
+            if checked_note:
+                offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
             if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+                offer.bags_price["checked"] = bags_from
+            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
+                offer.bags_price["checked"] = checked_from
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         # Fast path: Sputnik API (no browser needed, ~1s)
@@ -784,7 +791,7 @@ class TurkishConnectorClient:
                         direct_fetch_active = True
                         direct_result = await page.evaluate(
                         """async (args) => {
-                        const [origin, dest, dateDMY, adults, isRt, retDateDMY, cabinCls] = args;
+                        const [origin, dest, dateISO, adults, isRt, retDateISO, cabinCls, curr] = args;
                         const controller = new AbortController();
                         const timer = setTimeout(() => controller.abort(), 15000);
                         try {
@@ -799,23 +806,25 @@ class TurkishConnectorClient:
                                 body: JSON.stringify({
                                     selectedBookerSearch: isRt ? 'R' : 'O',
                                     selectedCabinClass: cabinCls,
+                                    languageCode: 'en-INT',
+                                    currencyCode: curr,
                                     inbound: false,
                                     stayDuration: isRt ? 7 : 0,
                                     passengerTypeList: [{quantity: parseInt(adults), code: 'ADULT'}],
                                     originDestinationInformationList: [
                                         {
                                             originAirportCode: origin,
-                                            originMultiPort: true,
+                                            originMultiPort: false,
                                             destinationAirportCode: dest,
                                             destinationMultiPort: false,
-                                            departureDate: dateDMY,
+                                            departureDate: dateISO,
                                         },
                                         ...(isRt ? [{
                                             originAirportCode: dest,
-                                            originMultiPort: true,
+                                            originMultiPort: false,
                                             destinationAirportCode: origin,
                                             destinationMultiPort: false,
-                                            departureDate: retDateDMY,
+                                            departureDate: retDateISO,
                                         }] : []),
                                     ],
                                 }),
@@ -833,10 +842,11 @@ class TurkishConnectorClient:
                             return {_error: e.message};
                         }
                     }""",
-                        [req.origin, req.destination, target_dmy, str(req.adults or 1),
+                        [req.origin, req.destination, target_dot, str(req.adults or 1),
                          bool(req.return_from),
-                         _to_datetime(req.return_from).strftime("%d-%m-%Y") if req.return_from else "",
-                         {"M": "ECONOMY", "W": "PREMIUM_ECONOMY", "C": "BUSINESS", "F": "FIRST"}.get(req.cabin_class or "M", "ECONOMY")],
+                         _to_datetime(req.return_from).strftime("%d.%m.%Y") if req.return_from else "",
+                         {"M": "ECONOMY", "W": "PREMIUM_ECONOMY", "C": "BUSINESS", "F": "FIRST"}.get(req.cabin_class or "M", "ECONOMY"),
+                         req.currency or "EUR"],
                         )
                         # Give _on_response a moment to process
                         await asyncio.sleep(0.5)
@@ -1229,127 +1239,90 @@ class TurkishConnectorClient:
             # Click the date trigger — try multiple approaches
             calendar_opened = False
 
-            # Try A: Click on visible elements inside #bookerDatepicker
-            if trigger_info.get("dpExists"):
-                # Click the container first
-                dp = page.locator("#bookerDatepicker")
-                try:
-                    await dp.click(timeout=3000, force=True)
-                    await asyncio.sleep(1.5)
-                except Exception:
-                    pass
-
-                # Then click child elements that look interactive
-                dp_children = trigger_info.get("dpChildren", [])
-                for child in dp_children:
-                    if child.get("children", 0) == 0 and child.get("h", 0) > 0:
-                        # This is a leaf visible element — try clicking it
-                        try:
-                            tag = child["tag"].lower()
-                            cls = child.get("cls", "")
-                            if cls:
-                                first_cls = cls.split()[0] if " " in cls else cls
-                                el = page.locator(f"#{('bookerDatepicker')} {tag}.{first_cls}").first
-                                if await el.count() > 0:
-                                    await el.click(timeout=2000, force=True)
-                                    await asyncio.sleep(1.5)
-                                    break
-                        except Exception:
-                            continue
-
-            # Try B: Click elements with "Dates" text
-            try:
-                dates_el = page.locator("text=Dates").first
-                if await dates_el.count() > 0:
-                    await dates_el.click(timeout=3000, force=True)
-                    await asyncio.sleep(1.5)
-            except Exception:
-                pass
-
-            # Check if calendar opened
-            cal_check = await page.evaluate("""() => {
-                // Broad check for any calendar-like structure that appeared
-                const all = document.querySelectorAll('*');
-                const found = [];
-                for (const el of all) {
-                    if (el.offsetHeight < 50) continue;
-                    const cls = (el.className || '').toString().toLowerCase();
-                    const role = (el.getAttribute('role') || '').toLowerCase();
-                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                    if (cls.includes('calendar') || cls.includes('datepick') ||
-                        cls.includes('monthview') || cls.includes('dayview') ||
-                        role === 'grid' || role === 'dialog' ||
-                        aria.includes('calendar') || aria.includes('date')) {
-                        found.push({
-                            tag: el.tagName, cls: el.className?.toString().slice(0, 80),
-                            h: el.offsetHeight, role, text: el.textContent?.slice(0, 60),
-                        });
-                    }
-                }
-                // Also check for month/year headings that indicate a calendar is visible
-                const headings = [];
-                const months = ['January','February','March','April','May','June',
-                               'July','August','September','October','November','December'];
-                for (const el of all) {
-                    if (el.offsetHeight > 0 && el.children.length < 3) {
-                        const t = el.textContent?.trim() || '';
-                        if (months.some(m => t.includes(m)) && /\\d{4}/.test(t) && t.length < 40) {
-                            headings.push({
-                                tag: el.tagName, text: t,
-                                cls: el.className?.toString().slice(0, 60),
-                            });
+            # Pre-check: calendar might have auto-opened after dest airport fill
+            def _js_month_check():
+                return """() => {
+                    const months = ['January','February','March','April','May','June',
+                       'July','August','September','October','November','December'];
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.offsetHeight > 0 && el.children.length < 5) {
+                            const t = el.textContent?.trim() || '';
+                            if (months.some(m => t.includes(m)) && /\\d{4}/.test(t) && t.length < 40)
+                                return true;
                         }
                     }
-                }
-                return { calendars: found.slice(0, 5), monthHeadings: headings.slice(0, 5) };
-            }""")
-            logger.warning("TK: after click — calendars: %s, headings: %s",
-                          cal_check.get("calendars"), cal_check.get("monthHeadings"))
+                    // Also check for role=grid (ARIA calendar)
+                    return !!document.querySelector('[role="grid"], [role="dialog"] [role="gridcell"]');
+                }"""
 
-            if cal_check.get("monthHeadings"):
-                # Only enter calendar navigation if actual month headings visible
-                # (not just container DIVs with calendar CSS classes)
+            if await page.evaluate(_js_month_check()):
                 calendar_opened = True
+            else:
+                # Try A: JS dispatchEvent at actual screen coordinates — more reliable
+                # than Playwright locator.click(force=True) for React event handlers
+                dispatched = await page.evaluate("""() => {
+                    const selectors = [
+                        '[class*="clickable"][class*="oneway"]',
+                        '[class*="clickable"][class*="container"]',
+                        '[class*="calendar-placeholder"]',
+                        '[class*="booker-date-wrapper"]',
+                        '[class*="generalBookerDatapicker"]',
+                    ];
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (!el || el.offsetHeight < 10) continue;
+                        const rect = el.getBoundingClientRect();
+                        const cx = Math.round(rect.left + rect.width / 2);
+                        const cy = Math.round(rect.top + rect.height / 2);
+                        for (const type of ['mouseenter', 'mouseover', 'pointerdown',
+                                            'mousedown', 'pointerup', 'mouseup', 'click']) {
+                            try {
+                                el.dispatchEvent(new (type.startsWith('pointer')
+                                    ? PointerEvent : MouseEvent)(type, {
+                                    bubbles: true, cancelable: true, view: window,
+                                    clientX: cx, clientY: cy,
+                                    pointerId: 1, pointerType: 'mouse',
+                                }));
+                            } catch(e) {}
+                        }
+                        return {sel, cx, cy};
+                    }
+                    return null;
+                }""")
+                logger.warning("TK: JS dispatch result: %s", dispatched)
+                await asyncio.sleep(2.0)
+
+                if await page.evaluate(_js_month_check()):
+                    calendar_opened = True
+                else:
+                    # Try B: page.mouse.click at actual element coordinates (hardware-level input)
+                    coords = await page.evaluate("""() => {
+                        const el = document.querySelector('[class*="clickable"][class*="oneway"]') ||
+                                   document.querySelector('[class*="calendar-placeholder"]') ||
+                                   document.querySelector('#bookerDatepicker');
+                        if (!el) return null;
+                        const r = el.getBoundingClientRect();
+                        return {x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2)};
+                    }""")
+                    if coords:
+                        await page.mouse.move(coords["x"], coords["y"])
+                        await asyncio.sleep(0.3)
+                        await page.mouse.click(coords["x"], coords["y"])
+                        logger.warning("TK: mouse.click at %s", coords)
+                        await asyncio.sleep(2.0)
+                        if await page.evaluate(_js_month_check()):
+                            calendar_opened = True
+
+            logger.warning("TK: after click — calendar_opened=%s", calendar_opened)
+            if calendar_opened:
                 return await self._navigate_calendar_and_click_day(
                     page, target_day, target_month, target_year, date_iso
                 )
 
-            # ── Step 2: Keyboard approach — Tab from destination field ──
-            logger.warning("TK: calendar not detected, trying keyboard approach")
-
-            # Click destination field first, then Tab to date
-            dest_field = page.locator("#toPort")
-            if await dest_field.count() > 0:
-                await dest_field.click(timeout=3000, force=True)
-                await asyncio.sleep(0.3)
-                # Tab forward to the date field
-                for _ in range(3):
-                    await page.keyboard.press("Tab")
-                    await asyncio.sleep(0.5)
-
-                # Check what's focused now
-                focused = await page.evaluate("""() => {
-                    const el = document.activeElement;
-                    return el ? {
-                        tag: el.tagName, id: el.id,
-                        cls: (el.className || '').toString().slice(0, 60),
-                        type: el.type || '',
-                        text: el.textContent?.trim().slice(0, 40),
-                    } : null;
-                }""")
-                logger.warning("TK: after Tab×3, focused: %s", focused)
-
-                # Try typing the date
-                await page.keyboard.type(date_ddmmmyyyy, delay=50)
-                await asyncio.sleep(1.0)
-                await page.keyboard.press("Enter")
-                await asyncio.sleep(1.5)
-
-            # ── Step 3: React state injection ──
+            # ── Step 2: React state injection (broad multi-root search) ──
             injected = await page.evaluate("""(args) => {
                 const [dateISO, dateDDMMYYYY, day, monthName, year] = args;
 
-                // Find React fiber on #bookerDatepicker or form elements
                 function getReactFiber(el) {
                     const key = Object.keys(el).find(k =>
                         k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
@@ -1357,40 +1330,51 @@ class TurkishConnectorClient:
                     return key ? el[key] : null;
                 }
 
-                // Try to find and update React state
-                const dp = document.querySelector('#bookerDatepicker');
-                if (dp) {
-                    const fiber = getReactFiber(dp);
-                    if (fiber) {
-                        // Walk up the fiber tree to find a component with date state
-                        let f = fiber;
-                        for (let i = 0; i < 20 && f; i++) {
-                            if (f.memoizedProps) {
-                                const props = f.memoizedProps;
-                                // Check if this component has date-related props/state
-                                if (props.onChange || props.onDateChange || props.onDayClick) {
-                                    const dt = new Date(dateISO + 'T00:00:00');
-                                    try {
-                                        if (props.onChange) props.onChange(dt);
-                                        else if (props.onDateChange) props.onDateChange(dt);
-                                        else if (props.onDayClick) props.onDayClick(dt);
-                                        return 'react-callback-' + i;
-                                    } catch(e) {
-                                        return 'react-callback-error-' + e.message;
-                                    }
+                function tryInjectFiber(rootEl, label) {
+                    const fiber = getReactFiber(rootEl);
+                    if (!fiber) return null;
+                    let f = fiber;
+                    for (let i = 0; i < 30 && f; i++) {
+                        if (f.memoizedProps) {
+                            const props = f.memoizedProps;
+                            if (props.onChange || props.onDateChange || props.onDayClick
+                                || props.onSelectDate || props.onDateSelected) {
+                                const dt = new Date(dateISO + 'T00:00:00');
+                                try {
+                                    if (props.onDayClick) props.onDayClick(dt);
+                                    else if (props.onSelectDate) props.onSelectDate(dt);
+                                    else if (props.onDateSelected) props.onDateSelected(dt);
+                                    else if (props.onDateChange) props.onDateChange(dt);
+                                    else if (props.onChange) props.onChange(dt);
+                                    return label + '-' + i;
+                                } catch(e) {
+                                    return label + '-error-' + e.message;
                                 }
                             }
-                            f = f.return;
                         }
-                        return 'react-fiber-no-callback';
+                        f = f.return;
                     }
-                    return 'no-fiber';
+                    return null;
                 }
-                return 'no-dp';
+
+                // Try multiple root elements broadly
+                const roots = [
+                    document.querySelector('#bookerDatepicker'),
+                    document.querySelector('[class*="generalBookerDatapicker"]'),
+                    document.querySelector('[class*="calendarValue"]'),
+                    document.querySelector('[class*="booker-date-wrapper"]'),
+                    document.querySelector('[class*="clickable"][class*="oneway"]'),
+                ].filter(Boolean);
+
+                for (let ri = 0; ri < roots.length; ri++) {
+                    const r = tryInjectFiber(roots[ri], 'root' + ri);
+                    if (r) return r;
+                }
+                return 'no-handler-found';
             }""", [date_iso, date_ddmmyyyy, target_day, target_month, target_year])
             logger.warning("TK: React injection result: %s", injected)
 
-            # ── Step 4: Direct date input injection (same as old Strategy A) ──
+            # ── Step 3: Direct date input injection ──
             date_inputs = await page.evaluate("""(args) => {
                 const [dateISO, dateDDMMYYYY, dateDDMMMYYYY] = args;
                 const inputs = document.querySelectorAll('input');

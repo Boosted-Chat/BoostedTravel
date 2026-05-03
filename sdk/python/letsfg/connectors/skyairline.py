@@ -247,8 +247,14 @@ class SkyAirlineConnectorClient:
             else:
                 nearby_fares.append(fare)
 
-        # Prefer exact-date fares; fall back to all route fares
-        use_fares = exact_fares
+        # Prefer exact-date fares; fall back to cheapest nearby fare as indicative price
+        if exact_fares:
+            use_fares = exact_fares
+        elif nearby_fares:
+            cheapest = min(nearby_fares, key=lambda f: float(f.get("totalPrice") or 999999))
+            use_fares = [cheapest]
+        else:
+            use_fares = []
 
         for fare in use_fares:
             orig = fare.get("originAirportCode", "")
@@ -325,12 +331,20 @@ class SkyAirlineConnectorClient:
             # Sky Airline fare families: BASE/LIGHT=no bag, CLASS/ECONOMY=1 bag, FULL/FLEX=2 bags
             if any(k in name_upper for k in ("BASE", "LIGHT", "BASIC", "ZERO", "MINI", "SKY BASE")):
                 conditions["checked_bag"] = "no free checked bag"
+                conditions["carry_on"] = "no free overhead carry-on (add-on from ~USD 10)"
             elif any(k in name_upper for k in ("FULL", "FLEX", "PLUS", "PREMIUM", "BUSINESS")):
                 conditions["checked_bag"] = "2x 23kg bags included"
+                conditions["carry_on"] = "1x 10kg carry-on included"
             elif any(k in name_upper for k in ("CLASS", "CLASSIC", "ECONOMY", "STANDARD", "SKY CLASS")):
                 conditions["checked_bag"] = "1x 23kg bag included"
+                conditions["carry_on"] = "1x 10kg carry-on included"
+            else:
+                conditions["carry_on"] = "carry-on policy depends on fare — check at checkout"
         else:
             conditions["fare_upgrade_note"] = "Route page exposes base fare only; no baggage or seat pricing"
+            conditions["carry_on"] = "carry-on add-on from ~USD 10"
+            conditions["checked_bag"] = "checked bag add-on from ~USD 20 — check at checkout"
+        conditions.setdefault("seat", "seat selection from ~USD 5 — add at checkout")
         return conditions
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:

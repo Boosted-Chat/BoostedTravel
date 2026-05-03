@@ -286,7 +286,11 @@ class AerolineasConnectorClient:
                 inbound=inbound,
                 airlines=["Aerolíneas Argentinas"],
                 owner_airline="AR",
-                conditions={"checked_bag": "1x 23kg bag included (Economy)"},
+                conditions={
+                    "carry_on": "1 cabin bag (10 kg) + 1 personal item included",
+                    "checked_bag": "1x 23kg bag included (Economy)",
+                    "seat": "seat selection from ~USD 10",
+                },
                 bags_price={"checked_bag": 0.0},
                 booking_url=booking_url,
                 is_locked=False,
