@@ -922,189 +922,34 @@ export default function CheckoutPanel({
 
         {/* ── Checkout card ───────────────────────────────────────────────── */}
         <div className="ck-checkout-card">
+          <div className="ck-unified-body">
 
-          {/* ── STEP 1: Unlock ──────────────────────────────────────────── */}
-          <div className={`ck-step${isUnlocked ? ' ck-step--done' : ''}${isLoading ? ' ck-step--loading' : ''}`}>
-            <div className="ck-step-label">
-              <span className={`ck-step-num${isUnlocked ? ' ck-step-num--done' : ''}`}>
-                {isUnlocked ? <CheckIcon /> : '1'}
-              </span>
-              <span className="ck-step-title">
-                {isUnlocked ? t('dealUnlockedStep') : t('unlockThisDeal')}
-              </span>
+            {/* Price breakdown — always visible */}
+            <div className="ck-price-breakdown">
+              <div className="ck-price-row">
+                <span className="ck-price-label">{t('airlineTicket')}</span>
+                <span className="ck-price-value">{offer.currency}{offer.price}</span>
+              </div>
+              <div className="ck-price-row">
+                <span className="ck-price-label">{t('letsfgFee')}</span>
+                <span className="ck-price-value">{fmtFee(calculateFee(offer.price, offer.currency), offer.currency)}</span>
+              </div>
+              <div className="ck-price-row ck-price-row--total">
+                <span className="ck-price-label">{t('total')}</span>
+                <span className="ck-price-value">{offer.currency}{Math.round(withFee(offer.price, offer.currency))}</span>
+              </div>
             </div>
 
-            {!isUnlocked && !isLoading && (
-              <div className="ck-unlock-body">
-                <p className="ck-unlock-desc">
-                  {t.rich('unlockDesc', { strong: (chunks) => <strong>{chunks}</strong> })}
-                </p>
-
-                {/* Pay button */}
-                <button
-                  className={`ck-pay-btn${step.type === 'paying' ? ' ck-pay-btn--loading' : ''}`}
-                  onClick={handlePay}
-                  disabled={step.type === 'paying'}
-                >
-                  {step.type === 'paying' ? (
-                    <>
-                      <span className="ck-spinner" aria-hidden="true" />
-                      {t('processing')}
-                    </>
-                  ) : (
-                    <>
-                      <LockIcon />
-                      {t('unlockFor', { fee: fmtFee(fee, offer.currency) })}
-                    </>
-                  )}
-                </button>
-
-                <div className="ck-fee-note">
-                  {t('oneTime')}
-                </div>
-
-                {/* Share to unlock (only if fee < $20) */}
-                {showShareOption && step.type !== 'paying' && (
-                  <>
-                    <div className="ck-or-divider">
-                      <span>{t('shareToUnlock')}</span>
-                    </div>
-
-                    {/* Platform select */}
-                    {(step.type === 'locked' || step.type === 'share-select' || step.type === 'share-rejected') && (
-                      <div className="ck-share-intro">
-                        <p className="ck-share-desc">
-                          {t('shareDesc')}
-                        </p>
-                        <div className="ck-platform-grid">
-                          {platforms.map(p => (
-                            <button
-                              key={p.id}
-                              className="ck-platform-btn"
-                              onClick={() => handleSelectPlatform(p)}
-                            >
-                              <span className="ck-platform-icon">{PLATFORM_ICONS[p.id]}</span>
-                              {p.label}
-                            </button>
-                          ))}
-                        </div>
-                        {step.type === 'share-rejected' && (
-                          <div className="ck-share-rejected">
-                            <span>⚠</span> {shareError ?? t('screenshotInvalid')}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Screenshot upload step */}
-                    {step.type === 'share-upload' && (
-                      <div className="ck-share-upload">
-                        <div className="ck-share-platform-header">
-                          <span className="ck-platform-icon">{PLATFORM_ICONS[step.platform.id]}</span>
-                          <span className="ck-share-platform-name">{step.platform.label}</span>
-                          <button className="ck-share-back" onClick={() => {
-                            setShareError(null)
-                            setStep({ type: 'share-select' })
-                          }}>
-                            {t('change')}
-                          </button>
-                        </div>
-                        <ol className="ck-share-steps">
-                          {step.platform.instructions.map((inst, i) => (
-                            <li key={i}>{inst}</li>
-                          ))}
-                        </ol>
-
-                        {/* File drop zone */}
-                        <div
-                          className={`ck-upload-zone${previewUrl ? ' ck-upload-zone--filled' : ''}`}
-                          onClick={() => fileInputRef.current?.click()}
-                          onKeyDown={e => e.key === 'Enter' && fileInputRef.current?.click()}
-                          onPaste={handlePaste}
-                          role="button"
-                          tabIndex={0}
-                          aria-label={t('uploadAriaLabel')}
-                        >
-                          {previewUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={previewUrl} alt="Screenshot preview" className="ck-upload-preview" />
-                          ) : (
-                            <div className="ck-upload-prompt">
-                              <svg viewBox="0 0 24 24" fill="none" width="28" height="28" aria-hidden="true">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                              </svg>
-                              <span>{t('uploadLabel')}</span>
-                              <span className="ck-upload-hint">{t('uploadHint')}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          accept="image/*"
-                          className="ck-file-input"
-                          onChange={handleFileChange}
-                          aria-label="Upload share screenshot"
-                        />
-
-                        <button
-                          className="ck-verify-btn"
-                          onClick={handleVerify}
-                          disabled={!uploadedFile}
-                        >
-                          {t('submitVerification')}
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Verifying */}
-                    {step.type === 'share-verifying' && (
-                      <div className="ck-share-verifying">
-                        <span className="ck-spinner ck-spinner--lg" aria-hidden="true" />
-                        <div>
-                          <div className="ck-verifying-title">{t('verifyingTitle')}</div>
-                          <div className="ck-verifying-sub">{t('verifySub')}</div>
-                        </div>
-                      </div>
-                    )}
-                  </>
+            {splitBookingLegs.length > 0 ? (
+              /* ── Split booking: per-leg action cards ── */
+              <>
+                {!isUnlocked && !isLoading && (
+                  <div className="ck-fee-note">{t('oneTimeUnlocksAll')}</div>
                 )}
-              </div>
-            )}
-          </div>
-
-          <div className="ck-step-divider" />
-
-          {/* ── STEP 2: Book ticket ─────────────────────────────────────── */}
-          <div className={`ck-step${isUnlocked ? '' : ' ck-step--locked-section'}`}>
-            <div className="ck-step-label">
-              <span className={`ck-step-num${isUnlocked ? ' ck-step-num--active' : ''}`}>2</span>
-              <span className="ck-step-title">{t('bookTicket')}</span>
-            </div>
-
-            <div className="ck-book-body">
-              <div className="ck-price-breakdown">
-                <div className="ck-price-row">
-                  <span className="ck-price-label">{t('airlineTicket')}</span>
-                  <span className="ck-price-value">{offer.currency}{offer.price}</span>
-                </div>
-                <div className="ck-price-row">
-                  <span className="ck-price-label">{t('letsfgFee')}</span>
-                  <span className="ck-price-value">{fmtFee(calculateFee(offer.price, offer.currency), offer.currency)}</span>
-                </div>
-                <div className="ck-price-row ck-price-row--total">
-                  <span className="ck-price-label">{t('total')}</span>
-                  <span className="ck-price-value">{offer.currency}{Math.round(withFee(offer.price, offer.currency))}</span>
-                </div>
-              </div>
-
-              {splitBookingLegs.length > 0 ? (
                 <div className="ck-book-actions">
-                  {splitBookingLegs.map((leg) => {
+                  {splitBookingLegs.map((leg, legIdx) => {
                     const legPrice = typeof leg.price === 'number' ? leg.price : null
                     const hasBookingUrl = typeof leg.booking_url === 'string' && leg.booking_url.length > 0
-
                     return (
                       <div className="ck-book-action-card" key={`${leg.leg}-${leg.airline}-${leg.departure_time}`}>
                         <div className="ck-book-action-meta">
@@ -1120,8 +965,7 @@ export default function CheckoutPanel({
                             {legPrice !== null ? fmtMoney(legPrice, leg.currency || offer.currency) : 'Included in total'}
                           </span>
                         </div>
-
-                        {isUnlocked ? (
+                        {!isLoading && (isUnlocked ? (
                           hasBookingUrl ? (
                             <a
                               href={leg.booking_url}
@@ -1148,150 +992,298 @@ export default function CheckoutPanel({
                             </button>
                           )
                         ) : (
-                          <button className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
-                            <LockIcon />
-                            {getLockedLegButtonLabel(leg.leg)}
+                          <button
+                            className={`ck-book-btn ck-book-btn--active${step.type === 'paying' ? ' ck-pay-btn--loading' : ''}`}
+                            onClick={handlePay}
+                            disabled={step.type === 'paying'}
+                          >
+                            {step.type === 'paying' ? (
+                              <><span className="ck-spinner" aria-hidden="true" />{t('processing')}</>
+                            ) : (
+                              <><LockIcon />{getLockedLegButtonLabel(leg.leg)}{legIdx === 0 ? ` · ${fmtFee(fee, offer.currency)}` : ''}</>
+                            )}
                           </button>
-                        )}
+                        ))}
                       </div>
                     )
                   })}
                 </div>
-              ) : tripBreakdown.length > 1 && (
-                <div className="ck-leg-breakdown">
-                  {tripBreakdown.map((leg) => (
-                    <div className="ck-leg-row" key={`${leg.leg}-${leg.airline}-${leg.departure_time}`}>
-                      <div className="ck-leg-copy">
-                        <span className="ck-leg-label">{getLegTitle(leg.leg)}</span>
-                        <span className="ck-leg-airline">{leg.airline}</span>
-                        <span className="ck-leg-route">{getLegRouteLabel(leg)}</span>
+              </>
+            ) : (
+              /* ── Standard booking ── */
+              <>
+                {tripBreakdown.length > 1 && (
+                  <div className="ck-leg-breakdown">
+                    {tripBreakdown.map((leg) => (
+                      <div className="ck-leg-row" key={`${leg.leg}-${leg.airline}-${leg.departure_time}`}>
+                        <div className="ck-leg-copy">
+                          <span className="ck-leg-label">{getLegTitle(leg.leg)}</span>
+                          <span className="ck-leg-airline">{leg.airline}</span>
+                          <span className="ck-leg-route">{getLegRouteLabel(leg)}</span>
+                        </div>
+                        <div className="ck-leg-price-wrap">
+                          <span className={`ck-leg-price${typeof leg.price === 'number' ? '' : ' ck-leg-price--muted'}`}>
+                            {typeof leg.price === 'number'
+                              ? fmtMoney(leg.price, leg.currency || offer.currency)
+                              : 'Included in total'}
+                          </span>
+                        </div>
                       </div>
-                      <div className="ck-leg-price-wrap">
-                        <span className={`ck-leg-price${typeof leg.price === 'number' ? '' : ' ck-leg-price--muted'}`}>
-                          {typeof leg.price === 'number'
-                            ? fmtMoney(leg.price, leg.currency || offer.currency)
-                            : 'Included in total'}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
 
-              {splitBookingLegs.length > 0 ? null : isUnlocked && bookingOptions.length > 0 ? (
-                <div className="ck-book-actions">
-                  {bookingOptions.map((option) => (
-                    <div className="ck-book-action-card" key={`${option.leg}-${option.airline}-${option.booking_url}`}>
-                      {(option.origin || option.destination) && (
-                        <div className="ck-book-action-meta">
-                          <div className="ck-book-action-copy">
-                            <span className="ck-book-action-title">{getLegTitle(option.leg)}</span>
-                            <span className="ck-book-action-subtitle">{getLegRouteLabel(option)}</span>
-                            {option.booking_site && (
-                              <span className="ck-book-action-site">Book via {option.booking_site}</span>
-                            )}
-                          </div>
-                          {typeof option.price === 'number' && (
-                            <span className="ck-book-action-price">{fmtMoney(option.price, option.currency || offer.currency)}</span>
+                {!isUnlocked && !isLoading && (
+                  <div className="ck-fee-note">{t('oneTimeUnlocksAll')}</div>
+                )}
+
+                {!isLoading && (isUnlocked ? (
+                  /* Unlocked: show actual booking links */
+                  bookingOptions.length > 0 ? (
+                    <div className="ck-book-actions">
+                      {bookingOptions.map((option) => (
+                        <div className="ck-book-action-card" key={`${option.leg}-${option.airline}-${option.booking_url}`}>
+                          {(option.origin || option.destination) && (
+                            <div className="ck-book-action-meta">
+                              <div className="ck-book-action-copy">
+                                <span className="ck-book-action-title">{getLegTitle(option.leg)}</span>
+                                <span className="ck-book-action-subtitle">{getLegRouteLabel(option)}</span>
+                                {option.booking_site && (
+                                  <span className="ck-book-action-site">Book via {option.booking_site}</span>
+                                )}
+                              </div>
+                              {typeof option.price === 'number' && (
+                                <span className="ck-book-action-price">{fmtMoney(option.price, option.currency || offer.currency)}</span>
+                              )}
+                            </div>
                           )}
+                          <a
+                            href={option.booking_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ck-book-btn ck-book-btn--active"
+                            onClick={() => trackSearchSessionEvent(analyticsSearchId, 'booking_link_opened', {
+                              offer_id: offer.id,
+                              airline: option.airline,
+                              leg: option.leg,
+                            }, {
+                              source: 'website-checkout',
+                              source_path: checkoutSourcePath,
+                              is_test_search: isTestSearch || undefined,
+                              decision: 'booking_link_opened',
+                            }, { keepalive: true })}
+                          >
+                            {getLegButtonLabel(option.leg, option.airline)}
+                            <ArrowIcon />
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  ) : bookingUrl ? (
+                    <a
+                      href={bookingUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ck-book-btn ck-book-btn--active"
+                      onClick={() => trackSearchSessionEvent(analyticsSearchId, 'booking_link_opened', {
+                        offer_id: offer.id,
+                        airline: offer.airline,
+                      }, {
+                        source: 'website-checkout',
+                        source_path: checkoutSourcePath,
+                        is_test_search: isTestSearch || undefined,
+                        decision: 'booking_link_opened',
+                      }, { keepalive: true })}
+                    >
+                      {t('bookOn', { airline: offer.airline })}
+                      <ArrowIcon />
+                    </a>
+                  ) : (
+                    /* Unlocked but booking link still loading */
+                    tripBreakdown.length > 1 ? (
+                      <div className="ck-book-actions">
+                        {tripBreakdown.map((leg) => (
+                          <button key={`${leg.leg}-${leg.airline}`} className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
+                            {bookingLinkStatus === 'loading' ? t('processing') : getLegButtonLabel(leg.leg, leg.airline)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <button className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
+                        {bookingLinkStatus === 'loading' ? t('processing') : t('bookOn', { airline: summaryAirline })}
+                      </button>
+                    )
+                  )
+                ) : (
+                  /* Locked: green Stripe checkout buttons */
+                  offer.inbound ? (
+                    <div className="ck-book-actions">
+                      <button
+                        className={`ck-book-btn ck-book-btn--active${step.type === 'paying' ? ' ck-pay-btn--loading' : ''}`}
+                        onClick={handlePay}
+                        disabled={step.type === 'paying'}
+                      >
+                        {step.type === 'paying' ? (
+                          <><span className="ck-spinner" aria-hidden="true" />{t('processing')}</>
+                        ) : (
+                          <><LockIcon />{t('unlockOutboundBookingLink')} · {fmtFee(fee, offer.currency)}</>
+                        )}
+                      </button>
+                      <button
+                        className={`ck-book-btn ck-book-btn--active${step.type === 'paying' ? ' ck-pay-btn--loading' : ''}`}
+                        onClick={handlePay}
+                        disabled={step.type === 'paying'}
+                      >
+                        {step.type === 'paying' ? (
+                          <><span className="ck-spinner" aria-hidden="true" />{t('processing')}</>
+                        ) : (
+                          <><LockIcon />{t('unlockReturnBookingLink')}</>
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className={`ck-book-btn ck-book-btn--active${step.type === 'paying' ? ' ck-pay-btn--loading' : ''}`}
+                      onClick={handlePay}
+                      disabled={step.type === 'paying'}
+                    >
+                      {step.type === 'paying' ? (
+                        <><span className="ck-spinner" aria-hidden="true" />{t('processing')}</>
+                      ) : (
+                        <><LockIcon />{t('unlockBookingLink')} · {fmtFee(fee, offer.currency)}</>
+                      )}
+                    </button>
+                  )
+                ))}
+
+              </>
+            )}
+
+            {/* Share section — below buttons, only when locked */}
+            {!isUnlocked && !isLoading && showShareOption && step.type !== 'paying' && (
+              <>
+                <div className="ck-or-divider">
+                  <span>{t('shareToUnlock')}</span>
+                </div>
+
+                {(step.type === 'locked' || step.type === 'share-select' || step.type === 'share-rejected') && (
+                  <div className="ck-share-intro">
+                    <p className="ck-share-desc">
+                      {t('shareDesc')}
+                    </p>
+                    <div className="ck-platform-grid">
+                      {platforms.map(p => (
+                        <button
+                          key={p.id}
+                          className="ck-platform-btn"
+                          onClick={() => handleSelectPlatform(p)}
+                        >
+                          <span className="ck-platform-icon">{PLATFORM_ICONS[p.id]}</span>
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                    {step.type === 'share-rejected' && (
+                      <div className="ck-share-rejected">
+                        <span>⚠</span> {shareError ?? t('screenshotInvalid')}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {step.type === 'share-upload' && (
+                  <div className="ck-share-upload">
+                    <div className="ck-share-platform-header">
+                      <span className="ck-platform-icon">{PLATFORM_ICONS[step.platform.id]}</span>
+                      <span className="ck-share-platform-name">{step.platform.label}</span>
+                      <button className="ck-share-back" onClick={() => {
+                        setShareError(null)
+                        setStep({ type: 'share-select' })
+                      }}>
+                        {t('change')}
+                      </button>
+                    </div>
+                    <ol className="ck-share-steps">
+                      {step.platform.instructions.map((inst, i) => (
+                        <li key={i}>{inst}</li>
+                      ))}
+                    </ol>
+
+                    {/* File drop zone */}
+                    <div
+                      className={`ck-upload-zone${previewUrl ? ' ck-upload-zone--filled' : ''}`}
+                      onClick={() => fileInputRef.current?.click()}
+                      onKeyDown={e => e.key === 'Enter' && fileInputRef.current?.click()}
+                      onPaste={handlePaste}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={t('uploadAriaLabel')}
+                    >
+                      {previewUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={previewUrl} alt="Screenshot preview" className="ck-upload-preview" />
+                      ) : (
+                        <div className="ck-upload-prompt">
+                          <svg viewBox="0 0 24 24" fill="none" width="28" height="28" aria-hidden="true">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          <span>{t('uploadLabel')}</span>
+                          <span className="ck-upload-hint">{t('uploadHint')}</span>
                         </div>
                       )}
-                      <a
-                        href={option.booking_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ck-book-btn ck-book-btn--active"
-                        onClick={() => trackSearchSessionEvent(analyticsSearchId, 'booking_link_opened', {
-                          offer_id: offer.id,
-                          airline: option.airline,
-                          leg: option.leg,
-                        }, {
-                          source: 'website-checkout',
-                          source_path: checkoutSourcePath,
-                          is_test_search: isTestSearch || undefined,
-                          decision: 'booking_link_opened',
-                        }, { keepalive: true })}
-                      >
-                        {getLegButtonLabel(option.leg, option.airline)}
-                        <ArrowIcon />
-                      </a>
                     </div>
-                  ))}
-                </div>
-              ) : isUnlocked && bookingUrl ? (
-                  <a
-                  href={bookingUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ck-book-btn ck-book-btn--active"
-                    onClick={() => trackSearchSessionEvent(analyticsSearchId, 'booking_link_opened', {
-                      offer_id: offer.id,
-                      airline: offer.airline,
-                    }, {
-                      source: 'website-checkout',
-                      source_path: checkoutSourcePath,
-                      is_test_search: isTestSearch || undefined,
-                      decision: 'booking_link_opened',
-                    }, { keepalive: true })}
-                >
-                  {t('bookOn', { airline: offer.airline })}
-                  <ArrowIcon />
-                </a>
-              ) : isUnlocked ? (
-                <>
-                  {tripBreakdown.length > 1 ? (
-                    <div className="ck-book-actions">
-                      {tripBreakdown.map((leg) => (
-                        <button key={`${leg.leg}-${leg.airline}`} className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
-                          {bookingLinkStatus === 'loading' ? t('processing') : getLegButtonLabel(leg.leg, leg.airline)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <button className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
-                      {bookingLinkStatus === 'loading' ? t('processing') : t('bookOn', { airline: summaryAirline })}
-                    </button>
-                  )}
-                  <div className="ck-book-locked-note">
-                    {bookingLinkStatus === 'error' ? t('unlockFirst') : t('processing')}
-                  </div>
-                </>
-              ) : splitBookingLegs.length > 0 ? null : (
-                <>
-                  {tripBreakdown.length > 1 ? (
-                    <div className="ck-book-actions">
-                      {tripBreakdown.map((leg) => (
-                        <button key={`${leg.leg}-${leg.airline}`} className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
-                          <LockIcon />
-                          {getLockedLegButtonLabel(leg.leg)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <button className="ck-book-btn ck-book-btn--locked" disabled aria-disabled="true">
-                      <LockIcon />
-                      {t('unlockBookingLink')}
-                    </button>
-                  )}
-                  <div className="ck-book-locked-note">
-                    {t('unlockFirst')}
-                  </div>
-                </>
-              )}
 
-              <div className="ck-guarantee-row">
-                <span className="ck-guarantee-item">
-                  <CheckIcon /> {t('rawAirlinePrice')}
-                </span>
-                <span className="ck-guarantee-item">
-                  <CheckIcon /> {t('secureCheckout')}
-                </span>
-                <span className="ck-guarantee-item">
-                  <CheckIcon /> {t('noHiddenFees')}
-                </span>
-              </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="ck-file-input"
+                      onChange={handleFileChange}
+                      aria-label="Upload share screenshot"
+                    />
+
+                    <button
+                      className="ck-verify-btn"
+                      onClick={handleVerify}
+                      disabled={!uploadedFile}
+                    >
+                      {t('submitVerification')}
+                    </button>
+                  </div>
+                )}
+
+                {step.type === 'share-verifying' && (
+                  <div className="ck-share-verifying">
+                    <span className="ck-spinner ck-spinner--lg" aria-hidden="true" />
+                    <div>
+                      <div className="ck-verifying-title">{t('verifyingTitle')}</div>
+                      <div className="ck-verifying-sub">{t('verifySub')}</div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="ck-guarantee-row">
+              <span className="ck-guarantee-item">
+                <CheckIcon /> {t('rawAirlinePrice')}
+              </span>
+              <span className="ck-guarantee-item">
+                <CheckIcon /> {t('secureCheckout')}
+              </span>
+              <span className="ck-guarantee-item">
+                <CheckIcon /> {t('noHiddenFees')}
+              </span>
             </div>
           </div>
+        </div>
+
+        {/* ── Support line ───────────────────────────────────────────────── */}
+        <div className="ck-support-line">
+          Need help?{' '}
+          <a href="mailto:contact@letsfg.co" className="ck-support-link">contact@letsfg.co</a>
+          <span className="ck-meta-dot">·</span>
+          <a href="https://x.com/amjaworsky" target="_blank" rel="noreferrer" className="ck-support-link">Message on X</a>
         </div>
 
         {/* ── Trust footer ────────────────────────────────────────────────── */}

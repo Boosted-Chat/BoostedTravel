@@ -5805,7 +5805,7 @@ body:has(.res-page) {
 }
 
 .ck-flight-price {
-  font-size: 1.5rem;
+  font-size: 1.8rem;
   font-weight: 800;
   color: #142d3c;
   line-height: 1.1;
@@ -6038,6 +6038,13 @@ body:has(.res-page) {
 }
 
 /* ── Checkout card ─────────────────────────────────────────────────── */
+.ck-unified-body {
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .ck-checkout-card {
   background: #fff;
   border-radius: 20px;
@@ -6461,7 +6468,7 @@ body:has(.res-page) {
 }
 
 .ck-price-row--total .ck-price-value {
-  font-size: 1.05rem;
+  font-size: 1.3rem;
   font-weight: 800;
   color: #142d3c;
 }
@@ -6668,6 +6675,23 @@ body:has(.res-page) {
 }
 
 /* ── Trust footer ──────────────────────────────────────────────────── */
+.ck-support-line {
+  text-align: center;
+  font-size: 0.78rem;
+  color: rgba(20, 45, 60, 0.5);
+  margin-bottom: 8px;
+}
+
+.ck-support-link {
+  color: #0a4d68;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.ck-support-link:hover {
+  text-decoration: underline;
+}
+
 .ck-trust-footer {
   display: flex;
   align-items: center;
