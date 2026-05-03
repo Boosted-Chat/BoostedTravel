@@ -430,12 +430,12 @@ class NokAirConnectorClient:
                 offer.conditions["checked_bag"] = checked_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
-            if seat_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["seat"] = seat_from
+            if bags_from is not None:
+                offer.bags_price.setdefault("carry_on", bags_from)
+            if checked_from is not None:
+                offer.bags_price.setdefault("checked_bag", checked_from)
+            if seat_from is not None:
+                offer.bags_price.setdefault("seat", seat_from)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(

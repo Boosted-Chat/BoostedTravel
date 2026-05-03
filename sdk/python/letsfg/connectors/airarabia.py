@@ -281,8 +281,13 @@ class AirArabiaConnectorClient:
             anc_origin = segs[0].origin if segs else req.origin
             anc_dest = segs[-1].destination if segs else req.destination
             try:
+                first_flight_no = (
+                    unique[0].outbound.segments[0].flight_no
+                    if unique and unique[0].outbound and unique[0].outbound.segments
+                    else None
+                )
                 ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, currency),
+                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, currency, flight_no=first_flight_no),
                     timeout=45.0,
                 )
                 if ancillary:
@@ -425,16 +430,11 @@ class AirArabiaConnectorClient:
         )
 
     async def _fetch_ancillaries(
-        self, origin: str, dest: str, date_str: str, adults: int, currency: str
+        self, origin: str, dest: str, date_str: str, adults: int, currency: str,
+        flight_no: str | None = None,
     ) -> dict | None:
-        # Air Arabia G9 — Light fare: cabin bag 7 kg free, checked bag add-on from 40 AED
-        return {
-            "checked_bag_note": "checked bag 20 kg not included – add-on from ~40 AED",
-            "bags_note": "cabin bag 7 kg included free (Light fare)",
-            "seat_note": "seat selection add-on from ~15 AED",
-            "checked_bag_from": 40.0,
-            "currency": "AED",
-        }
+        from .ancillary_live_probe import probe_ancillaries
+        return await probe_ancillaries("G9", origin, dest, date_str=date_str, flight_no=flight_no)
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         checked_bag_note = ancillary.get("checked_bag_note")
@@ -449,8 +449,8 @@ class AirArabiaConnectorClient:
                 offer.conditions["carry_on"] = bags_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if checked_bag_from is not None:
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         search_hash = hashlib.md5(

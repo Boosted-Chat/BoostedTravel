@@ -464,7 +464,7 @@ AIRLINE_COUNTRIES: dict[str, set[str]] = {
 
     # ── Americas ──
     "southwest": {"US", "MX", "PR", "JM", "BS", "DO", "CU", "AW", "CR", "BZ", "TT"},
-    "spirit": {"US", "PR", "CO", "MX", "JM", "DO", "GT", "SV", "HN", "CR", "PA", "PE", "EC"},
+    # "spirit" removed — Spirit Airlines shut down May 2, 2026
     "frontier": {"US", "MX", "DO", "JM", "PR", "GT", "CR"},
     "allegiant": {"US", "MX", "PR", "DO"},
     "jetblue": {"US", "PR", "DO", "JM", "BS", "MX", "CR", "CO", "EC", "PE", "GB", "FR", "NL"},

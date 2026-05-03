@@ -196,7 +196,47 @@ class AirTransatConnectorClient:
             if ib_result.total_results > 0:
                 ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
                 ob_result.total_results = len(ob_result.offers)
+        if ob_result.offers:
+            segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
+            anc_origin = segs[0].origin if segs else req.origin
+            anc_dest = segs[-1].destination if segs else req.destination
+            try:
+                ancillary = await asyncio.wait_for(
+                    self._fetch_ancillaries(anc_origin, anc_dest, str(req.date_from), req.adults, ob_result.currency),
+                    timeout=10.0,
+                )
+                if ancillary:
+                    self._apply_ancillaries(ob_result.offers, ancillary)
+            except (asyncio.TimeoutError, TimeoutError):
+                pass
+            except Exception as _anc_err:
+                logger.debug("AirTransat ancillary error: %s", _anc_err)
         return ob_result
+
+    async def _fetch_ancillaries(
+        self, origin: str, dest: str, date_str: str, adults: int, currency: str
+    ) -> dict | None:
+        # Air Transat Economy (base): carry-on 1×10 kg included, no checked bag.
+        # First checked bag from ~CAD 65. Eco/Comfort+/Club: bags included.
+        return {
+            "bags_note": (
+                "Economy (base fare): no checked bag included, first bag from CAD 65. "
+                "Eco/Comfort+: 1×23 kg included. Club: 2×23 kg included. "
+                "Carry-on (10 kg) always included."
+            ),
+            "seat_note": "Seat selection from CAD 20 (Economy). Included on Club fares.",
+            "currency": "CAD",
+        }
+
+    def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
+        bags_note = ancillary.get("bags_note")
+        seat_note = ancillary.get("seat_note")
+        for offer in offers:
+            if bags_note:
+                offer.conditions.setdefault("carry_on", bags_note)
+                offer.conditions.setdefault("checked_bag", bags_note)
+            if seat_note:
+                offer.conditions.setdefault("seat", seat_note)
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()

@@ -119,10 +119,10 @@ class VivaAerobusConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+            if bags_from == 0.0:
+                offer.bags_price["carry_on"] = 0.0
+            if checked_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
 
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
@@ -194,10 +194,10 @@ class VivaAerobusConnectorClient:
     @staticmethod
     def _extract_lowfare_conditions(fare: dict) -> dict[str, str]:
         conditions = {
-            "fare_upgrade_note": "Lowfares search exposes base fare only; no baggage or seat pricing",
-            "carry_on": "carry-on bag add-on from ~MXN 280 (10 kg); personal item (under seat) only on base fare",
-            "checked_bag": "checked bag add-on from ~MXN 400 (25 kg); not included on base VC fare",
-            "seat": "seat selection from ~MXN 150; included in higher fare bundles",
+            "fare_upgrade_note": "Lowfares search exposes base fare only; ancillary prices not available",
+            "carry_on": "personal item (under seat) included on base fare; overhead carry-on bag not included",
+            "checked_bag": "checked bag not included on base VC fare — add at checkout",
+            "seat": "seat selection not included on base fare; included in higher fare bundles",
         }
         fare_family = str(fare.get("fareProductClass") or "").strip()
         if fare_family:

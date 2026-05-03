@@ -269,10 +269,10 @@ class CopaConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+            if bags_from == 0.0:
+                offer.bags_price["carry_on"] = 0.0
+            if checked_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
 
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
@@ -280,7 +280,9 @@ class CopaConnectorClient:
         sputnik_offers = await self._try_sputnik(req)
         if sputnik_offers:
             _td = req.date_from.date() if isinstance(req.date_from, datetime) else req.date_from
-            sputnik_offers = [o for o in sputnik_offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
+            exact = [o for o in sputnik_offers if o.outbound and o.outbound.segments and o.outbound.segments[0].departure.date() == _td]
+            if exact:
+                sputnik_offers = exact
             sputnik_offers.sort(key=lambda o: o.price if o.price > 0 else float("inf"))
             h = hashlib.md5(f"cm{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]
             return FlightSearchResponse(
@@ -759,8 +761,73 @@ class CopaConnectorClient:
         except Exception as e:
             logger.info("CM Sputnik error: %s", e)
             return []
-        logger.info("CM Sputnik: fare-only grouped-route data is suppressed until real schedule times are available")
-        return []
+
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
+        target_date = dt.strftime("%Y-%m-%d")
+
+        fares: list[dict] = []
+        for route_obj in data:
+            if route_obj.get("origin") in valid_origins and route_obj.get("destination") in valid_dests:
+                fares.extend(route_obj.get("fares", []))
+
+        if not fares:
+            logger.info("CM Sputnik: no fares for %s->%s", req.origin, req.destination)
+            return []
+
+        # Prefer exact-date fares; fall back to cheapest nearby fare
+        exact = [f for f in fares if f.get("departureDate", "")[:10] == target_date]
+        use = exact or ([min(fares, key=lambda f: float(f.get("totalPrice") or 999999))] if fares else [])
+
+        offers: list[FlightOffer] = []
+        for fare in use:
+            price = fare.get("totalPrice")
+            if not price or float(price) <= 0:
+                continue
+            price_f = round(float(price), 2)
+            currency = fare.get("currencyCode") or "USD"
+            dep_date = fare.get("departureDate", "")
+            dep_dt = datetime(dt.year, dt.month, dt.day)
+            if dep_date:
+                try:
+                    dep_dt = datetime.strptime(dep_date[:10], "%Y-%m-%d")
+                except ValueError:
+                    pass
+
+            seg = FlightSegment(
+                airline="CM",
+                airline_name="Copa Airlines",
+                flight_no="",
+                origin=req.origin,
+                destination=req.destination,
+                departure=dep_dt,
+                arrival=dep_dt,
+                duration_seconds=0,
+                cabin_class="economy",
+            )
+            route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
+            fid = hashlib.md5(f"cm_{req.origin}{req.destination}{dep_date}{price_f}".encode()).hexdigest()[:12]
+            offers.append(FlightOffer(
+                id=f"cm_{fid}",
+                price=price_f,
+                currency=currency,
+                price_formatted=f"{price_f:.2f} {currency}",
+                outbound=route,
+                inbound=None,
+                airlines=["Copa Airlines"],
+                owner_airline="CM",
+                conditions={"carry_on": "carry-on included; checked bag from ~USD 30 — check at checkout"},
+                booking_url=(
+                    f"https://shopping.copaair.com/?roundtrip=false&area1={req.origin}&area2={req.destination}"
+                    f"&date1={target_date}&adults={req.adults or 1}&langid=en"
+                ),
+                is_locked=False,
+                source="copa_sputnik",
+                source_tier="free",
+            ))
+
+        logger.info("CM Sputnik: %d offers for %s->%s", len(offers), req.origin, req.destination)
+        return offers
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(f"cm{req.origin}{req.destination}{req.date_from}".encode()).hexdigest()[:12]

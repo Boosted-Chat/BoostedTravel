@@ -38,15 +38,16 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import auto_block_if_proxied
+from .browser import auto_block_if_proxied, proxy_chrome_args
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────
 
 _MAX_ATTEMPTS = 2
-_API_WAIT = 45  # seconds to wait for availability API per attempt
-_BOOKING_URL = "https://passagens.voeazul.com.br/en"
+_API_WAIT = 55  # seconds — Azul availability API can take up to 30s server-side
+_WARM_URL = "https://passagens.voeazul.com.br/en"  # session warm-up domain
+_SEARCH_HOST = "https://www.voeazul.com.br"  # search results domain
 
 _USER_DATA_DIR = os.path.join(
     os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")), "..", ".azul_chrome_data"
@@ -57,6 +58,7 @@ _USER_DATA_DIR = os.path.join(
 _pw_instance = None
 _pw_context = None
 _browser_lock: Optional[asyncio.Lock] = None
+_context_warmed: bool = False  # True once we've visited passagens.voeazul.com.br in this process
 
 
 def _get_lock() -> asyncio.Lock:
@@ -83,6 +85,9 @@ async def _get_context():
         os.makedirs(os.path.abspath(_USER_DATA_DIR), exist_ok=True)
         _pw_instance = await async_playwright().start()
 
+        extra_args = [a for a in proxy_chrome_args() if a not in (
+            "--disable-blink-features=AutomationControlled",
+        )]
         _pw_context = await _pw_instance.chromium.launch_persistent_context(
             os.path.abspath(_USER_DATA_DIR),
             channel="chrome",
@@ -91,9 +96,10 @@ async def _get_context():
                 "--disable-blink-features=AutomationControlled",
                 "--window-position=-2400,-2400",
                 "--window-size=1366,768",
+                *extra_args,
             ],
             viewport={"width": 1366, "height": 768},
-            locale="en-US",
+            locale="pt-BR",
             timezone_id="America/Sao_Paulo",
             service_workers="block",
         )
@@ -149,29 +155,32 @@ class AzulConnectorClient:
     async def _attempt_search(
         self, req: FlightSearchRequest, t0: float
     ) -> Optional[FlightSearchResponse]:
-        """Single attempt: form fill → capture API response."""
+        """Single attempt: warm session → deep-link → capture v5/availability API."""
+        global _context_warmed
         ctx = await _get_context()
         page = await ctx.new_page()
         await auto_block_if_proxied(page)
 
-        # Capture API response
+        # Capture v5 (or v6) availability API response
         captured: dict = {}
         api_event = asyncio.Event()
 
         async def on_response(response):
             try:
                 url = response.url
-                # Capture availability API responses (v5 or v6 format)
-                if "availability" not in url.lower():
+                # Only care about the Azul reservation-availability v5/v6 endpoint
+                if "reservationavailability" not in url:
+                    return
+                if "/availability/v" not in url:
                     return
                 if response.status != 200:
-                    logger.debug("Azul: availability API returned %d", response.status)
                     return
                 ct = response.headers.get("content-type", "")
                 if "json" not in ct:
                     return
                 body = await response.json()
-                if isinstance(body, dict) and (body.get("data") or body.get("trips")):
+                # Successful responses have non-empty data
+                if isinstance(body, dict) and body.get("data") and body["data"] != {}:
                     captured["avail"] = body
                     api_event.set()
                     logger.debug("Azul: captured availability response")
@@ -181,37 +190,45 @@ class AzulConnectorClient:
         page.on("response", on_response)
 
         dep = req.date_from
+        dep_str = dep.strftime("%m/%d/%Y")
+        n_pax = max(1, req.adults)
         logger.info("Azul: searching %s→%s on %s", req.origin, req.destination, dep)
 
         try:
-            # 1. Navigate to booking portal
-            await page.goto(_BOOKING_URL, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(1)
+            # Step 1: Warm session via passagens.voeazul.com.br (sets anti-bot cookies)
+            # Only needed once per process; skip if context already warmed.
+            if not _context_warmed:
+                await page.goto(_WARM_URL, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(1.5)
+                await self._accept_cookies(page)
+                _context_warmed = True
+                logger.debug("Azul: session warmed")
 
-            # 2. Accept cookie consent
+            # Step 2: Navigate directly to the flight search deep-link
+            search_url = (
+                f"{_SEARCH_HOST}/us/en/home/selecao-voo"
+                f"?c[0].ds={req.origin}&c[0].as={req.destination}"
+                f"&c[0].std={dep_str}"
+                f"&p[0].t=ADT&p[0].c={n_pax}&p[0].cp=false&cc=BRL"
+            )
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)
             await self._accept_cookies(page)
 
-            # 3. Set one-way trip
-            await self._set_one_way(page)
+            # Check for bot block (IP geo-restriction page)
+            page_text = await page.evaluate("() => document.body.innerText.slice(0, 400)")
+            if "comportamento incomum" in page_text or (
+                "Ops!" in page_text and "IP:" in page_text
+            ):
+                logger.warning("Azul: bot block detected — re-warming on next attempt")
+                _context_warmed = False
+                return None
 
-            # 4. Fill origin
-            await self._fill_airport(page, "origin", req.origin)
-
-            # 5. Fill destination
-            await self._fill_airport(page, "destination", req.destination)
-
-            # 6. Set departure date
-            await self._set_date(page, dep)
-
-            # 7. Click search
-            search_btn = page.locator('button:has-text("Search")')
-            await search_btn.click(timeout=5000)
-
-            # 8. Wait for availability API response
+            # Step 3: Wait for availability API response (up to _API_WAIT seconds)
             await asyncio.wait_for(api_event.wait(), timeout=_API_WAIT)
 
         except asyncio.TimeoutError:
-            logger.warning("Azul: availability API timed out")
+            logger.warning("Azul: availability API timed out after %ds", _API_WAIT)
             return None
         except Exception as e:
             logger.warning("Azul: search error: %s", e)

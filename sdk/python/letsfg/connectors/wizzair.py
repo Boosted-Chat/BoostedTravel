@@ -52,6 +52,98 @@ def _api_headers() -> dict[str, str]:
     }
 
 
+# Bundle names that include a cabin bag (but not a checked bag).
+_CABIN_BAG_BUNDLES = {"smart", "middletwo", "middle", "go", "wizzgo"}
+# Bundle names that include a checked bag (in addition to cabin bag).
+_CHECKED_BAG_BUNDLES = {"plus", "plusflex", "flex", "wizzplus"}
+
+
+def _parse_wizzair_bundle_prices(search_result: dict) -> dict:
+    """Extract cabin-bag and checked-bag add-on prices from a search/search response.
+
+    WizzAir bundle hierarchy (as of 2025-2026):
+      basic     → personal item only (40×30×20 cm)
+      middleTwo → cheapest option that includes a cabin bag (55×40×23 cm, 10 kg)
+      smart     → cabin bag + seat selection
+      plus      → cabin bag + 32 kg checked bag + seat + flexibility
+
+    Prices are extracted from non-WDC fares (regular passengers).  The
+    cabin-bag add-on is the cheapest bundle-addon that grants a cabin bag.
+    The checked-bag marginal cost is plus.total − smart.total.
+    """
+    # Aggregate bundle totals across all outbound flights; take the minimum
+    # (cheapest available flight × bundle combo).
+    bundle_min: dict[str, tuple[float, str]] = {}  # bundle_code → (min_total, currencyCode)
+
+    for flight in search_result.get("outboundFlights", []):
+        for fare in flight.get("fares", []):
+            if fare.get("isWdc"):
+                continue  # skip WDC-discounted fares
+            bundle = (fare.get("bundle") or "").lower()
+            if not bundle:
+                continue
+            total = (fare.get("discountedPrice") or fare.get("basePrice") or {}).get("amount")
+            currency = (fare.get("discountedPrice") or fare.get("basePrice") or {}).get("currencyCode", "PLN")
+            if total is None:
+                continue
+            if bundle not in bundle_min or total < bundle_min[bundle][0]:
+                bundle_min[bundle] = (total, currency)
+
+    basic_total = bundle_min.get("basic", (None, "PLN"))[0]
+    currency = next(iter(bundle_min.values()), (0, "PLN"))[1]
+
+    cabin_bag_addon: float | None = None
+    checked_bag_addon: float | None = None
+
+    if basic_total is not None:
+        # Cheapest cabin-bag bundle
+        cabin_candidates = [
+            v[0] - basic_total
+            for k, v in bundle_min.items()
+            if k in _CABIN_BAG_BUNDLES and v[0] > basic_total
+        ]
+        if cabin_candidates:
+            cabin_bag_addon = round(min(cabin_candidates), 2)
+
+        # Cheapest checked-bag bundle (marginal cost over cheapest cabin-bag tier)
+        cheapest_cabin_total = min(
+            (v[0] for k, v in bundle_min.items() if k in _CABIN_BAG_BUNDLES),
+            default=None,
+        )
+        checked_candidates = [
+            v[0] - (cheapest_cabin_total or basic_total)
+            for k, v in bundle_min.items()
+            if k in _CHECKED_BAG_BUNDLES and v[0] > (cheapest_cabin_total or basic_total)
+        ]
+        if checked_candidates:
+            checked_bag_addon = round(min(checked_candidates), 2)
+
+    result: dict = {
+        "seat_note": "Seat selection: add-on at checkout (included in SMART/PLUS bundles)",
+        "currency": currency,
+    }
+
+    if cabin_bag_addon is not None:
+        result["cabin_bag_from"] = cabin_bag_addon
+        result["bags_note"] = (
+            f"Personal item (40×30×20 cm) included; "
+            f"cabin bag (55×40×23 cm, 10 kg): add-on from {cabin_bag_addon:.0f} {currency}"
+        )
+    else:
+        result["bags_note"] = "Personal item included; cabin bag: add-on — see wizzair.com"
+
+    if checked_bag_addon is not None:
+        result["checked_bag_from"] = checked_bag_addon
+        result["checked_bag_note"] = (
+            f"Checked bag (32 kg): add-on from {checked_bag_addon:.0f} {currency} "
+            f"over cabin-bag bundle"
+        )
+    else:
+        result["checked_bag_note"] = "Checked bag: add-on — price varies by route"
+
+    return result
+
+
 def _get_curl_proxy() -> dict | None:
     """Return curl_cffi proxy dict from LETSFG_PROXY, or None."""
     import os
@@ -170,35 +262,197 @@ class WizzairConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        """Return WizzAir ancillary pricing from static reference.
+        """Fetch live WizzAir bundle prices via Playwright + search/search intercept.
 
-        WizzAir's timetableV2 search API does not include fare-bundle data and
-        the former /Api/asset/farebundle endpoint has been removed (404).  We
-        therefore fall back to the curated reference table which reflects
-        WizzAir's published BASIC fare policy (under-seat bag only; cabin bag
-        add-on ~22 EUR for Wizz Go).
+        Navigates wizzair.com with the real Chrome browser (KPSDK token generated
+        natively), intercepts /Api/search/search JSON, and extracts bundle pricing:
+          - basic     → personal item only
+          - middleTwo → cheapest option with cabin bag
+          - smart     → cabin bag + seat
+          - plus      → cabin bag + 32 kg checked bag + seat + flex
+
+        Returns a dict with cabin_bag_from, checked_bag_from, currency, and
+        human-readable conditions notes.  Falls back to text-only if browser
+        is unavailable or search times out.
         """
-        from . import ancillary_ref
-        ref = ancillary_ref.get_ancillary_ref("W6")
-        if not ref:
-            return None
+        try:
+            return await asyncio.wait_for(
+                self._fetch_ancillaries_playwright(origin, dest, date_str),
+                timeout=90,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("WizzAir ancillary Playwright timeout for %s→%s", origin, dest)
+        except Exception as exc:
+            logger.debug("WizzAir ancillary Playwright error for %s→%s: %s", origin, dest, exc)
         return {
-            "bags_from": ref.get("carry_on"),
-            "bags_note": ref.get("carry_on_note", "Under-seat bag only in base fare; overhead cabin bag add-on ~22 EUR (Wizz Go)"),
-            "checked_bag_from": ref.get("checked_bag"),
-            "checked_bag_note": ref.get("checked_bag_note", "First checked bag from ~22 EUR"),
-            "seat_from": ref.get("seat"),
-            "seat_note": ref.get("seat_note", "Seat selection from ~5 EUR"),
-            "currency": ref.get("currency", "EUR"),
+            "bags_note": "Small personal bag included in base fare; cabin bag add-on — see wizzair.com",
+            "checked_bag_note": "Checked bag: add-on — price varies by route",
+            "seat_note": "Seat selection: add-on at checkout",
         }
+
+    async def _fetch_ancillaries_playwright(
+        self, origin: str, dest: str, date_str: str
+    ) -> dict | None:
+        """Drive wizzair.com in real Chrome, intercept search/search, extract bundle prices."""
+        from patchright.async_api import async_playwright
+        from datetime import datetime
+
+        dep_dt = datetime.fromisoformat(date_str)
+        # Target day 7 of the departure month (safe mid-month, always exists)
+        target_month = dep_dt.strftime("%B %Y")  # e.g. "June 2026"
+        target_day = "7"
+
+        search_result: dict | None = None
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                channel="chrome",
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            ctx = await browser.new_context(
+                locale="en-GB",
+                user_agent=_UA,
+            )
+            page = await ctx.new_page()
+
+            new_pages: list = []
+
+            async def on_resp(response):
+                nonlocal search_result
+                try:
+                    url = response.url
+                    if "be.wizzair.com" in url and "search/search" in url and response.status == 200:
+                        data = await response.json()
+                        search_result = data
+                except Exception:
+                    pass
+
+            async def on_new_page(new_page):
+                new_pages.append(new_page)
+                new_page.on("response", on_resp)
+
+            page.on("response", on_resp)
+            ctx.on("page", on_new_page)
+
+            await page.goto("https://www.wizzair.com/en-gb", wait_until="domcontentloaded")
+            await asyncio.sleep(3)
+
+            # Dismiss consent overlay
+            try:
+                btn = page.locator('button:has-text("Accept all")').first
+                if await btn.is_visible():
+                    await btn.click()
+                    await asyncio.sleep(1)
+            except Exception:
+                pass
+            try:
+                await page.evaluate(
+                    "const el=document.getElementById('usercentrics-cmp-ui'); if(el) el.remove();"
+                )
+            except Exception:
+                pass
+
+            # Select one-way
+            try:
+                ow = page.locator('[data-test="oneway"]').first
+                await ow.click()
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+            # Origin
+            try:
+                orig_input = page.locator('input[placeholder="Origin"]').first
+                await orig_input.click()
+                await orig_input.fill(origin)
+                await asyncio.sleep(1.5)
+                sug = page.locator('[class*="suggestion"], [class*="autocomplete"] li, [role="option"]').first
+                await sug.click()
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+            # Destination
+            try:
+                dest_input = page.locator('input[placeholder="Destination"]').first
+                await dest_input.click()
+                await dest_input.fill(dest)
+                await asyncio.sleep(1.5)
+                sug = page.locator('[class*="suggestion"], [class*="autocomplete"] li, [role="option"]').first
+                await sug.click()
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+            # Date click via JS
+            try:
+                date_clicked = await page.evaluate(f"""() => {{
+                    const targetMonth = '{target_month}';
+                    const targetDay = '{target_day}';
+                    const sections = document.querySelectorAll('.calendar-booking__month-container, [class*="month-container"], [class*="calendar-month"]');
+                    for (const sec of sections) {{
+                        const hdr = sec.querySelector('h2, h3, [class*="month-title"], [class*="month-name"]');
+                        if (hdr && hdr.textContent.includes(targetMonth)) {{
+                            const days = sec.querySelectorAll('[class*="day"]:not([class*="disabled"]):not([class*="past"])');
+                            for (const d of days) {{
+                                const txt = d.textContent.trim();
+                                if (txt === targetDay) {{ d.click(); return 'clicked_in_section'; }}
+                            }}
+                        }}
+                    }}
+                    const allDays = document.querySelectorAll('[class*="calendar"] [class*="day"]:not([class*="disabled"]):not([class*="past"])');
+                    for (const d of allDays) {{
+                        if (d.textContent.trim() === targetDay) {{ d.click(); return 'clicked_any'; }}
+                    }}
+                    return false;
+                }}""")
+                logger.debug("WizzAir ancillary date click: %s", date_clicked)
+            except Exception as exc:
+                logger.debug("WizzAir ancillary date page navigated: %s", type(exc).__name__)
+
+            await asyncio.sleep(1)
+
+            # Click Start booking button if page still alive
+            try:
+                await page.screenshot(path="/dev/null")  # probe if page is alive
+                for sel in [
+                    'button:has-text("Start booking")',
+                    'button[type="submit"]',
+                    '[class*="start-booking"]',
+                    'button:has-text("Search")',
+                ]:
+                    try:
+                        btn = page.locator(sel).first
+                        bb = await btn.bounding_box()
+                        if bb and bb["width"] > 10:
+                            await btn.click()
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                pass  # page already navigated — search already triggered
+
+            # Wait for search/search response
+            for _ in range(40):
+                if search_result is not None:
+                    break
+                await asyncio.sleep(1)
+
+            await browser.close()
+
+        if not search_result:
+            return None
+
+        return _parse_wizzair_bundle_prices(search_result)
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
-        bags_from = ancillary.get("bags_from")
+        cabin_bag_from = ancillary.get("cabin_bag_from")  # numeric add-on price
         checked_bag_note = ancillary.get("checked_bag_note")
-        checked_bag_from = ancillary.get("checked_bag_from")
-        anc_currency = ancillary.get("currency", "EUR")
+        checked_bag_from = ancillary.get("checked_bag_from")  # numeric add-on price
+        anc_currency = ancillary.get("currency", "PLN")
         for offer in offers:
             if bags_note:
                 offer.conditions["cabin_bag"] = bags_note
@@ -206,13 +460,11 @@ class WizzairConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            # Set numeric reference prices regardless of currency: these are
-            # approximate EUR reference values.  Only skip if currency matches
-            # and value is non-zero (so we don't show wrong amounts for 0.0).
-            if bags_from is not None and (bags_from == 0.0 or offer.currency.upper() == anc_currency.upper()):
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None:
-                offer.bags_price["checked_bag"] = checked_bag_from
+            # Set numeric bag prices only when currency matches the offer currency.
+            if cabin_bag_from is not None and offer.currency == anc_currency:
+                offer.bags_price["cabin_bag"] = float(cabin_bag_from)
+            if checked_bag_from is not None and offer.currency == anc_currency:
+                offer.bags_price["checked_bag"] = float(checked_bag_from)
 
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:

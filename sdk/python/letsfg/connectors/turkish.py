@@ -249,7 +249,7 @@ class TurkishConnectorClient:
             "bags_note": "Carry-on bag (8 kg) included in all economy fares.",
             "checked_bag": "1 checked bag included (20 kg domestic / 23 kg international).",
             "seat_note": "Seat selection: free at online check-in (72 h before). Preferred/extra-legroom from USD 15.",
-            "bags_from": None,
+            "bags_from": 0.0,
             "currency": currency,
         }
 
@@ -262,15 +262,16 @@ class TurkishConnectorClient:
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                # setdefault: per-offer values set by _parse_availability take priority
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked"] = checked_from
+                offer.conditions.setdefault("seat", seat_note)
+            if bags_from == 0.0:
+                offer.bags_price.setdefault("checked_bag", 0.0)
+            if checked_from == 0.0:
+                offer.bags_price.setdefault("checked_bag", 0.0)
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         # Fast path: Sputnik API (no browser needed, ~1s)
@@ -791,7 +792,7 @@ class TurkishConnectorClient:
                         direct_fetch_active = True
                         direct_result = await page.evaluate(
                         """async (args) => {
-                        const [origin, dest, dateISO, adults, isRt, retDateISO, cabinCls, curr] = args;
+                        const [origin, dest, dateDMY, adults, isRt, retDateDMY, cabinCls, curr] = args;
                         const controller = new AbortController();
                         const timer = setTimeout(() => controller.abort(), 15000);
                         try {
@@ -817,14 +818,14 @@ class TurkishConnectorClient:
                                             originMultiPort: false,
                                             destinationAirportCode: dest,
                                             destinationMultiPort: false,
-                                            departureDate: dateISO,
+                                            departureDate: dateDMY,
                                         },
                                         ...(isRt ? [{
                                             originAirportCode: dest,
                                             originMultiPort: false,
                                             destinationAirportCode: origin,
                                             destinationMultiPort: false,
-                                            departureDate: retDateISO,
+                                            departureDate: retDateDMY,
                                         }] : []),
                                     ],
                                 }),
@@ -842,9 +843,9 @@ class TurkishConnectorClient:
                             return {_error: e.message};
                         }
                     }""",
-                        [req.origin, req.destination, target_dot, str(req.adults or 1),
+                        [req.origin, req.destination, target_dmy, str(req.adults or 1),
                          bool(req.return_from),
-                         _to_datetime(req.return_from).strftime("%d.%m.%Y") if req.return_from else "",
+                         _to_datetime(req.return_from).strftime("%d-%m-%Y") if req.return_from else "",
                          {"M": "ECONOMY", "W": "PREMIUM_ECONOMY", "C": "BUSINESS", "F": "FIRST"}.get(req.cabin_class or "M", "ECONOMY"),
                          req.currency or "EUR"],
                         )
@@ -1182,12 +1183,17 @@ class TurkishConnectorClient:
         month_year = f"{target_month} {target_year}"
 
         try:
-            # Remove overlays first
+            # Remove overlays + dismiss any open typeahead dropdowns first
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
             await page.evaluate("""() => {
                 document.querySelectorAll(
                     '[role="dialog"], .modal-backdrop, .overlay, [class*="popup"], [class*="modal"]'
                 ).forEach(el => el.remove());
             }""")
+            # Click neutral area to blur any open input / dismiss typeahead
+            await page.mouse.click(400, 50)
+            await asyncio.sleep(0.5)
 
             # ── Step 1: Find and click the date trigger element ──
             # Look for the visible date area in the form (not just #bookerDatepicker)
@@ -1295,23 +1301,39 @@ class TurkishConnectorClient:
                 if await page.evaluate(_js_month_check()):
                     calendar_opened = True
                 else:
-                    # Try B: page.mouse.click at actual element coordinates (hardware-level input)
+                    # Try B: page.mouse.click at actual element coordinates (CDP hardware input)
                     coords = await page.evaluate("""() => {
                         const el = document.querySelector('[class*="clickable"][class*="oneway"]') ||
                                    document.querySelector('[class*="calendar-placeholder"]') ||
                                    document.querySelector('#bookerDatepicker');
                         if (!el) return null;
+                        el.scrollIntoView({block: 'center', inline: 'nearest'});
                         const r = el.getBoundingClientRect();
                         return {x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2)};
                     }""")
                     if coords:
-                        await page.mouse.move(coords["x"], coords["y"])
                         await asyncio.sleep(0.3)
+                        await page.mouse.move(coords["x"], coords["y"])
+                        await asyncio.sleep(0.2)
                         await page.mouse.click(coords["x"], coords["y"])
                         logger.warning("TK: mouse.click at %s", coords)
                         await asyncio.sleep(2.0)
                         if await page.evaluate(_js_month_check()):
                             calendar_opened = True
+
+                    if not calendar_opened:
+                        # Try C: Playwright locator click without force (auto-scrolls + waits)
+                        try:
+                            loc = page.locator('[class*="clickable"][class*="oneway"]').first
+                            if await loc.count() > 0:
+                                await loc.scroll_into_view_if_needed(timeout=2000)
+                                await asyncio.sleep(0.3)
+                                await loc.click(timeout=3000)
+                                await asyncio.sleep(2.0)
+                                if await page.evaluate(_js_month_check()):
+                                    calendar_opened = True
+                        except Exception:
+                            pass
 
             logger.warning("TK: after click — calendar_opened=%s", calendar_opened)
             if calendar_opened:
@@ -1493,59 +1515,96 @@ class TurkishConnectorClient:
             clicked = await page.evaluate("""(args) => {
                 const [targetDay, targetMonth, targetYear, dateISO] = args;
 
-                const ariaPatterns = [
-                    targetMonth + ' ' + targetDay + ', ' + targetYear,
-                    targetDay + ' ' + targetMonth + ' ' + targetYear,
-                    dateISO,
-                ];
-                for (const pat of ariaPatterns) {
-                    const els = document.querySelectorAll('[aria-label]');
-                    for (const el of els) {
-                        if ((el.getAttribute('aria-label') || '').includes(pat) && !el.disabled) {
-                            el.click();
-                            return 'aria';
-                        }
+                // 1. react-calendar tile aria-label (button itself or nested abbr)
+                for (const btn of document.querySelectorAll('.react-calendar__tile:not([disabled])')) {
+                    if (btn.offsetHeight < 5) continue;
+                    const lbl = (btn.getAttribute('aria-label') ||
+                                 btn.querySelector('abbr')?.getAttribute('aria-label') || '').toUpperCase();
+                    const mo = targetMonth.toUpperCase();
+                    const dy = targetDay;
+                    const yr = targetYear;
+                    if (lbl.includes(mo) && lbl.includes(yr) &&
+                        (lbl.includes(' ' + dy + ' ') || lbl.includes(' ' + dy + ',') ||
+                         lbl.endsWith(' ' + dy) || lbl.startsWith(dy + ' '))) {
+                        btn.click();
+                        return 'rc-tile-aria';
                     }
                 }
 
-                const calAreas = document.querySelectorAll(
-                    '.react-calendar, [class*="calendar"], [class*="Calendar"], [class*="datepicker"]'
-                );
-                for (const area of calAreas) {
-                    if (area.offsetHeight < 50) continue;
-                    const cells = area.querySelectorAll('button, td, [role="gridcell"]');
-                    for (const cell of cells) {
-                        const text = cell.textContent.trim();
-                        if (text === targetDay && !cell.disabled && cell.offsetHeight > 0) {
-                            const section = cell.closest('table, [class*="month"], [class*="Month"]') || area;
-                            const sectionText = section.textContent || '';
-                            if (sectionText.includes(targetMonth)) {
-                                cell.click();
-                                return 'cal-area';
-                            }
+                // 2. Find the correct month grid using nav label texts
+                // react-calendar with 2 months has 2 navigation label buttons
+                const grids = Array.from(document.querySelectorAll('.react-calendar__month-view__days'));
+                const navLabels = Array.from(document.querySelectorAll(
+                    '.react-calendar__navigation__label__labelText, ' +
+                    '.react-calendar__navigation__label__divider ~ *, ' +
+                    '.react-calendar__navigation__label'
+                ));
+                // Also try: each grid's preceding sibling chain for a header with targetMonth
+                let targetGrid = null;
+                for (const grid of grids) {
+                    // Walk up to find a parent that has a sibling containing targetMonth
+                    let el = grid;
+                    for (let i = 0; i < 4; i++) {
+                        el = el.parentElement;
+                        if (!el) break;
+                        const prev = el.previousElementSibling;
+                        if (prev && (prev.textContent || '').includes(targetMonth) &&
+                            (prev.textContent || '').includes(targetYear)) {
+                            targetGrid = grid;
+                            break;
+                        }
+                    }
+                    if (targetGrid) break;
+                }
+                // Fallback: pick grid whose nav label index matches
+                if (!targetGrid) {
+                    for (let i = 0; i < navLabels.length; i++) {
+                        const t = navLabels[i].textContent || '';
+                        if (t.includes(targetMonth) && t.includes(targetYear)) {
+                            targetGrid = grids[i] || grids[grids.length - 1];
+                            break;
                         }
                     }
                 }
+                // Last fallback: last grid (June is typically shown after May)
+                if (!targetGrid) targetGrid = grids[grids.length - 1] || grids[0];
 
-                const allBtns = document.querySelectorAll('button:not([disabled])');
-                for (const btn of allBtns) {
-                    if (btn.textContent.trim() === targetDay && btn.offsetHeight > 0) {
-                        const parent = btn.closest('[class*="calendar"], [class*="Calendar"], [class*="datepicker"], [role="grid"]');
-                        if (parent) {
+                if (targetGrid) {
+                    for (const btn of targetGrid.querySelectorAll('button:not([disabled])')) {
+                        if (btn.textContent.trim() === targetDay && btn.offsetHeight > 0) {
                             btn.click();
-                            return 'brute';
+                            return 'rc-grid';
                         }
                     }
                 }
 
-                return null;
+                // 3. Any visible react-calendar tile whose text matches (broader)
+                for (const btn of document.querySelectorAll('.react-calendar__tile')) {
+                    if (btn.disabled || btn.offsetHeight < 5) continue;
+                    const abbr = btn.querySelector('abbr');
+                    const text = (abbr ? abbr.textContent : btn.textContent).trim();
+                    if (text === targetDay) {
+                        btn.click();
+                        return 'rc-tile-text';
+                    }
+                }
+
+                // 4. Debug: dump tile aria-labels to diagnose
+                const tileSamples = [];
+                for (const t of document.querySelectorAll('.react-calendar__tile')) {
+                    const lbl = t.getAttribute('aria-label') ||
+                                t.querySelector('abbr')?.getAttribute('aria-label') || '';
+                    if (lbl) tileSamples.push(lbl);
+                    if (tileSamples.length >= 5) break;
+                }
+                return 'not-found:tiles=' + JSON.stringify(tileSamples) + ',grids=' + grids.length;
             }""", [target_day, target_month, target_year, date_iso])
 
-            if clicked:
+            if clicked and not str(clicked).startswith('not-found'):
                 logger.warning("TK: selected date %s %s %s (%s)", target_day, target_month, target_year, clicked)
                 return True
 
-            logger.warning("TK: could not select date %s-%s-%s", target_year, target_month, target_day)
+            logger.warning("TK: could not select date %s-%s-%s (dbg: %s)", target_year, target_month, target_day, clicked)
             return False
         except Exception as e:
             logger.warning("TK: calendar nav error: %s", e)
@@ -1692,6 +1751,31 @@ class TurkishConnectorClient:
                     source="turkish_direct",
                     source_tier="free",
                 ))
+                # Enrich per-offer bag conditions from fareCategory (CDP path)
+                _fare_cat = (opt.get("fareCategory") or "").upper()
+                if _fare_cat:
+                    _o = offers[-1]
+                    _o.bags_price["carry_on"] = 0.0
+                    _o.conditions["carry_on"] = "Carry-on bag (8 kg) included."
+                    if any(x in _fare_cat for x in ("PROMO", "ECO_FLY", "ECONOMY_PROMOTION", "LIGHT", "BASIC", "SALE")):
+                        _o.conditions["checked_bag"] = (
+                            "Eco Fly fare: no free checked bag. "
+                            "First bag approx. USD 20\u201335. Carry-on (8 kg) included."
+                        )
+                    elif any(x in _fare_cat for x in ("PRIME", "FLEX", "ECO_PRIME", "ECONOMY_FLEXIBLE")):
+                        _o.conditions["checked_bag"] = (
+                            "Eco Prime fare: 2 checked bags included (23 kg each). "
+                            "Carry-on (8 kg) included."
+                        )
+                        _o.bags_price["checked_bag"] = 0.0
+                    else:
+                        # Eco Extra (standard) or unknown non-empty category
+                        _o.conditions["checked_bag"] = (
+                            "1 checked bag included "
+                            "(23 kg international / 20 kg domestic). "
+                            "Carry-on (8 kg) included."
+                        )
+                        _o.bags_price["checked_bag"] = 0.0
             except Exception as parse_err:
                 logger.warning("TK parse: option %d error: %s (keys=%s)", i, parse_err,
                                list(opt.keys())[:8])

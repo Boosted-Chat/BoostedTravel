@@ -312,6 +312,27 @@ class LatamConnectorClient:
             offers = self._parse_flights(avail_data, req)
             offers.sort(key=lambda o: o.price)
 
+            # Enrich offers that have no free bag with live add-on prices
+            # from the booking flow (Basic/Light fares on LATAM).
+            needs_probe = any(
+                "checked_bag" not in o.bags_price for o in offers
+            )
+            if needs_probe:
+                try:
+                    from .ancillary_live_probe import probe_ancillaries
+                    date_str = req.date_from.isoformat() if hasattr(req.date_from, "isoformat") else str(req.date_from)
+                    live = await asyncio.wait_for(
+                        probe_ancillaries("LA", req.origin, req.destination, date_str),
+                        timeout=95.0,
+                    )
+                    if live and live.get("checked_bag_from"):
+                        for o in offers:
+                            if "checked_bag" not in o.bags_price:
+                                o.bags_price["checked_bag"] = live["checked_bag_from"]
+                                o.bags_price["_currency"] = live.get("currency", "CLP")
+                except Exception as _probe_exc:
+                    logger.debug("LA ancillary probe skipped: %s", _probe_exc)
+
             elapsed = time.monotonic() - t0
             logger.info(
                 "LA %s->%s returned %d offers in %.1fs",
@@ -544,8 +565,7 @@ class LatamConnectorClient:
         if "checked_bag" not in conditions and fare_name:
             name_upper = fare_name.upper()
             if "LIGHT" in name_upper or "BASIC" in name_upper:
-                conditions["checked_bag"] = "no free checked bag — add-on from ~USD 40"
-                bags_price["checked_bag"] = 40.0
+                conditions["checked_bag"] = "no free checked bag — add-on (price varies by route)"
             elif any(k in name_upper for k in ("ECONOMY", "ECONOM", "PLUS", "FLEX")):
                 if "PLUS" in name_upper or "FLEX" in name_upper:
                     conditions["checked_bag"] = "2x 23kg bags included"
@@ -569,8 +589,7 @@ class LatamConnectorClient:
                         qty_int = int(qty)
                         weight = cabin_allow.get("weight") or cabin_allow.get("maxWeight") or 10
                         if qty_int == 0:
-                            conditions["carry_on"] = "no free overhead carry-on — add-on from ~USD 40"
-                            bags_price["carry_on"] = 40.0
+                            conditions["carry_on"] = "no free overhead carry-on — add-on (price varies by route)"
                         else:
                             conditions["carry_on"] = f"{qty_int}x {weight}kg carry-on included"
                             bags_price["carry_on"] = 0.0
@@ -579,8 +598,7 @@ class LatamConnectorClient:
             if "carry_on" not in conditions:
                 name_upper = fare_name.upper() if fare_name else ""
                 if any(k in name_upper for k in ("LIGHT", "BASIC")):
-                    conditions["carry_on"] = "no free overhead carry-on (Light/Basic) — add-on from ~USD 40"
-                    bags_price["carry_on"] = 40.0
+                    conditions["carry_on"] = "no free overhead carry-on (Light/Basic) — add-on (price varies by route)"
                 elif any(k in name_upper for k in ("PREMIUM", "BUSINESS", "TOP")):
                     conditions["carry_on"] = "2x carry-on bags included"
                     bags_price["carry_on"] = 0.0

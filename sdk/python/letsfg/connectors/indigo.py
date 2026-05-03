@@ -211,47 +211,51 @@ class IndiGoConnectorClient:
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        ob_result = await self._search_ow(req)
+        ob_result, ob_anc = await self._search_ow(req)
         if req.return_from and ob_result.total_results > 0:
             ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
-            ib_result = await self._search_ow(ib_req)
+            ib_result, _ = await self._search_ow(ib_req)
             if ib_result.total_results > 0:
                 ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
                 ob_result.total_results = len(ob_result.offers)
         if ob_result.offers:
-            segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
-            anc_origin = segs[0].origin if segs else req.origin
-            anc_dest = segs[-1].destination if segs else req.destination
-            try:
-                ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(
-                        anc_origin, anc_dest,
-                        req.date_from.isoformat() if hasattr(req.date_from, 'isoformat') else str(req.date_from),
-                        req.adults, ob_result.currency or req.currency,
-                    ),
-                    timeout=45.0,
-                )
-                if ancillary:
-                    self._apply_ancillaries(ob_result.offers, ancillary)
-            except (asyncio.TimeoutError, TimeoutError):
-                logger.debug("Ancillary fetch timed out for %s->%s", anc_origin, anc_dest)
-            except Exception as _anc_err:
-                logger.debug("Ancillary fetch error: %s", _anc_err)
+            if ob_anc:
+                self._apply_ancillaries(ob_result.offers, ob_anc)
+            else:
+                segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
+                anc_origin = segs[0].origin if segs else req.origin
+                anc_dest = segs[-1].destination if segs else req.destination
+                try:
+                    ancillary = await asyncio.wait_for(
+                        self._fetch_ancillaries(
+                            anc_origin, anc_dest,
+                            req.date_from.isoformat() if hasattr(req.date_from, 'isoformat') else str(req.date_from),
+                            req.adults, ob_result.currency or req.currency,
+                        ),
+                        timeout=45.0,
+                    )
+                    if ancillary:
+                        self._apply_ancillaries(ob_result.offers, ancillary)
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.debug("Ancillary fetch timed out for %s->%s", anc_origin, anc_dest)
+                except Exception as _anc_err:
+                    logger.debug("Ancillary fetch error: %s", _anc_err)
         return ob_result
 
 
-    async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def _search_ow(self, req: FlightSearchRequest) -> tuple[FlightSearchResponse, dict | None]:
         # Retry up to 2 times (Akamai may block the first attempt)
+        probe: dict | None = None
         for attempt in range(2):
-            result = await self._try_search(req)
+            result, probe = await self._try_search(req)
             if result.total_results > 0:
-                return result
+                return result, probe
             if attempt == 0:
                 logger.info("IndiGo: retrying search (attempt %d failed)", attempt + 1)
                 await asyncio.sleep(2.0)
-        return result
+        return result, probe
 
-    async def _try_search(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def _try_search(self, req: FlightSearchRequest) -> tuple[FlightSearchResponse, dict | None]:
         t0 = time.monotonic()
         browser = await _get_browser()
         ctx = browser.contexts[0]
@@ -381,20 +385,32 @@ class IndiGoConnectorClient:
             if data:
                 elapsed = time.monotonic() - t0
                 offers = self._parse_response(data, req)
-                return self._build_response(offers, req, elapsed)
+                if offers:
+                    # Probe checkout for live ancillary (SSR) prices
+                    probe = None
+                    try:
+                        probe = await asyncio.wait_for(
+                            self._probe_checkout_ancillary(page, cdp),
+                            timeout=20.0,
+                        )
+                        if probe:
+                            logger.info("IndiGo: checkout probe succeeded (%s->%s)", req.origin, req.destination)
+                    except Exception as _pe:
+                        logger.debug("IndiGo: checkout probe skipped: %s", _pe)
+                    return self._build_response(offers, req, elapsed), probe
 
             # DOM fallback
             logger.info("IndiGo: trying DOM extraction fallback")
             offers = await self._extract_from_dom(page, req)
             if offers:
-                return self._build_response(offers, req, time.monotonic() - t0)
-            return self._empty(req)
+                return self._build_response(offers, req, time.monotonic() - t0), None
+            return self._empty(req), None
 
         except Exception as e:
             logger.error("IndiGo Playwright error: %s", e)
             if "closed" in str(e).lower() or "target" in str(e).lower() or "disconnected" in str(e).lower():
                 await _reset_browser()
-            return self._empty(req)
+            return self._empty(req), None
         finally:
             try:
                 await page.close()
@@ -934,10 +950,190 @@ class IndiGoConnectorClient:
             url += f"&returnDate={req.return_from.strftime('%d/%m/%Y')}"
         return url
 
+    async def _probe_checkout_ancillary(self, page, cdp) -> dict | None:
+        """After search results load, click 'Book Now' on first offer and
+        intercept IndiGo's SSR/addon API to get live bag prices."""
+        captured_ssr: dict = {}
+        ssr_event = asyncio.Event()
+
+        # Expand CDP intercept to include SSR/addon endpoints
+        try:
+            await cdp.send("Fetch.enable", {
+                "patterns": [
+                    {"urlPattern": "*ssr*", "requestStage": "Response"},
+                    {"urlPattern": "*addon*", "requestStage": "Response"},
+                    {"urlPattern": "*ancillar*", "requestStage": "Response"},
+                    {"urlPattern": "*baggage*", "requestStage": "Response"},
+                    {"urlPattern": "*bundle*", "requestStage": "Response"},
+                    {"urlPattern": "*api-prod-flight*booking*", "requestStage": "Response"},
+                ],
+            })
+        except Exception:
+            pass
+
+        async def on_ssr_response(params):
+            try:
+                url = (params.get("request") or {}).get("url", "").lower()
+                req_id = params.get("requestId")
+                if not req_id:
+                    return
+                # Only process ancillary/SSR-like responses
+                if not any(k in url for k in ("ssr", "addon", "ancillar", "baggage", "bundle")):
+                    # Still must continue paused fetch requests
+                    try:
+                        await cdp.send("Fetch.continueResponse", {"requestId": req_id})
+                    except Exception:
+                        pass
+                    return
+                body_resp = await cdp.send("Fetch.getResponseBody", {"requestId": req_id})
+                raw = body_resp.get("body", "")
+                if body_resp.get("base64Encoded"):
+                    import base64 as _b64
+                    raw = _b64.b64decode(raw).decode("utf-8", errors="replace")
+                await cdp.send("Fetch.continueResponse", {"requestId": req_id})
+                if raw and len(raw) > 50:
+                    import json as _json
+                    try:
+                        captured_ssr["data"] = _json.loads(raw)
+                        ssr_event.set()
+                        logger.debug("IndiGo probe: captured SSR response from %s", url[:80])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        cdp.on("Fetch.requestPaused", on_ssr_response)
+
+        try:
+            # Find first bookable flight card button
+            book_btn = None
+            for selector in [
+                "button:has-text('Book')",
+                "button:has-text('Select')",
+                "[class*='book-now']",
+                "[class*='flight-card'] button",
+            ]:
+                try:
+                    btn = page.locator(selector).first
+                    await btn.wait_for(state="visible", timeout=5000)
+                    book_btn = btn
+                    logger.debug("IndiGo probe: found button via %s", selector)
+                    break
+                except Exception:
+                    pass
+
+            if book_btn is None:
+                logger.debug("IndiGo probe: no booking button found")
+                return None
+
+            await book_btn.click()
+
+            # Wait for SSR/addon API response
+            try:
+                await asyncio.wait_for(ssr_event.wait(), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.debug("IndiGo probe: SSR event timed out")
+                return None
+
+            ssr_data = captured_ssr.get("data")
+            if not ssr_data:
+                return None
+
+            return self._parse_ssr_response(ssr_data)
+
+        except Exception as e:
+            logger.debug("IndiGo checkout probe failed: %s", e)
+            return None
+
+    def _parse_ssr_response(self, data: dict) -> dict | None:
+        """Parse IndiGo SSR/addon API response for live bag prices.
+
+        IndiGo Navitaire Sky+ SSR response structure (typical):
+        {
+          "ssrs": [
+            {"ssrCode": "PBAG", "price": {"amount": 700, "currencyCode": "INR"}, "feeCode": "..."},
+            {"ssrCode": "PBAG20", "price": {"amount": 1200, "currencyCode": "INR"}, ...},
+            {"ssrCode": "SEAT", "price": {"amount": 300, "currencyCode": "INR"}, ...},
+          ]
+        }
+        Or nested in products/bundles arrays.
+        """
+        currency = "INR"
+        checked_price: float | None = None
+        seat_price: float | None = None
+
+        def _extract_prices(node, depth=0):
+            nonlocal checked_price, seat_price, currency
+            if depth > 8 or not isinstance(node, (dict, list)):
+                return
+            if isinstance(node, list):
+                for item in node:
+                    _extract_prices(item, depth + 1)
+                return
+            # Try to get currency
+            for k in ("currencyCode", "currency", "currCode"):
+                if k in node and isinstance(node[k], str) and len(node[k]) == 3:
+                    currency = node[k]
+                    break
+
+            # Check if this is a bag SSR entry
+            code = str(node.get("ssrCode") or node.get("code") or node.get("type") or "").upper()
+            is_bag = any(k in code for k in ("BAG", "PBAG", "CBAG", "LUGGAGE")) or \
+                     any(k in str(node.get("name") or "").lower() for k in ("bag", "luggage", "hold"))
+            is_seat = "SEAT" in code or "seat" in str(node.get("name") or "").lower()
+
+            price_obj = node.get("price") or node.get("amount") or node.get("fee") or {}
+            price_amt = None
+            if isinstance(price_obj, dict):
+                price_amt = price_obj.get("amount") or price_obj.get("value")
+            elif isinstance(price_obj, (int, float)):
+                price_amt = price_obj
+
+            if price_amt is not None and float(price_amt) > 0:
+                if is_bag:
+                    v = float(price_amt)
+                    if checked_price is None or v < checked_price:
+                        checked_price = v
+                elif is_seat:
+                    v = float(price_amt)
+                    if seat_price is None or v < seat_price:
+                        seat_price = v
+
+            # Recurse into children
+            for val in node.values():
+                if isinstance(val, (dict, list)):
+                    _extract_prices(val, depth + 1)
+
+        _extract_prices(data)
+
+        if checked_price is None and seat_price is None:
+            return None
+
+        result: dict = {"currency": currency, "source": "checkout_probe"}
+        # IndiGo cabin bag is always included (7 kg)
+        result["bags_from"] = 0.0
+        result["bags_note"] = "7 kg cabin bag included"
+
+        if checked_price is not None:
+            result["checked_bag_from"] = checked_price
+            result["checked_bag_note"] = f"checked bag add-on from {currency} {checked_price:.0f}"
+        else:
+            result["checked_bag_from"] = None
+            result["checked_bag_note"] = "checked bag add-on — see checkout"
+
+        if seat_price is not None:
+            result["seat_from"] = seat_price
+            result["seat_note"] = f"seat selection from {currency} {seat_price:.0f}"
+        else:
+            result["seat_from"] = None
+            result["seat_note"] = "seat selection available at checkout"
+
+        return result
+
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str,
     ) -> dict | None:
-        """Return IndiGo (6E) ancillary pricing from published tariff reference."""
+        """Return IndiGo (6E) ancillary pricing from published tariff reference (fallback)."""
         from .ancillary_ref import get_ancillary_ref
         ref = get_ancillary_ref("6E")
         if not ref:
@@ -1004,11 +1200,11 @@ class IndiGoConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions.setdefault("seat", seat_note)
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
+            if bags_from is not None:
                 offer.bags_price.setdefault("carry_on", bags_from)
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
+            if checked_from is not None:
                 offer.bags_price.setdefault("checked_bag", checked_from)
-            if seat_from is not None and offer.currency.upper() == anc_currency.upper():
+            if seat_from is not None:
                 offer.bags_price.setdefault("seat", seat_from)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:

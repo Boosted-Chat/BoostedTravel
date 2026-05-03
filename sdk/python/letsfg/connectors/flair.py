@@ -403,12 +403,12 @@ class FlairConnectorClient:
                 offer.conditions["checked_bag"] = checked_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if carry_on_from is not None and (carry_on_from == 0.0 or ccy_ok):
-                offer.bags_price["carry_on"] = carry_on_from
-            if checked_from is not None and (checked_from == 0.0 or ccy_ok):
-                offer.bags_price["checked_bag"] = checked_from
-            if seat_from is not None and (seat_from == 0.0 or ccy_ok):
-                offer.bags_price["seat_selection"] = seat_from
+            if carry_on_from == 0.0:
+                offer.bags_price["carry_on"] = 0.0
+            if checked_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
+            if seat_from == 0.0:
+                offer.bags_price["seat_selection"] = 0.0
 
 
     @staticmethod

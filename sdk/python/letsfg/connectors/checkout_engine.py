@@ -720,14 +720,7 @@ _register(_base_cfg("Frontier", "frontier_direct",
     ],
 ))
 
-_register(_base_cfg("Spirit", "spirit_direct",
-    goto_timeout=60000,
-    flight_cards_selector="[class*='flight-card'], [class*='result']",
-    fare_selectors=[
-        "button:has-text('Bare Fare')",
-        "button:has-text('Select')",
-    ],
-))
+# Spirit Airlines shut down May 2, 2026 — removed
 
 _register(_base_cfg("JetBlue", "jetblue_direct",
     flight_cards_selector="button.cb-fare-card, [class*='cb-fare-card'], [class*='cb-alternate-date']",

@@ -28,6 +28,7 @@ from .combo_engine import build_combos
 from .currency import fetch_rates, _fallback_convert
 from .airline_routes import get_country, get_relevant_connectors, AIRLINE_COUNTRIES
 from .ancillary_ref import get_ancillary_ref, apply_ref_ancillaries
+from .seat_prices import fetch_seat_prices_batch
 from .browser import is_browser_available
 from .ryanair import RyanairConnectorClient
 from .wizzair import WizzairConnectorClient
@@ -45,8 +46,7 @@ from .eurowings import EurowingsConnectorClient
 from .transavia import TransaviaConnectorClient
 from .pegasus import PegasusConnectorClient
 from .flydubai import FlydubaiConnectorClient
-# Temporarily disabled due to merge conflicts:
-from .spirit import SpiritConnectorClient
+# Spirit Airlines shut down May 2, 2026 — removed
 from .frontier import FrontierConnectorClient
 from .volaris import VolarisConnectorClient
 from .airarabia import AirArabiaConnectorClient
@@ -298,7 +298,7 @@ _BROWSER_SOURCES: set[str] = {
     "jetblue_direct", "avelo_direct", "breeze_direct",
     "norwegian_direct", "peach_direct", "pegasus_direct",
     "porter_direct", "scoot_direct", "smartwings_direct", "southwest_direct",
-    "spirit_direct", "sunexpress_direct", "transavia_direct", "twayair_direct",
+    "sunexpress_direct", "transavia_direct", "twayair_direct",
     "vietjet_direct", "volaris_direct", "volotea_direct", "vueling_direct",
     "usbangla_direct",
     "etihad_direct",
@@ -400,7 +400,7 @@ _FAST_MODE_SOURCES: set[str] = {
     "aviasales_meta", "agoda_meta", "ixigo_meta", "skiplagged_meta",
     # ── Key direct airlines (top LCCs with high route coverage) ──
     "ryanair_direct", "wizzair_direct", "easyjet_direct", "southwest_direct",
-    "spirit_direct", "frontier_direct", "allegiant_direct", "jetblue_direct",
+    "frontier_direct", "allegiant_direct", "jetblue_direct",
     "vueling_direct", "norwegian_direct", "transavia_direct",
     # ── India domestic/international LCCs ──
     "indigo_direct", "spicejet_direct", "akasa_direct", "airindiaexpress_direct",
@@ -417,7 +417,7 @@ _FAST_MODE_SOURCES: set[str] = {
 # entirely (they would only return economy results anyway).
 _ECONOMY_ONLY_SOURCES: set[str] = {
     "ryanair_direct", "easyjet_direct", "wizzair_direct",
-    "spirit_direct", "frontier_direct", "southwest_direct", "allegiant_direct",
+    "frontier_direct", "southwest_direct", "allegiant_direct",
     "flair_direct", "avelo_direct",
     "flybondi_direct", "jetsmart_direct", "skyairline_direct",
     "volaris_direct", "vivaaerobus_direct", "wingo_direct",
@@ -522,7 +522,6 @@ _DIRECT_AIRLINE_connectorS: list[tuple[str, type, float]] = [
     ("transavia_direct", TransaviaConnectorClient, 25.0),
     ("pegasus_direct", PegasusConnectorClient, 25.0),
     ("flydubai_direct", FlydubaiConnectorClient, 25.0),
-    ("spirit_direct", SpiritConnectorClient, 25.0),
     ("frontier_direct", FrontierConnectorClient, 25.0),
     ("volaris_direct", VolarisConnectorClient, 25.0),
     ("airarabia_direct", AirArabiaConnectorClient, 25.0),
@@ -1423,6 +1422,16 @@ class MultiProvider:
             except Exception:
                 pass  # Never crash the search over enrichment
 
+        # ── Live seat price enrichment ─────────────────────────────────────────
+        # For airlines with a supported seat map API (currently LH group),
+        # replace the static seat_selection value with the real minimum price
+        # from the airline's own API.  Runs concurrently across all offers,
+        # capped at 6 s total.  Falls back silently to static ref on any error.
+        try:
+            await self._enrich_seat_prices(deduped)
+        except Exception:
+            pass  # Never crash the search over seat enrichment
+
         # Build airlines summary (cheapest per airline across ALL deduped offers)
         airlines_summary = self._build_airlines_summary(all_offers)
 
@@ -2187,6 +2196,72 @@ class MultiProvider:
                     offer.price_normalized = _fallback_convert(offer.price, src, target)
 
     @staticmethod
+    async def _enrich_seat_prices(offers: list[FlightOffer]) -> None:
+        """Replace static seat_selection prices with live values from airline APIs.
+
+        Builds a batch of lookup requests for offers whose operating carrier has
+        a supported seat map API (currently LH group), then fires them all
+        concurrently via fetch_seat_prices_batch().  Each offer must have a
+        non-empty flight_no on its first outbound segment to be included.
+
+        When a live price is obtained it overwrites bags_price["seat_selection"]
+        and updates the conditions["seat"] text.  Offers with no supported API
+        or whose lookups fail are left with their existing static values.
+        """
+        from datetime import datetime as _dt
+
+        requests: list[dict] = []
+        # Map from batch key → list of offers that share that flight
+        key_to_offers: dict[str, list] = {}
+
+        for offer in offers:
+            segs = offer.outbound.segments if offer.outbound else []
+            if not segs:
+                continue
+            seg = segs[0]
+            airline = (seg.airline or offer.owner_airline or "").upper()
+            flight_no = (seg.flight_no or "").strip()
+            if not flight_no or not airline:
+                continue
+            origin = seg.origin.upper()
+            dest = seg.destination.upper()
+            try:
+                date_str = seg.departure.strftime("%Y-%m-%d")
+            except Exception:
+                continue
+            cabin = seg.cabin_class or "economy"
+
+            batch_key = f"{airline}:{flight_no}:{origin}:{dest}:{date_str}:{cabin}"
+            if batch_key not in key_to_offers:
+                requests.append({
+                    "key": batch_key,
+                    "airline_iata": airline,
+                    "flight_no": flight_no,
+                    "origin": origin,
+                    "destination": dest,
+                    "date_str": date_str,
+                    "cabin": cabin,
+                })
+            key_to_offers.setdefault(batch_key, []).append(offer)
+
+        if not requests:
+            return
+
+        results = await fetch_seat_prices_batch(requests, timeout=6.0)
+
+        for batch_key, live_price in results.items():
+            if live_price is None:
+                continue
+            for offer in key_to_offers.get(batch_key, []):
+                offer.bags_price["seat_selection"] = live_price
+                # Update the conditions text to reflect real live price
+                airline_short = batch_key.split(":")[0]
+                currency = offer.currency or "EUR"
+                offer.conditions["seat"] = (
+                    f"Seat selection from {currency} {live_price:.0f} (live)."
+                )
+
+    @staticmethod
     def _enrich_ancillaries(offers: list[FlightOffer]) -> None:
         """Populate bags_price and conditions text for every offer.
 
@@ -2225,21 +2300,21 @@ class MultiProvider:
             seat = ref.get("seat") if ref else None
 
             # -- bags_price numeric data ------------------------------------------
-            # Carry-on / checked-bag: only populate from ref when connector did
-            # NOT set any live bag data (bags_price is completely empty).
+            # Only populate bags_price from ref when the value is 0.0 (free/included).
+            # Non-zero static estimates from the ref table must NOT go into bags_price
+            # because they are not real per-flight prices — they belong in conditions
+            # text only, so users never see a fabricated number presented as the
+            # actual checkout price.
             if not offer.bags_price and ref:
-                if carry_on is not None:
-                    if carry_on == 0.0 or currency_matches:
-                        offer.bags_price["carry_on"] = carry_on
-                if checked_bag is not None:
-                    if checked_bag == 0.0 or currency_matches:
-                        offer.bags_price["checked_bag"] = checked_bag
+                if carry_on == 0.0:
+                    offer.bags_price["carry_on"] = 0.0
+                if checked_bag == 0.0:
+                    offer.bags_price["checked_bag"] = 0.0
 
-            # Seat: always fill from ref when "seat_selection" is not yet set,
-            # even if the connector already provided cabin/checked bag prices.
+            # Seat: same rule — only 0.0 (free seat selection) goes into bags_price.
             if "seat_selection" not in offer.bags_price and ref:
-                if seat is not None and (seat == 0.0 or currency_matches):
-                    offer.bags_price["seat_selection"] = seat
+                if seat == 0.0:
+                    offer.bags_price["seat_selection"] = 0.0
 
             # -- conditions text --------------------------------------------------
             # Always fill missing keys regardless of bags_price state so that
@@ -2317,21 +2392,17 @@ class MultiProvider:
                 ))
 
                 if _no_free_co and carry_on is not None and carry_on > 0.0:
-                    # Append price if not already present in the text
+                    # Append price to conditions text only — never bags_price
                     if f"{carry_on:.0f}" not in _co_text and "from ~" not in _co_text:
                         offer.conditions["carry_on"] = (
                             f"{_co_text}; add-on from ~{ref_currency} {carry_on:.0f}"
                         )
-                    if "carry_on" not in offer.bags_price:
-                        offer.bags_price["carry_on"] = carry_on
 
                 if _no_free_cb and checked_bag is not None and checked_bag > 0.0:
                     if f"{checked_bag:.0f}" not in _cb_text and "from ~" not in _cb_text:
                         offer.conditions["checked_bag"] = (
                             f"{_cb_text}; add-on from ~{ref_currency} {checked_bag:.0f}"
                         )
-                    if "checked_bag" not in offer.bags_price:
-                        offer.bags_price["checked_bag"] = checked_bag
 
     def _diverse_select(
         self, offers: list[FlightOffer], sort: str, limit: int

@@ -277,10 +277,10 @@ class VuelingConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if bags_from == 0.0:
+                offer.bags_price["cabin_bag"] = 0.0
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         # Try direct API first (no browser)
         result = await self._search_via_api(req)
@@ -746,10 +746,9 @@ class VuelingConnectorClient:
                 offer.conditions["checked_bag"] = (
                     f"First checked bag: {currency} {live_bag_price:.0f} (live)"
                 )
-                offer.bags_price["cabin_bag"] = 10.0
+                offer.bags_price["cabin_bag"] = 0.0
                 offer.conditions["cabin_bag"] = "10 kg cabin bag included in all fares"
-                offer.bags_price["seat"] = 6.0
-                offer.conditions["seat"] = f"Seat selection from ~{currency} 6"
+                offer.conditions["seat"] = "seat selection: add-on (price varies by route)"
             offers.append(offer)
 
         logger.info(
@@ -869,10 +868,9 @@ class VuelingConnectorClient:
                 offer.conditions["checked_bag"] = (
                     f"First checked bag: {currency} {live_bag_price:.0f} (live)"
                 )
-                offer.bags_price["cabin_bag"] = 10.0
+                offer.bags_price["cabin_bag"] = 0.0
                 offer.conditions["cabin_bag"] = "10 kg cabin bag included in all fares"
-                offer.bags_price["seat"] = 6.0
-                offer.conditions["seat"] = f"Seat selection from ~{currency} 6"
+                offer.conditions["seat"] = "seat selection: add-on (price varies by route)"
             offers.append(offer)
         return offers
 

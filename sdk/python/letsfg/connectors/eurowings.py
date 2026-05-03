@@ -55,6 +55,13 @@ _API_URL = "https://apps.eurowings.com/flightsearch/v1/booking/flight-data?actio
 _IMPERSONATE = "chrome131"
 _COOKIE_MAX_AGE = 25 * 60  # 25 minutes
 
+# Eurowings fare bundle taxonomy (as of 2025/2026).
+# SMART/BASIC: cabin bag (8 kg) only.
+# SAIL/SUN/FLEX/BIZZ*: cabin bag + 1 checked bag (23 kg).
+# The live checked-bag add-on price is SAIL_price − SMART_price.
+_EW_NO_CHECKED_BUNDLES = {"SMART", "BASIC", "BASE", "LIGHT"}
+_EW_CHECKED_BUNDLES = {"SAIL", "SUN", "FLEX", "BIZZ", "BIZZPLUS", "PLUS"}
+
 # ── Module-level singletons ──────────────────────────────────────────────────
 _chrome_proc: subprocess.Popen | None = None
 _pw_instance = None
@@ -147,38 +154,9 @@ class EurowingsConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        from .ancillary_ref import get_ancillary_ref
-        ref = get_ancillary_ref("EW")
-        if not ref:
-            return None
-        cur = ref.get("currency", "EUR")
-        carry_on = ref.get("carry_on")
-        checked_bag = ref.get("checked_bag")
-        seat = ref.get("seat")
-        carry_on_note = ref.get("carry_on_note") or (
-            "1 cabin bag included" if carry_on == 0.0
-            else f"Carry-on add-on from ~{cur} {carry_on:.0f}" if carry_on is not None
-            else None
-        )
-        checked_note = ref.get("checked_bag_note") or (
-            "1 checked bag included" if checked_bag == 0.0
-            else f"First checked bag from ~{cur} {checked_bag:.0f}" if checked_bag is not None
-            else None
-        )
-        seat_note = (
-            "Seat selection included" if seat == 0.0
-            else f"Seat selection from ~{cur} {seat:.0f}" if seat is not None
-            else None
-        )
-        return {
-            "bags_from": carry_on,
-            "bags_note": carry_on_note,
-            "checked_bag_from": checked_bag,
-            "checked_bag_note": checked_note,
-            "seat_from": seat,
-            "seat_note": seat_note,
-            "currency": cur,
-        }
+        # Bag pricing is derived live from fare-bundle differentials in _parse_journey:
+        # SMART vs SAIL price gap = live checked-bag add-on cost.
+        return None
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
@@ -193,10 +171,10 @@ class EurowingsConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if bags_from == 0.0:
+                offer.bags_price["cabin_bag"] = 0.0
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
         Search Eurowings flights via cookie-farm + curl_cffi direct API.
@@ -1085,10 +1063,28 @@ class EurowingsConnectorClient:
         if not segments:
             return None
 
-        # Extract cheapest fare price
-        price = self._extract_cheapest_from_fares(journey.get("fares", []))
-        if price is None or price <= 0:
+        # Extract fare bundles with bundle codes and prices
+        bundle_prices = self._extract_fares_with_bundles(journey.get("fares", []))
+        if not bundle_prices:
             return None
+        bundle_prices.sort(key=lambda x: x[1])  # cheapest first
+        cheapest_code, price = bundle_prices[0]
+        if price <= 0:
+            return None
+
+        # Conditions based on the cheapest bundle type
+        bags_price: dict[str, float] = {}
+        conditions: dict[str, str] = self._ew_bundle_conditions(cheapest_code)
+
+        # If cheapest bundle has no checked bag, compute live add-on price from the
+        # next bundle tier that DOES include a checked bag (SAIL / SUN / BIZZ).
+        if cheapest_code in _EW_NO_CHECKED_BUNDLES:
+            for code, tier_price in bundle_prices[1:]:
+                if code in _EW_CHECKED_BUNDLES:
+                    diff = round(tier_price - price, 2)
+                    if 0 < diff < 300:  # sanity check
+                        bags_price["checked_bag"] = diff
+                    break
 
         # Build duration
         total_dur = 0
@@ -1125,7 +1121,63 @@ class EurowingsConnectorClient:
             is_locked=False,
             source="eurowings_direct",
             source_tier="free",
+            bags_price=bags_price,
+            conditions=conditions,
         )
+
+    @staticmethod
+    def _extract_fares_with_bundles(fares: list) -> list[tuple[str, float]]:
+        """Return [(bundle_code_upper, cheapest_price), ...] for each fare bundle
+        in a QUERY_FLIGHT_DATA journey.fares[] list.
+
+        The bundle code field is tried under several likely names because EW's API
+        has used different names across versions.
+        """
+        result: list[tuple[str, float]] = []
+        for fare in fares:
+            code = (
+                fare.get("bundleCode")
+                or fare.get("bundleId")
+                or fare.get("fareType")
+                or fare.get("bundleName")
+                or fare.get("fareName")
+                or fare.get("fareFamily")
+                or fare.get("fareClass")
+                or ""
+            )
+            code = str(code).upper().strip()
+            prices: list[float] = []
+            for fp in fare.get("farePrices", []):
+                for price_key in ("price", "originalPrice", "totalPrice"):
+                    p_obj = fp.get(price_key, {})
+                    if isinstance(p_obj, dict) and "value" in p_obj:
+                        try:
+                            val = float(p_obj["value"])
+                            if val > 0:
+                                prices.append(val)
+                                break
+                        except (TypeError, ValueError):
+                            continue
+            if prices:
+                result.append((code, min(prices)))
+        return result
+
+    @staticmethod
+    def _ew_bundle_conditions(bundle_code: str) -> dict[str, str]:
+        """Map an EW fare bundle code to bag/seat conditions."""
+        uc = bundle_code.upper()
+        if uc in _EW_CHECKED_BUNDLES:
+            return {
+                "cabin_bag": "1 cabin bag (8 kg) included",
+                "checked_bag": "1 checked bag (23 kg) included",
+                "seat": "Seat selection: add-on at checkout",
+            }
+        # SMART / BASIC / BASE or unknown: cabin bag only
+        return {
+            "cabin_bag": "1 cabin bag (8 kg) included",
+            "checked_bag": "Checked bag: add-on at checkout",
+            "seat": "Seat selection: add-on at checkout",
+        }
 
     @staticmethod
     def _extract_cheapest_from_fares(fares: list) -> Optional[float]:

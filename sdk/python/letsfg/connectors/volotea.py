@@ -53,6 +53,40 @@ _SCHEDULE_URL_NEW = "https://json.volotea.com/schedule/{route}_schedule.json"
 _SCHEDULE_URL_OLD = "https://json.volotea.com/dist/schedule/{route}_schedule.json"
 _IMPERSONATE = "chrome131"
 
+# Volotea fare-family → bag conditions (as of 2025/2026).
+# ECONOMY / BASIC: personal bag (40×25×20 cm) only; cabin bag is a paid add-on.
+# SERENITE / COMFORT / PLUS: cabin bag (55×40×20 cm, 10 kg) included.
+# PRIVILEGE / FLEX: cabin bag included + more flexibility.
+# Source: volotea.com fare rules.
+_V7_NO_CABIN_BAG = frozenset({
+    "ECONOMY", "ECONOME", "BASIC", "BASE", "LIGHT", "LITE",
+    "ECONOM", "ECONOMIQUE",
+})
+_V7_CABIN_BAG_INCLUDED = frozenset({
+    "SERENITE", "SERENITÉ", "COMFORT", "PLUS", "PRIVILEGE", "PRIVILÈGE",
+    "FLEX", "FLEXIBLE", "STANDARD", "CONFORT",
+})
+
+
+def _v7_fare_conditions(fare_code: str) -> dict[str, str]:
+    """Map a Volotea fare code to bag/seat conditions."""
+    uc = fare_code.upper().strip()
+    if uc in _V7_CABIN_BAG_INCLUDED:
+        return {
+            "cabin_bag": "1 cabin bag (55×40×20 cm, max 10 kg) included",
+            "checked_bag": "Checked bag: add-on at checkout",
+            "seat": "Seat selection: add-on at checkout",
+        }
+    if uc in _V7_NO_CABIN_BAG:
+        return {
+            "cabin_bag": "Personal bag only (40×25×20 cm); cabin bag is paid add-on",
+            "checked_bag": "Checked bag: add-on at checkout",
+            "seat": "Seat selection: add-on at checkout",
+        }
+    # Unknown code — don't set conditions (leave text stub)
+    return {}
+
+
 _VIEWPORTS = [
     {"width": 1366, "height": 768},
     {"width": 1440, "height": 900},
@@ -178,38 +212,10 @@ class VoloteaConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        from .ancillary_ref import get_ancillary_ref
-        ref = get_ancillary_ref("V7")
-        if not ref:
-            return None
-        cur = ref.get("currency", "EUR")
-        carry_on = ref.get("carry_on")
-        checked_bag = ref.get("checked_bag")
-        seat = ref.get("seat")
-        carry_on_note = ref.get("carry_on_note") or (
-            "1 cabin bag included" if carry_on == 0.0
-            else f"Carry-on add-on from ~{cur} {carry_on:.0f}" if carry_on is not None
-            else None
-        )
-        checked_note = ref.get("checked_bag_note") or (
-            "1 checked bag included" if checked_bag == 0.0
-            else f"First checked bag from ~{cur} {checked_bag:.0f}" if checked_bag is not None
-            else None
-        )
-        seat_note = (
-            "Seat selection included" if seat == 0.0
-            else f"Seat selection from ~{cur} {seat:.0f}" if seat is not None
-            else None
-        )
-        return {
-            "bags_from": carry_on,
-            "bags_note": carry_on_note,
-            "checked_bag_from": checked_bag,
-            "checked_bag_note": checked_note,
-            "seat_from": seat,
-            "seat_note": seat_note,
-            "currency": cur,
-        }
+        # Bag conditions are set per-offer in _parse_journey (Playwright API path)
+        # and _parse_schedule_flight (schedule JSON path), based on the fare code
+        # extracted from each fare.  No global override needed.
+        return None
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
@@ -224,10 +230,10 @@ class VoloteaConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if bags_from == 0.0:
+                offer.bags_price["cabin_bag"] = 0.0
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
         Search Volotea flights via static schedule JSON API.
@@ -500,6 +506,11 @@ class VoloteaConnectorClient:
             fare_type = price_entry.get("FareType") or ""
             fare_basis = price_entry.get("FareBasis") or ""
 
+            # Map fare code to bag conditions
+            conditions = _v7_fare_conditions(fare_type or fare_basis)
+            cabin_cond = conditions.get("cabin_bag", "")
+            bags_price: dict = {"cabin_bag": 0.0} if cabin_cond and "paid add-on" not in cabin_cond else {}
+
             offer_key = f"{flight_no}_{fare_type}_{fare_basis}_{price}"
             is_rt = bool(req.return_from) and ib_route is not None
             total_price = round(float(price) + ib_price, 2) if is_rt else round(float(price), 2)
@@ -517,6 +528,8 @@ class VoloteaConnectorClient:
                 is_locked=False,
                 source="volotea_direct",
                 source_tier="free",
+                bags_price=bags_price,
+                conditions=conditions,
             ))
 
         return offers
@@ -1066,11 +1079,22 @@ class VoloteaConnectorClient:
 
         currency = "EUR"
         fares = journey.get("fares", [])
+        fare_code = ""
         if fares:
-            fare_prices = fares[0].get("farePrices", [])
+            fare = fares[0]
+            fare_prices = fare.get("farePrices", [])
             if fare_prices:
                 curr_obj = fare_prices[0].get("price", {}).get("currency", {})
                 currency = curr_obj.get("code", "EUR")
+            # Extract fare code (field name varies by Navitaire version)
+            fare_code = (
+                fare.get("fareCode")
+                or fare.get("fareType")
+                or fare.get("fareClass")
+                or fare.get("fareName")
+                or fare.get("bundleCode")
+                or ""
+            )
 
         segments_raw = journey.get("segments", [])
         segments: list[FlightSegment] = []
@@ -1096,6 +1120,12 @@ class VoloteaConnectorClient:
         if not sell_key:
             sell_key = f"{segments[0].flight_no}_{journey.get('departureDate', '')}"
 
+        # Build conditions from fare code if available
+        conditions = _v7_fare_conditions(fare_code)
+        # Mark cabin_bag = 0.0 only when it IS included in the fare
+        cabin_cond = conditions.get("cabin_bag", "")
+        bags_price: dict = {"cabin_bag": 0.0} if cabin_cond and "paid add-on" not in cabin_cond else {}
+
         return FlightOffer(
             id=f"v7_{hashlib.md5(sell_key.encode()).hexdigest()[:12]}",
             price=round(price, 2),
@@ -1109,6 +1139,8 @@ class VoloteaConnectorClient:
             is_locked=False,
             source="volotea_direct",
             source_tier="free",
+            bags_price=bags_price,
+            conditions=conditions,
         )
 
     def _build_segment(self, seg: dict, req: FlightSearchRequest) -> FlightSegment:

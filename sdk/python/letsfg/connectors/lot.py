@@ -254,15 +254,15 @@ class LotConnectorClient:
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.conditions.setdefault("seat", seat_note)
+            if bags_from == 0.0:
+                offer.bags_price.setdefault("carry_on", 0.0)
+            if checked_from == 0.0:
+                offer.bags_price.setdefault("checked_bag", 0.0)
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         global _homepage_warmed
@@ -509,9 +509,22 @@ class LotConnectorClient:
             best_price = None
             best_currency = "USD"
             best_cabin = "economy"
+            best_bundle_raw = ""  # fare bundle code from API (e.g. SAVER, SMART, FULL_FLEX)
             for offer in ab_offers:
                 avail = offer.get("availabilityDetails", [{}])
                 compartment = avail[0].get("compartment", "ECONOMY") if avail else "ECONOMY"
+                # Try multiple possible field names for fare bundle (LOT IBE may vary)
+                _bundle = (
+                    avail[0].get("bundleCode") or
+                    avail[0].get("fareBrandName") or
+                    avail[0].get("fareGroupCode") or
+                    avail[0].get("fareCode") or
+                    offer.get("bundleCode") or
+                    offer.get("fareGroupCode") or
+                    offer.get("fareCode") or
+                    offer.get("fareBrandCode") or
+                    ""
+                )
                 total_prices = (offer.get("prices") or {}).get("totalPrices", [])
                 if not total_prices:
                     continue
@@ -522,6 +535,7 @@ class LotConnectorClient:
                     best_price = price
                     best_currency = cur
                     best_cabin = "premium_economy" if compartment == "PREMIUM_ECONOMY" else "economy"
+                    best_bundle_raw = str(_bundle).upper() if _bundle else ""
 
             # Fallback: take cheapest across all cabins
             if best_price is None:
@@ -560,23 +574,49 @@ class LotConnectorClient:
             offer_id = hashlib.md5(offer_key.encode()).hexdigest()[:12]
             all_airlines = list({s.airline for s in segments})
 
-            offers.append(
-                FlightOffer(
-                    id=f"lo_{offer_id}",
-                    price=round(best_price, 2),
-                    currency=best_currency,
-                    outbound=route,
-                    airlines=[
-                        ("LOT Polish Airlines" if a == "LO" else a)
-                        for a in all_airlines
-                    ],
-                    owner_airline="LO",
-                    booking_url=self._user_booking_url(req),
-                    is_locked=False,
-                    source="lot_direct",
-                    source_tier="free",
-                )
+            _lo_offer = FlightOffer(
+                id=f"lo_{offer_id}",
+                price=round(best_price, 2),
+                currency=best_currency,
+                outbound=route,
+                airlines=[
+                    ("LOT Polish Airlines" if a == "LO" else a)
+                    for a in all_airlines
+                ],
+                owner_airline="LO",
+                booking_url=self._user_booking_url(req),
+                is_locked=False,
+                source="lot_direct",
+                source_tier="free",
             )
+
+            # Per-offer fare bundle enrichment (from airBoundOffers bundle code)
+            # _apply_ancillaries uses setdefault, so these inline values take priority.
+            _lo_b = best_bundle_raw
+            if _lo_b:
+                logger.debug("LOT: fare bundle='%s' for %s→%s", _lo_b, req.origin, req.destination)
+                if any(k in _lo_b for k in ("SAVER", "BASIC", "LIGHT", "ECONOMY_S", "ECO_S")):
+                    # Economy Saver: cabin bag only, no free checked bag
+                    _lo_offer.conditions["carry_on"] = "Carry-on bag included."
+                    _lo_offer.conditions["checked_bag"] = (
+                        "Economy Saver: no free checked bag. First bag from EUR 20."
+                    )
+                    _lo_offer.conditions["seat"] = "Seat selection from EUR 10 (Saver)."
+                    _lo_offer.bags_price["checked_bag"] = 20.0
+                elif any(k in _lo_b for k in ("SMART", "STANDARD", "FLEX", "FULL", "COMFORT")):
+                    # Economy Smart / Full Flex: 1×23 kg checked bag included
+                    _lo_offer.conditions["carry_on"] = "Carry-on bag included."
+                    _lo_offer.conditions["checked_bag"] = (
+                        "Economy Smart / Full Flex: 1×23 kg checked bag included."
+                    )
+                    _lo_offer.conditions["seat"] = (
+                        "Seat selection: from EUR 10 (Smart). Included on Full Flex."
+                    )
+                    _lo_offer.bags_price["checked_bag"] = 0.0
+                else:
+                    logger.debug("LOT: unrecognised bundle '%s', using static note", _lo_b)
+
+            offers.append(_lo_offer)
 
         return offers
 

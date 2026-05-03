@@ -670,8 +670,8 @@ class KuwaitAirwaysConnectorClient:
                 offer.conditions["carry_on"] = bags_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
+            if bags_from == 0.0:
+                offer.bags_price["carry_on"] = 0.0
 
     @staticmethod
     def _combine_rt(ob: list, ib: list, req) -> list:

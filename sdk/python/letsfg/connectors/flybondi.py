@@ -221,10 +221,27 @@ class FlybondiConnectorClient:
     async def _attempt_search(
         self, url: str, req: FlightSearchRequest
     ) -> Optional[list[FlightOffer]]:
-        """Use Patchright (undetected Chrome) to bypass Cloudflare Turnstile,
-        then intercept ANY JSON response from flybondi.com that contains flight edges."""
+        """Wizard flow: Homepage (session warmup + PromotionalFlightSectionFaresQuery)
+        → /search/destination → /search/dates (DatesContainerQuery).
+
+        The results page (/search/results) triggers a visible Cloudflare Turnstile when
+        loading actual flight data, so we use the calendar data instead:
+        - PromotionalFlightSectionFaresQuery: real lowestPrice, ~60 days ahead, featured routes
+        - DatesContainerQuery: real lowestPrice + fares[], Nov+ advance, any route
+        """
         from patchright.async_api import async_playwright as patchright_playwright
-        from .browser import get_default_proxy, find_chrome
+
+        currency = req.currency or "ARS"
+        adults = getattr(req, "adults", 1) or 1
+        children = getattr(req, "children", 0) or 0
+        infants = getattr(req, "infants", 0) or 0
+
+        dates_url = (
+            f"https://flybondi.com/ar/search/dates"
+            f"?adults={adults}&children={children}&currency={currency}"
+            f"&fromCityCode={req.origin}&infants={infants}&toCityCode={req.destination}"
+            f"&utm_origin=search_bar"
+        )
 
         proxy = get_default_proxy()
         viewport = random.choice(_VIEWPORTS)
@@ -250,119 +267,243 @@ class FlybondiConnectorClient:
         browser = await pw.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             viewport=viewport,
-            locale=random.choice(_LOCALES),
-            timezone_id=random.choice(_TIMEZONES),
+            locale="es-AR",
+            timezone_id="America/Argentina/Buenos_Aires",
         )
 
         try:
             page = await context.new_page()
             await auto_block_if_proxied(page)
 
-            captured_flights: dict = {}
-            api_event = asyncio.Event()
+            all_departures: list[dict] = []
+            promo_event = asyncio.Event()
+            dates_event = asyncio.Event()
 
             async def on_response(response):
                 try:
                     if response.status != 200:
                         return
-                    rurl = response.url
-                    # Intercept any JSON from flybondi.com that might contain flight data
-                    if "flybondi.com" not in rurl:
+                    if "flybondi.com" not in response.url:
                         return
                     ct = response.headers.get("content-type", "")
                     if "json" not in ct:
                         return
-                    data = await response.json()
+                    body_text = (await response.body()).decode("utf-8", errors="replace")
+                    if '"departures"' not in body_text and '"lowestPrice"' not in body_text:
+                        return
+                    data = json.loads(body_text)
                     if not isinstance(data, dict):
                         return
-                    # SSR-embedded path: data.viewer.flights.edges
-                    edges = (
-                        data.get("data", {})
-                        .get("viewer", {})
-                        .get("flights", {})
-                        .get("edges", [])
-                    ) or (
-                        data.get("viewer", {})
-                        .get("flights", {})
-                        .get("edges", [])
+                    # Both PromotionalFlightSectionFaresQuery and DatesContainerQuery
+                    # return departures under these paths:
+                    deps = (
+                        data.get("data", {}).get("departures")
+                        or data.get("data", {}).get("viewer", {}).get("configuration", {}).get("departures")
+                        or data.get("data", {}).get("viewer", {}).get("departures")
+                        or []
                     )
-                    if not edges:
-                        # Try alternate top-level or Relay paths
-                        for top_val in data.values():
-                            if isinstance(top_val, dict):
-                                for v in top_val.values():
-                                    if isinstance(v, dict):
-                                        candidate = v.get("flights", {}).get("edges", [])
-                                        if candidate:
-                                            edges = candidate
-                                            break
-                                if edges:
-                                    break
-                    if not edges:
-                        # Try REST-style: look for a list of flights under any key
-                        for v in data.values():
-                            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                                if any(k in v[0] for k in ("departureDateTime", "departure", "origin", "flightNumber")):
-                                    captured_flights["raw_list"] = v
-                                    api_event.set()
-                                    logger.info("Flybondi: captured %d flights (REST list) from %s", len(v), rurl[:80])
-                                    return
-                    if edges:
-                        captured_flights["edges"] = edges
-                        api_event.set()
-                        logger.info("Flybondi: captured %d flight edges from %s", len(edges), rurl[:80])
+                    if deps and isinstance(deps, list):
+                        all_departures.extend(deps)
+                        logger.debug("Flybondi: captured %d departures from %s", len(deps), response.url[:80])
+                        # Distinguish promo (small, near-term) from dates (large, advance)
+                        if len(body_text) < 50000:
+                            promo_event.set()
+                        else:
+                            dates_event.set()
                 except Exception:
                     pass
 
             page.on("response", on_response)
 
-            logger.info("Flybondi: loading with Patchright %s", url[:120])
-            await page.goto(url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
-
+            # Step 1: Homepage — establishes CF session cookie + fires promo queries
+            logger.info("Flybondi: loading homepage for session warmup (%s→%s)", req.origin, req.destination)
+            await page.goto("https://flybondi.com/ar", wait_until="domcontentloaded", timeout=30000)
             await self._dismiss_cookies(page)
-
-            # Wait up to 30s for Cloudflare Turnstile to pass and flight data to arrive
             try:
-                await asyncio.wait_for(api_event.wait(), timeout=30)
+                await asyncio.wait_for(promo_event.wait(), timeout=8)
             except asyncio.TimeoutError:
                 pass
 
-            # Also try SSR extraction after the full page load
-            if not captured_flights:
-                edges = await self._extract_ssr_edges(page)
-                if edges:
-                    logger.info("Flybondi: extracted %d flights from SSR (Patchright)", len(edges))
-                    return self._parse_edges(edges, req)
+            # Step 2: Click "Buscar vuelos" to navigate to /search/destination
+            # This sets up the search session state before navigating to /search/dates
+            try:
+                submit = page.locator("button:has-text('Buscar vuelos')").first
+                if await submit.count() > 0 and await submit.is_visible(timeout=3000):
+                    await submit.click()
+                    await page.wait_for_url("**/search/destination**", timeout=10000)
+                    logger.debug("Flybondi: reached /search/destination")
+            except Exception as _e:
+                logger.debug("Flybondi: buscar vuelos click failed: %s", _e)
 
-            if "edges" in captured_flights:
-                return self._parse_edges(captured_flights["edges"], req)
+            # Step 3: Navigate directly to dates page — fires DatesContainerQuery
+            logger.info("Flybondi: navigating to dates page %s", dates_url[:120])
+            await page.goto(dates_url, wait_until="domcontentloaded", timeout=20000)
+            try:
+                await asyncio.wait_for(dates_event.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                logger.warning("Flybondi: timeout waiting for DatesContainerQuery for %s→%s", req.origin, req.destination)
 
-            logger.warning("Flybondi: no flight data found via SSR or GraphQL")
-            return None
+            return self._build_offers_from_departures(all_departures, req)
+
         finally:
             await context.close()
             await browser.close()
             await pw.stop()
 
+    def _build_offers_from_departures(
+        self, departures: list[dict], req: FlightSearchRequest
+    ) -> list[FlightOffer]:
+        """Build FlightOffers from Flybondi calendar departure data.
+
+        Handles both PromotionalFlightSectionFaresQuery nodes (departure, lowestPrice, id)
+        and DatesContainerQuery nodes (+ fares[], earliestDepartureTime, flightsPerDay).
+        """
+        if not departures:
+            return []
+
+        currency = req.currency or "ARS"
+        target_date = req.date_from.strftime("%Y-%m-%d")
+        booking_url = self._build_booking_url(req)
+
+        # Dedup by id, filter to target route + date
+        seen_ids: set[str] = set()
+        matching: list[dict] = []
+        for dep in departures:
+            dep_id = dep.get("id", "")
+            if dep_id in seen_ids:
+                continue
+            seen_ids.add(dep_id)
+
+            # id format: "BUE-MDZ-ARS-2026-05-24" — check route prefix
+            route_prefix = f"{req.origin}-{req.destination}".upper()
+            if dep_id and route_prefix not in dep_id.upper():
+                continue
+
+            dep_date = str(dep.get("departure", ""))[:10]
+            if dep_date != target_date:
+                continue
+
+            matching.append(dep)
+
+        if not matching:
+            logger.info(
+                "Flybondi: no calendar data for %s→%s on %s (scanned %d departures)",
+                req.origin, req.destination, target_date, len(departures),
+            )
+            return []
+
+        _fo_cabin = {"M": "economy", "W": "premium_economy", "C": "business", "F": "first"}.get(
+            req.cabin_class or "M", "economy"
+        )
+        offers: list[FlightOffer] = []
+
+        for dep in matching:
+            price = dep.get("lowestPrice")
+            if not price or price <= 0:
+                continue
+            price = float(price)
+
+            # Use fares[] price if available and more specific (DatesContainerQuery)
+            fares = dep.get("fares", [])
+            cheapest_fare: Optional[dict] = None
+            if fares:
+                valid = [f for f in fares if isinstance(f, dict) and (f.get("price") or 0) > 0]
+                if valid:
+                    cheapest_fare = min(valid, key=lambda f: float(f.get("price", float("inf"))))
+                    price = float(cheapest_fare["price"])
+
+            # Use earliestDepartureTime if available, else midnight of target date
+            dep_dt = self._parse_dt(dep.get("earliestDepartureTime") or dep.get("departure", target_date))
+
+            segment = FlightSegment(
+                airline="FO",
+                airline_name="Flybondi",
+                flight_no="FO",
+                origin=req.origin,
+                destination=req.destination,
+                departure=dep_dt,
+                arrival=dep_dt,
+                cabin_class=_fo_cabin,
+            )
+            route = FlightRoute(
+                segments=[segment],
+                total_duration_seconds=0,
+                stopovers=0,
+            )
+
+            conditions: dict[str, str] = {
+                "checked_bag": "no free checked bag (ultra-LCC fare)",
+                "carry_on": "overhead carry-on is a paid add-on (from ~USD 10)",
+                "seat": "seat selection from ~USD 5 — add at checkout",
+            }
+            if cheapest_fare:
+                fc = cheapest_fare.get("fCCode", "")
+                fb = cheapest_fare.get("fBCode", "")
+                if fc or fb:
+                    conditions["fare_family"] = f"{fc}/{fb}".strip("/")
+
+            dep_id = dep.get("id", f"{req.origin}-{req.destination}-{currency}-{target_date}")
+            offers.append(FlightOffer(
+                id=f"fo_{hashlib.md5(dep_id.encode()).hexdigest()[:12]}",
+                price=round(price, 2),
+                currency=currency,
+                price_formatted=f"{price:,.2f} {currency}",
+                outbound=route,
+                inbound=None,
+                airlines=["Flybondi"],
+                owner_airline="FO",
+                conditions=conditions,
+                bags_price={},
+                booking_url=booking_url,
+                is_locked=False,
+                source="flybondi_calendar",
+                source_tier="free",
+            ))
+
+        offers.sort(key=lambda o: o.price)
+        logger.info(
+            "Flybondi calendar: %d offers for %s→%s on %s",
+            len(offers), req.origin, req.destination, target_date,
+        )
+        return offers
+
     async def _extract_ssr_edges(self, page) -> Optional[list[dict]]:
-        """Extract flight edges from SSR data embedded in a script tag."""
+        """Extract flight edges from SSR data or Relay store embedded in a script tag."""
         ssr_data = await page.evaluate(r"""() => {
             const scripts = document.querySelectorAll('script');
             for (const s of scripts) {
                 const t = s.textContent || '';
-                if (t.length > 50000 && t.includes('viewer')) {
-                    try {
-                        const data = JSON.parse(t);
-                        if (data && data.viewer && data.viewer.flights) {
-                            return data.viewer.flights.edges || null;
+                if (t.length < 5000) continue;
+                if (!t.includes('viewer') && !t.includes('edges') && !t.includes('departure')) continue;
+                let data;
+                try { data = JSON.parse(t); } catch(e) { continue; }
+                if (!data) continue;
+                // Classic viewer.flights.edges
+                if (data.viewer && data.viewer.flights && data.viewer.flights.edges) {
+                    return { type: 'edges', data: data.viewer.flights.edges };
+                }
+                // Relay store: look for keys with 'fares(' containing __refs with flight nodes
+                for (const [k, v] of Object.entries(data)) {
+                    if (typeof v === 'object' && v && v.__refs && v.__refs.length > 0) {
+                        const firstRef = data[v.__refs[0]];
+                        if (firstRef && ('departure' in firstRef || 'departureDateTime' in firstRef || 'flightNumber' in firstRef)) {
+                            const nodes = v.__refs.map(ref => data[ref]).filter(Boolean);
+                            return { type: 'relay_fares', data: nodes };
                         }
-                    } catch(e) {}
+                    }
                 }
             }
             return null;
         }""")
-        if ssr_data and isinstance(ssr_data, list) and len(ssr_data) > 0:
-            return ssr_data
+        if not ssr_data or not isinstance(ssr_data, dict):
+            return None
+        if ssr_data.get("type") == "edges":
+            edges = ssr_data.get("data", [])
+            if edges and isinstance(edges, list):
+                return edges
+        if ssr_data.get("type") == "relay_fares":
+            # Not individual flights, just fare calendar — can't parse as offers
+            logger.debug("Flybondi: SSR has relay fares calendar only (no individual flight times)")
         return None
 
     async def _dismiss_cookies(self, page) -> None:
@@ -373,6 +514,22 @@ class FlybondiConnectorClient:
                 await asyncio.sleep(0.5)
         except Exception:
             pass
+
+    def _parse_fares_list(self, fares_list: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
+        """Parse Relay store fare calendar nodes — these are date-level fares without flight times, not usable as offers."""
+        logger.debug("Flybondi: fares_list has %d items but lacks flight-level detail", len(fares_list))
+        return []
+
+    def _parse_raw_list(self, raw_list: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
+        """Parse REST-style flat flight list."""
+        currency = req.currency or "ARS"
+        booking_url = self._build_booking_url(req)
+        offers: list[FlightOffer] = []
+        for item in raw_list:
+            offer = self._parse_flight_node(item, currency, req, booking_url)
+            if offer:
+                offers.append(offer)
+        return offers
 
     def _parse_edges(self, edges: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
         currency = req.currency or "ARS"

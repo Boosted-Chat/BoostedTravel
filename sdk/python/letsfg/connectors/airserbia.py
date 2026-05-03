@@ -5,9 +5,9 @@ Air Serbia's website at www.airserbia.com uses a search widget with autocomplete
 airport fields and calendar date picker. Direct API calls are blocked;
 headed Patchright browser with form fill + API interception is required.
 
-Strategy (Patchright persistent context + API interception):
-1. Launch headed Patchright browser (persistent profile, bypasses CF Turnstile).
-2. Navigate to airserbia.com → CF Turnstile auto-solves in real browser.
+Strategy (Patchright + CF Turnstile click + API interception):
+1. Launch headed Patchright browser (navigator.webdriver=false bypasses CF).
+2. Navigate to airserbia.com → detect CF Turnstile iframe → click body to solve.
 3. Accept cookies → set one-way → fill origin/dest → select date → search.
 4. Intercept the search API response (flight availability JSON).
 5. If API not captured, fall back to DOM scraping on results page.
@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import time
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -37,10 +36,7 @@ from .browser import find_chrome, proxy_chrome_args, auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
-_USER_DATA_DIR = os.path.join(
-    os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")), ".airserbia_patchright_data"
-)
-
+_browser = None
 _context = None
 _pw_instance = None
 _browser_lock: Optional[asyncio.Lock] = None
@@ -54,65 +50,99 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def _get_context():
-    global _context, _pw_instance
+    """Return a cached Patchright browser context, creating if needed.
+
+    Caching the context preserves Cloudflare cookies between searches so CF
+    Turnstile only needs to be solved once per process lifetime.
+    """
+    global _browser, _context, _pw_instance
     lock = _get_lock()
     async with lock:
-        if _context is not None:
+        # Check if existing context is still alive
+        if _context is not None and _browser is not None:
             try:
-                _ = _context.pages  # check still alive
-                return _context
+                if _browser.is_connected():
+                    return _context
             except Exception:
-                _context = None
+                pass
+            _context = None
+            _browser = None
 
-        from patchright.async_api import async_playwright
-
-        proxy = None
-        _proxy_args = proxy_chrome_args()
-        if _proxy_args:
-            for _pa in _proxy_args:
-                if _pa.startswith("--proxy-server="):
-                    proxy = {"server": _pa.split("=", 1)[1]}
-                    break
-
-        try:
-            chrome_path = find_chrome()
-        except RuntimeError:
-            chrome_path = None
-
-        pw = await async_playwright().start()
-        _pw_instance = pw
-
-        os.makedirs(_USER_DATA_DIR, exist_ok=True)
-        launch_kwargs: dict = {
-            "headless": False,
-            "args": [
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--window-size=1400,900",
-            ],
-        }
-        if chrome_path:
-            launch_kwargs["executable_path"] = chrome_path
-        if proxy:
-            launch_kwargs["proxy"] = proxy
-
-        _context = await pw.chromium.launch_persistent_context(
-            _USER_DATA_DIR,
+        # (Re-)create browser + context
+        await _get_browser()
+        if _browser is None:
+            raise RuntimeError("AirSerbia: failed to launch browser")
+        _context = await _browser.new_context(
             viewport={"width": 1400, "height": 900},
             locale="en-US",
-            timezone_id="Europe/London",
+            timezone_id="Europe/Belgrade",
             color_scheme="light",
-            **launch_kwargs,
         )
-        logger.info("AirSerbia: Patchright persistent context launched")
+        logger.info("AirSerbia: new browser context created")
         return _context
 
 
+async def _get_browser():
+    """Return a cached Patchright browser instance, launching if needed.
+
+    NOTE: must be called with _browser_lock already held (via _get_context).
+    """
+    global _browser, _pw_instance
+    if _browser is not None:
+        try:
+            if _browser.is_connected():
+                return _browser
+        except Exception:
+            pass
+        _browser = None
+
+    from patchright.async_api import async_playwright
+
+    proxy = None
+    _proxy_args = proxy_chrome_args()
+    if _proxy_args:
+        for _pa in _proxy_args:
+            if _pa.startswith("--proxy-server="):
+                proxy = {"server": _pa.split("=", 1)[1]}
+                break
+
+    try:
+        chrome_path = find_chrome()
+    except RuntimeError:
+        chrome_path = None
+
+    pw = await async_playwright().start()
+    _pw_instance = pw
+
+    launch_kwargs: dict = {
+        "headless": False,
+        "args": [
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--window-size=1400,900",
+            "--window-position=100,100",
+        ],
+    }
+    if chrome_path:
+        launch_kwargs["executable_path"] = chrome_path
+    if proxy:
+        launch_kwargs["proxy"] = proxy
+
+    _browser = await pw.chromium.launch(**launch_kwargs)
+    logger.info("AirSerbia: Patchright browser launched")
+    return _browser
+
+
 async def _reset_profile():
-    global _context, _pw_instance
+    global _browser, _context, _pw_instance
     try:
         if _context:
             await _context.close()
+    except Exception:
+        pass
+    try:
+        if _browser:
+            await _browser.close()
     except Exception:
         pass
     try:
@@ -120,12 +150,7 @@ async def _reset_profile():
             await _pw_instance.stop()
     except Exception:
         pass
-    _context = _pw_instance = None
-    if os.path.isdir(_USER_DATA_DIR):
-        try:
-            shutil.rmtree(_USER_DATA_DIR)
-        except Exception:
-            pass
+    _context = _browser = _pw_instance = None
 
 
 async def _dismiss_overlays(page) -> None:
@@ -213,9 +238,13 @@ class AirSerbiaConnectorClient:
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
+        # Reuse the cached context so CF cookies persist between searches.
+        # CF Turnstile only needs to be solved once per process lifetime.
         context = await _get_context()
         page = await context.new_page()
-        await auto_block_if_proxied(page)
+        # NOTE: auto_block_if_proxied is applied AFTER CF is solved (below).
+        # CF Turnstile uses WebSocket to validate the token; blocking websockets
+        # before it resolves prevents the challenge from passing.
 
         search_data: dict = {}
         api_event = asyncio.Event()
@@ -268,15 +297,31 @@ class AirSerbiaConnectorClient:
         try:
             logger.info("AirSerbia: loading homepage for %s→%s", req.origin, req.destination)
             await page.goto(self.HOMEPAGE, wait_until="domcontentloaded", timeout=30000)
-            # Wait for selectize.js search widget to render — Cloudflare Turnstile
-            # challenge auto-solves in Patchright headed browser (usually <10s).
-            for _wait in range(35):  # up to 35s for CF to auto-solve
-                await asyncio.sleep(1.0)
+
+            # CF Turnstile: detect the challenge iframe and click its body to solve it.
+            # In Patchright (navigator.webdriver=false) repeated clicks pass the challenge.
+            _cf_click_count = 0
+            for _wait in range(60):
+                await asyncio.sleep(0.5)
                 vis = await page.locator('input[placeholder="From"]:visible').count()
                 if vis > 0:
                     break
+                for frame in page.frames:
+                    if "challenges.cloudflare.com" in frame.url:
+                        try:
+                            await frame.locator("body").click(timeout=1500)
+                            _cf_click_count += 1
+                            if _cf_click_count == 1:
+                                logger.info("AirSerbia: clicking CF Turnstile iframe")
+                        except Exception:
+                            pass
+                        break
             else:
                 logger.warning("AirSerbia: From input never became visible after CF wait")
+
+            # CF is now solved (or timed out) — safe to block heavy resources
+            await auto_block_if_proxied(page)
+
             await _dismiss_overlays(page)
 
             # One-way toggle — Air Serbia uses pill tab buttons
@@ -390,6 +435,7 @@ class AirSerbiaConnectorClient:
                 await page.close()
             except Exception:
                 pass
+            # NOTE: context is kept alive to preserve CF cookies for next search
 
     async def _fill_airport(self, page, selector: str, iata: str) -> bool:
         """Fill Air Serbia autocomplete airport field — uses selectize.js widget."""
@@ -780,12 +826,11 @@ class AirSerbiaConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        # Air Serbia JU — Light fare: cabin bag 8 kg free, checked bag add-on from 15 EUR
+        # Air Serbia JU — Light fare: cabin bag 8 kg free, checked bag is an add-on
         return {
-            "checked_bag_note": "checked bag 23 kg not included – add-on from ~15 EUR",
+            "checked_bag_note": "checked bag 23 kg not included – add-on (price varies by route)",
             "bags_note": "cabin bag 8 kg included free (Light fare)",
-            "seat_note": "seat selection add-on from ~8 EUR",
-            "checked_bag_from": 15.0,
+            "seat_note": "seat selection: add-on (price varies by route)",
             "currency": "EUR",
         }
 
@@ -793,8 +838,6 @@ class AirSerbiaConnectorClient:
         checked_bag_note = ancillary.get("checked_bag_note")
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
-        checked_bag_from = ancillary.get("checked_bag_from")
-        anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
@@ -802,8 +845,8 @@ class AirSerbiaConnectorClient:
                 offer.conditions["carry_on"] = bags_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if checked_bag_from is not None:
-                offer.bags_price["checked_bag"] = checked_bag_from
+            # No numeric bags_price written — Air Serbia ancillary prices are
+            # not fetched from the live API and must not be shown as fixed prices.
 
     @staticmethod
     def _combine_rt(ob: list, ib: list, req) -> list:

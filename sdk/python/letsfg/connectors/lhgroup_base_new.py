@@ -262,9 +262,10 @@ class LHGroupBaseConnector:
     ) -> dict | None:
         """Static ancillary reference data for LH Group economy light fares."""
         return {
-            "bags_note": "Economy Light (starting fare): no checked bag included; first bag from ~15–25 EUR add-on. Economy Classic/Flex: 1×23 kg included.",
+            "bags_note": "Economy Light (starting fare): carry-on included, no checked bag. First bag from ~35 EUR add-on. Economy Classic/Flex: 1\u00d723 kg included.",
             "seat_note": f"Seat selection from ~{self.DEFAULT_CURRENCY} 15 (basic). Preferred/exit seats from ~{self.DEFAULT_CURRENCY} 20.",
             "bags_from": None,
+            "checked_bag_price": 35.0,
             "currency": self.DEFAULT_CURRENCY,
         }
 
@@ -276,16 +277,15 @@ class LHGroupBaseConnector:
         checked_from = ancillary.get("checked_bag_price")
         anc_currency = ancillary.get("currency", self.DEFAULT_CURRENCY)
         for offer in offers:
+            offer.bags_price.setdefault("carry_on", 0.0)
+            if checked_from is not None:
+                offer.bags_price.setdefault("checked_bag", float(checked_from))
             if bags_note:
-                offer.conditions["cabin_bag"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.conditions.setdefault("seat", seat_note)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:
         h = hashlib.md5(

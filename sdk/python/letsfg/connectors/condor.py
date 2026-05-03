@@ -140,38 +140,8 @@ class CondorConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        from .ancillary_ref import get_ancillary_ref
-        ref = get_ancillary_ref("DE")
-        if not ref:
-            return None
-        cur = ref.get("currency", "EUR")
-        carry_on = ref.get("carry_on")
-        checked_bag = ref.get("checked_bag")
-        seat = ref.get("seat")
-        carry_on_note = ref.get("carry_on_note") or (
-            "1 cabin bag included" if carry_on == 0.0
-            else f"Carry-on add-on from ~{cur} {carry_on:.0f}" if carry_on is not None
-            else None
-        )
-        checked_note = ref.get("checked_bag_note") or (
-            "1 checked bag included" if checked_bag == 0.0
-            else f"First checked bag from ~{cur} {checked_bag:.0f}" if checked_bag is not None
-            else None
-        )
-        seat_note = (
-            "Seat selection included" if seat == 0.0
-            else f"Seat selection from ~{cur} {seat:.0f}" if seat is not None
-            else None
-        )
-        return {
-            "bags_from": carry_on,
-            "bags_note": carry_on_note,
-            "checked_bag_from": checked_bag,
-            "checked_bag_note": checked_note,
-            "seat_from": seat,
-            "seat_note": seat_note,
-            "currency": cur,
-        }
+        # Bag/seat prices are extracted live from includedServices in _parse_tca_flight.
+        return None
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
@@ -186,10 +156,10 @@ class CondorConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if bags_from == 0.0:
+                offer.bags_price["cabin_bag"] = 0.0
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         """
         Search Condor flights via cookie-farm + curl_cffi direct API.
@@ -376,7 +346,7 @@ class CondorConnectorClient:
             "destination": req.destination,
             "outboundDate": req.date_from.strftime("%Y%m%d"),
             "adults": str(req.adults),
-            "currency": "USD",
+            "currency": req.currency or "EUR",
             "numberOfFlightDays": "1",
         }
         if is_rt:
@@ -950,7 +920,41 @@ class CondorConnectorClient:
             stopovers=max(len(segments) - 1, 0),
         )
 
-        # Create one offer per fare bundle (tariff)
+        # --- First pass: collect fare prices per compartment for bag add-on differential ---
+        _fare_grp: dict[str, list] = {}
+        for vc in vacancy_details:
+            _pd = vc.get("priceDetails", [])
+            if not _pd:
+                continue
+            _comps = _pd[0].get("components", [])
+            _gross = next((c.get("value") for c in _comps if c.get("type") == "GROSS_PRICE"), None)
+            if not _gross:
+                continue
+            _p = round(_gross / 100.0, 2)
+            if _p <= 0:
+                continue
+            _comp = vc.get("compartment", "Y")
+            _inc = vc.get("includedServices") or {}
+            _fare_grp.setdefault(_comp, []).append({"price": _p, "inc": _inc})
+
+        # Compute per-compartment bag add-on prices from fare tier differential
+        _checked_addon: dict[str, float] = {}
+        _cabin_addon: dict[str, float] = {}
+        for _comp_key, _fares in _fare_grp.items():
+            _no_chk = [f for f in _fares if f["inc"].get("baggageIncluded") != "INCLUDED"]
+            _with_chk = [f for f in _fares if f["inc"].get("baggageIncluded") == "INCLUDED"]
+            _no_cab = [f for f in _fares if f["inc"].get("handBaggageIncluded") != "INCLUDED"]
+            _with_cab = [f for f in _fares if f["inc"].get("handBaggageIncluded") == "INCLUDED"]
+            if _no_chk and _with_chk:
+                _diff = round(min(f["price"] for f in _with_chk) - min(f["price"] for f in _no_chk), 2)
+                if _diff > 0:
+                    _checked_addon[_comp_key] = _diff
+            if _no_cab and _with_cab:
+                _diff = round(min(f["price"] for f in _with_cab) - min(f["price"] for f in _no_cab), 2)
+                if _diff > 0:
+                    _cabin_addon[_comp_key] = _diff
+
+        # --- Second pass: create one offer per fare bundle with live bag prices ---
         for vc in vacancy_details:
             price_details = vc.get("priceDetails", [])
             if not price_details:
@@ -980,6 +984,43 @@ class CondorConnectorClient:
             total_price = round(price + _ib_price, 2) if is_rt else price
             prefix = "de_rt_" if is_rt else "de_"
 
+            # Extract live bag/seat prices from includedServices
+            inc = vc.get("includedServices") or {}
+            bags_price: dict[str, float] = {}
+            conds: dict[str, str] = {}
+
+            hand_incl = inc.get("handBaggageIncluded")
+            hand_pc = inc.get("handBaggagePiece") or 0
+            hand_kg = inc.get("handBaggageKg") or 0
+            if hand_incl == "INCLUDED":
+                bags_price["cabin_bag"] = 0.0
+                conds["cabin_bag"] = f"{hand_pc}\u00d7 cabin bag ({hand_kg} kg) included"
+            elif compartment in _cabin_addon:
+                bags_price["cabin_bag"] = _cabin_addon[compartment]
+                conds["cabin_bag"] = f"Cabin bag from {_cabin_addon[compartment]:.0f} {currency}"
+            else:
+                conds["cabin_bag"] = "Cabin bag: add-on at checkout"
+
+            bag_incl = inc.get("baggageIncluded")
+            bag_pc = inc.get("baggagePiece") or 0
+            bag_kg = inc.get("baggageKg") or 0
+            if bag_incl == "INCLUDED":
+                bags_price["checked_bag"] = 0.0
+                conds["checked_bag"] = f"{bag_pc}\u00d7 checked bag ({bag_kg} kg) included"
+            elif compartment in _checked_addon:
+                bags_price["checked_bag"] = _checked_addon[compartment]
+                conds["checked_bag"] = f"Checked bag from {_checked_addon[compartment]:.0f} {currency}"
+            else:
+                conds["checked_bag"] = "Checked bag: add-on at checkout"
+
+            seat_incl = inc.get("seatIncluded")
+            seat_code = (inc.get("seatCode") or "").replace("_", " ").lower()
+            if seat_incl == "INCLUDED":
+                bags_price["seat_selection"] = 0.0
+                conds["seat"] = "Seat selection included" + (f" ({seat_code})" if seat_code else "")
+            else:
+                conds["seat"] = "Seat selection: from checkout"
+
             offers.append(FlightOffer(
                 id=f"{prefix}{hashlib.md5(flight_key.encode()).hexdigest()[:12]}",
                 price=total_price,
@@ -993,6 +1034,8 @@ class CondorConnectorClient:
                 is_locked=False,
                 source="condor_direct",
                 source_tier="free",
+                bags_price=bags_price,
+                conditions=conds,
             ))
 
         return offers

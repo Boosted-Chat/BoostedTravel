@@ -570,9 +570,9 @@ class AlaskaConnectorClient:
                 offer.conditions["checked_bag"] = checked_note
             if seat_note and "seat" not in offer.conditions:
                 offer.conditions["seat"] = seat_note
-            if carry_on_from is not None and (carry_on_from == 0.0 or ccy_ok) and "carry_on" not in offer.bags_price:
-                offer.bags_price["carry_on"] = carry_on_from
-            if checked_from is not None and (checked_from == 0.0 or ccy_ok) and "checked_bag" not in offer.bags_price:
-                offer.bags_price["checked_bag"] = checked_from
-            if seat_from is not None and (seat_from == 0.0 or ccy_ok) and "seat_selection" not in offer.bags_price:
-                offer.bags_price["seat_selection"] = seat_from
+            if carry_on_from == 0.0 and "carry_on" not in offer.bags_price:
+                offer.bags_price["carry_on"] = 0.0
+            if checked_from == 0.0 and "checked_bag" not in offer.bags_price:
+                offer.bags_price["checked_bag"] = 0.0
+            if seat_from == 0.0 and "seat_selection" not in offer.bags_price:
+                offer.bags_price["seat_selection"] = 0.0

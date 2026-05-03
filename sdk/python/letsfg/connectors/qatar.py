@@ -296,10 +296,10 @@ class QatarConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked"] = checked_from
+            if bags_from == 0.0:
+                offer.bags_price["checked"] = 0.0
+            if checked_from == 0.0:
+                offer.bags_price["checked"] = 0.0
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         global _homepage_warmed

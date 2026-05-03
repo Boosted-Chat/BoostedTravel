@@ -87,37 +87,18 @@ class AirbalticConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        from .ancillary_ref import get_ancillary_ref
-        ref = get_ancillary_ref("BT")
-        if not ref:
-            return None
-        cur = ref.get("currency", "EUR")
-        carry_on = ref.get("carry_on")
-        checked_bag = ref.get("checked_bag")
-        seat = ref.get("seat")
-        carry_on_note = ref.get("carry_on_note") or (
-            "1 cabin bag included" if carry_on == 0.0
-            else f"Carry-on add-on from ~{cur} {carry_on:.0f}" if carry_on is not None
-            else None
-        )
-        checked_note = ref.get("checked_bag_note") or (
-            "1 checked bag included" if checked_bag == 0.0
-            else f"First checked bag from ~{cur} {checked_bag:.0f}" if checked_bag is not None
-            else None
-        )
-        seat_note = (
-            "Seat selection included" if seat == 0.0
-            else f"Seat selection from ~{cur} {seat:.0f}" if seat is not None
-            else None
-        )
+        # airBaltic ECONOMY fare (the tier returned by the FSF calendar):
+        # - 1 carry-on bag (55×25×35 cm, max 8 kg) included
+        # - Checked bag: paid add-on (typically €15–40 depending on route/booking time)
+        # - Seat selection: from €8 (standard seat) to €30+ (extra legroom)
+        # Higher tiers (PLUS, BUSINESS) include checked bags and preferred seat — not returned by the FSF API.
         return {
-            "bags_from": carry_on,
-            "bags_note": carry_on_note,
-            "checked_bag_from": checked_bag,
-            "checked_bag_note": checked_note,
-            "seat_from": seat,
-            "seat_note": seat_note,
-            "currency": cur,
+            "bags_from": 0.0,
+            "bags_note": "1 cabin bag (55×25×35 cm, max 8 kg) included",
+            "checked_bag_note": "Checked bag: add-on — book at airbaltic.com",
+            "seat_from": 8.0,
+            "seat_currency": "EUR",
+            "seat_note": "Seat selection from €8 (standard); extra legroom from €20 — airbaltic.com",
         }
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
@@ -125,6 +106,7 @@ class AirbalticConnectorClient:
         bags_from = ancillary.get("bags_from")
         checked_bag_note = ancillary.get("checked_bag_note")
         checked_bag_from = ancillary.get("checked_bag_from")
+        seat_from = ancillary.get("seat_from")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
@@ -133,10 +115,12 @@ class AirbalticConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if bags_from == 0.0:
+                offer.bags_price["cabin_bag"] = 0.0
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
+            if seat_from is not None:
+                offer.bags_price["seat_selection"] = seat_from
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
 

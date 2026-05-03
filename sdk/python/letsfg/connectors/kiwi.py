@@ -433,11 +433,6 @@ class KiwiConnectorClient:
                 "seat selection: standard from ~21 €, extra legroom from ~50 € up to ~65 € at Kiwi checkout"
                 " (skip to get a free random seat)"
             ),
-            # Numeric fields used by _apply_ancillaries to set bags_price
-            # (prevents engine from applying wrong airline-direct ref prices)
-            "cabin_bag_price": 49.0,
-            "checked_bag_price": 52.0,
-            "seat_from_price": 21.0,
             "currency": "EUR",
         }
         _ancillary_cache[cache_key] = (time.monotonic(), static)
@@ -524,11 +519,11 @@ class KiwiConnectorClient:
                 result["cabin_bag_price"] = hb1_price
         else:
             result["carry_on"] = "personal item: free; cabin bag add-on from ~49 € at Kiwi checkout"
-            result["cabin_bag_price"] = 49.0
+            # static estimate — do not write to bags_price
 
         if bag1_price is not None:
             result["checked_bag"] = (
-                f"checked bag: +{bag1_price:.0f} {curr_sym} at Kiwi checkout —"
+                f"checked bag: +{bag1_price:.0f} {curr_sym} at Kiwi checkout —"
                 " Kiwi markup; book airline direct for lower fees"
             )
             result["checked_bag_price"] = bag1_price
@@ -537,9 +532,9 @@ class KiwiConnectorClient:
                 "checked bag: add-on from ~52 € at Kiwi checkout —"
                 " Kiwi markup; book airline direct for lower fees"
             )
-            result["checked_bag_price"] = 52.0
+            # static estimate — do not write to bags_price
 
-        result["seat_from_price"] = 21.0
+        # seat selection is always a static estimate at Kiwi — not written to bags_price
         result["currency"] = currency.upper()
         return result
 
@@ -550,20 +545,17 @@ class KiwiConnectorClient:
         kiwi_guarantee = ancillary.get("kiwi_guarantee")
         cabin_bag_price = ancillary.get("cabin_bag_price")
         checked_bag_price = ancillary.get("checked_bag_price")
-        seat_from_price = ancillary.get("seat_from_price")
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             currency_matches = getattr(offer, "currency", "").upper() == anc_currency.upper()
-            # Set numeric bags_price values — prevents engine from applying wrong
-            # airline-direct ref prices (e.g., Vueling 6 EUR seat) to Kiwi offers
-            # where Kiwi charges its own higher prices (21 EUR+ for seats).
+            # Only write live-fetched prices (from check_flights API) to bags_price.
+            # cabin_bag_price and checked_bag_price are only set when the API returned
+            # a real price; static fallback paths intentionally omit them.
             if currency_matches:
                 if cabin_bag_price is not None:
                     offer.bags_price["carry_on"] = cabin_bag_price
                 if checked_bag_price is not None:
                     offer.bags_price["checked_bag"] = checked_bag_price
-                if seat_from_price is not None:
-                    offer.bags_price["seat_selection"] = seat_from_price
             # Always set descriptive condition notes
             if carry_on:
                 offer.conditions["cabin_bag"] = carry_on
@@ -761,12 +753,10 @@ class KiwiConnectorClient:
         if parts:
             conditions["fare_options"] = "Flexibility upgrades: " + ", ".join(parts)
 
-        # Seat selection — prices not in search API; static estimate to block ancillary_ref.py
+        # Seat selection — prices not in search API; do not fabricate a number
         conditions["seat"] = (
-            "seat selection: standard from ~\u20ac21, extra legroom from ~\u20ac50 "
-            "(optional at Kiwi checkout; skip for free random seat)"
+            "seat selection: add-on (price varies; optional at Kiwi checkout)"
         )
-        bags_price["seat_selection"] = 21.0
 
         return conditions, bags_price
 

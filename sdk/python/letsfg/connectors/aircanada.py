@@ -139,11 +139,19 @@ class AirCanadaConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        # Air Canada Tango: no bag. Flex/Latitude/Business: 1 bag included.
+        try:
+            from .ancillary_live_probe import probe_ancillaries
+            result = await probe_ancillaries("AC", origin, dest, date_str=date_str)
+            if result:
+                return result
+        except Exception:
+            pass
+        # Static fallback: Air Canada Tango: no bag. Flex/Latitude/Business: 1 bag included.
         return {
             "bags_note": "Economy Tango (cheapest): no checked bag, first bag from CAD 30. Economy Flex/Latitude: 1×23 kg included. Carry-on included.",
             "seat_note": "Seat selection: from CAD 15 (standard). Preferred/legroom from CAD 35. Included on Flex/Latitude.",
             "bags_from": None,
+            "checked_bag_price": 30.0,
             "currency": currency,
         }
 
@@ -151,20 +159,17 @@ class AirCanadaConnectorClient:
         bags_note = ancillary.get("bags_note")
         checked_note = ancillary.get("checked_bag") or bags_note
         seat_note = ancillary.get("seat_note")
-        bags_from = ancillary.get("bags_from")
         checked_from = ancillary.get("checked_bag_price")
-        anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
+            offer.bags_price.setdefault("carry_on", 0.0)
+            if checked_from is not None:
+                offer.bags_price.setdefault("checked_bag", float(checked_from))
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.conditions.setdefault("seat", seat_note)
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()

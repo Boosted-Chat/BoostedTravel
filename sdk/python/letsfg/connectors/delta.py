@@ -289,10 +289,10 @@ class DeltaConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+            if bags_from == 0.0:
+                offer.bags_price["carry_on"] = 0.0
+            if checked_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
 
     async def _search_ow(
         self, req: FlightSearchRequest
@@ -937,8 +937,7 @@ class DeltaConnectorClient:
                 ),
             )
             if brand.upper() == "BMAIN":
-                offer.bags_price["carry_on"] = 35.0
-                offer.conditions["carry_on"] = "Basic Economy: no free checked bag. First bag from $35"
+                offer.conditions["carry_on"] = "Basic Economy: no free carry-on bag — first bag add-on (price varies)"
             return offer
         except Exception as e:
             logger.debug("Delta: failed to build offer: %s", e)

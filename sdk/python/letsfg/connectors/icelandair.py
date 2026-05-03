@@ -140,15 +140,15 @@ class IcelandairConnectorClient:
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.conditions.setdefault("seat", seat_note)
+            if bags_from == 0.0:
+                offer.bags_price.setdefault("carry_on", 0.0)
+            if checked_from == 0.0:
+                offer.bags_price.setdefault("checked_bag", 0.0)
 
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()

@@ -1,16 +1,15 @@
-"""
-Sky Airline connector — EveryMundo airTRFX fare pages via curl_cffi.
+"""Sky Airline connector - EveryMundo Sputnik API via curl_cffi.
 
 Sky Airline (IATA: H2) is Chile's largest low-cost carrier.
 Operates 45+ domestic and regional routes from SCL hub.
 Destinations in Chile, Peru, Argentina, Brazil, Uruguay.
 
 Strategy (curl_cffi, no browser):
-  Sky Airline uses EveryMundo airTRFX at skyairline.com/flights/.
-  1. Fetch route page: skyairline.com/flights/en/flights-from-{o}-to-{d}
-  2. Extract __NEXT_DATA__ JSON from <script> tag
-  3. Parse StandardFareModule fares from Apollo GraphQL state
-  4. Filter by origin/destination airport codes and departure date
+  Sky Airline uses EveryMundo airTRFX. The SSR pages embed empty fare arrays;
+  actual fares come from the EveryMundo Sputnik grouped-routes API.
+  POST https://openair-california.airtrfx.com/airfare-sputnik-service/v3/h2/fares/grouped-routes
+  Headers: em-api-key, Origin: https://mm-prerendering-static-prod.airtrfx.com
+  Returns fare calendar (date + price) - no departure times.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from curl_cffi import requests as creq
@@ -45,6 +44,17 @@ _HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+}
+
+_SPUTNIK_URL = "https://openair-california.airtrfx.com/airfare-sputnik-service/v3/h2/fares/grouped-routes"
+_SPUTNIK_KEY = "HeQpRjsFI5xlAaSx2onkjc1HTK0ukqA1IrVvd5fvaMhNtzLTxInTpeYB1MK93pah"
+_SPUTNIK_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Origin": "https://mm-prerendering-static-prod.airtrfx.com",
+    "Referer": "https://mm-prerendering-static-prod.airtrfx.com/",
+    "em-api-key": _SPUTNIK_KEY,
 }
 
 _IATA_TO_SLUG: dict[str, str] = {
@@ -98,40 +108,76 @@ class SkyAirlineConnectorClient:
     async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
         t0 = time.monotonic()
 
-        origin_slug = _IATA_TO_SLUG.get(req.origin)
-        dest_slug = _IATA_TO_SLUG.get(req.destination)
-        if not origin_slug or not dest_slug:
-            logger.warning("Sky Airline: unmapped IATA %s or %s", req.origin, req.destination)
-            return self._empty(req)
+        dt = req.date_from
+        if not isinstance(dt, datetime):
+            dt = datetime(dt.year, dt.month, dt.day)
+        start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
+        end = (dt + timedelta(days=30)).strftime("%Y-%m-%d")
 
-        url = f"{_BASE}/flights/en/flights-from-{origin_slug}-to-{dest_slug}"
-        logger.info("Sky Airline: fetching %s", url)
+        payload = {
+            "markets": ["CL", "PE", "AR", "BR", "UY"],
+            "languageCode": "en",
+            "dataExpirationWindow": "7d",
+            "datePattern": "dd MMM yy (E)",
+            "outputCurrencies": ["USD"],
+            "departure": {"start": start, "end": end},
+            "budget": {"maximum": None},
+            "passengers": {"adults": max(1, req.adults or 1)},
+            "travelClasses": ["ECONOMY"],
+            "flightType": "ONE_WAY",
+            "flexibleDates": True,
+            "faresPerRoute": "10",
+            "trfxRoutes": True,
+            "routesLimit": 500,
+            "sorting": [{"popularity": "DESC"}],
+            "airlineCode": "h2",
+        }
 
+        logger.info("Sky Airline: calling Sputnik grouped-routes %s→%s", req.origin, req.destination)
         try:
             with creq.Session(impersonate="chrome136", proxies=get_curl_cffi_proxies()) as sess:
-                resp = sess.get(url, timeout=self.timeout, headers=_HEADERS)
+                resp = sess.post(_SPUTNIK_URL, json=payload, timeout=self.timeout, headers=_SPUTNIK_HEADERS)
             if resp.status_code != 200:
-                logger.warning("Sky Airline: %s returned %d", url, resp.status_code)
+                logger.warning("Sky Airline Sputnik: HTTP %d", resp.status_code)
+                return self._empty(req)
+            routes_data = resp.json()
+            if not isinstance(routes_data, list):
                 return self._empty(req)
         except Exception as e:
-            logger.error("Sky Airline fetch error: %s", e)
+            logger.error("Sky Airline Sputnik error: %s", e)
             return self._empty(req)
 
-        fares = self._extract_fares(resp.text)
+        # Flatten fares for the requested route from all route objects
+        valid_origins = city_match_set(req.origin)
+        valid_dests = city_match_set(req.destination)
+        fares: list[dict] = []
+        for route_obj in routes_data:
+            if route_obj.get("origin") in valid_origins and route_obj.get("destination") in valid_dests:
+                fares.extend(route_obj.get("fares", []))
+
         if not fares:
-            logger.info("Sky Airline: no fares on page %s", url)
+            logger.info("Sky Airline: no fares for %s→%s in Sputnik response", req.origin, req.destination)
             return self._empty(req)
 
         offers = self._build_offers(fares, req)
 
-        # RT: fetch reverse route for inbound fares
+        # RT: fetch reverse route inbound fares via Sputnik (same payload, swapped airports)
         if req.return_from and offers:
             try:
-                _rev_url = f"{_BASE}/flights/en/flights-from-{dest_slug}-to-{origin_slug}"
+                ret_dt = req.return_from
+                if not isinstance(ret_dt, datetime):
+                    ret_dt = datetime(ret_dt.year, ret_dt.month, ret_dt.day)
+                ret_start = (ret_dt - timedelta(days=3)).strftime("%Y-%m-%d")
+                ret_end = (ret_dt + timedelta(days=30)).strftime("%Y-%m-%d")
+                rev_payload = {**payload, "departure": {"start": ret_start, "end": ret_end}}
                 with creq.Session(impersonate="chrome136", proxies=get_curl_cffi_proxies()) as sess:
-                    _rev_resp = sess.get(_rev_url, timeout=self.timeout, headers=_HEADERS)
+                    _rev_resp = sess.post(_SPUTNIK_URL, json=rev_payload, timeout=self.timeout, headers=_SPUTNIK_HEADERS)
                 if _rev_resp.status_code == 200:
-                    _ib_fares = self._extract_fares(_rev_resp.text)
+                    _rev_routes = _rev_resp.json()
+                    _ib_fares = []
+                    for _route_obj in (_rev_routes if isinstance(_rev_routes, list) else []):
+                        if _route_obj.get("origin") in valid_dests and _route_obj.get("destination") in valid_origins:
+                            _ib_fares.extend(_route_obj.get("fares", []))
                     _ib_best = float("inf")
                     for _f in _ib_fares:
                         _p = _f.get("totalPrice")
@@ -143,16 +189,15 @@ class SkyAirlineConnectorClient:
                             except (ValueError, TypeError):
                                 pass
                     if _ib_best < float("inf"):
-                        _ret = req.return_from
-                        _ret_dt = datetime.combine(_ret, datetime.min.time()) if not isinstance(_ret, datetime) else _ret
+                        _ret_dt_val = ret_dt
                         _ib_seg = FlightSegment(
                             airline="H2",
                             airline_name="Sky Airline",
                             flight_no="",
                             origin=req.destination,
                             destination=req.origin,
-                            departure=_ret_dt,
-                            arrival=_ret_dt,
+                            departure=_ret_dt_val,
+                            arrival=_ret_dt_val,
                             duration_seconds=0,
                             cabin_class="economy",
                         )
@@ -229,17 +274,12 @@ class SkyAirlineConnectorClient:
     def _build_offers(self, fares: list[dict], req: FlightSearchRequest) -> list[FlightOffer]:
         target_date = req.date_from.strftime("%Y-%m-%d")
         offers: list[FlightOffer] = []
-        valid_origins = city_match_set(req.origin)
-        valid_dests = city_match_set(req.destination)
 
-        # Separate exact-date and nearby fares (airTRFX shows cached snapshots)
+        # Sputnik fares use "origin"/"destination" (not "originAirportCode")
+        # Separate exact-date and nearby fares
         exact_fares: list[dict] = []
         nearby_fares: list[dict] = []
         for fare in fares:
-            orig = fare.get("originAirportCode", "")
-            dest = fare.get("destinationAirportCode", "")
-            if orig not in valid_origins or dest not in valid_dests:
-                continue
             if not fare.get("totalPrice") or float(fare.get("totalPrice", 0)) <= 0:
                 continue
             if fare.get("departureDate", "")[:10] == target_date:
@@ -257,8 +297,8 @@ class SkyAirlineConnectorClient:
             use_fares = []
 
         for fare in use_fares:
-            orig = fare.get("originAirportCode", "")
-            dest = fare.get("destinationAirportCode", "")
+            orig = fare.get("origin", "") or fare.get("originAirportCode", "")
+            dest = fare.get("destination", "") or fare.get("destinationAirportCode", "")
             dep_date = fare.get("departureDate", "")
 
             price = fare.get("totalPrice")
@@ -331,7 +371,7 @@ class SkyAirlineConnectorClient:
             # Sky Airline fare families: BASE/LIGHT=no bag, CLASS/ECONOMY=1 bag, FULL/FLEX=2 bags
             if any(k in name_upper for k in ("BASE", "LIGHT", "BASIC", "ZERO", "MINI", "SKY BASE")):
                 conditions["checked_bag"] = "no free checked bag"
-                conditions["carry_on"] = "no free overhead carry-on (add-on from ~USD 10)"
+                conditions["carry_on"] = "no free overhead carry-on — add-on available at checkout"
             elif any(k in name_upper for k in ("FULL", "FLEX", "PLUS", "PREMIUM", "BUSINESS")):
                 conditions["checked_bag"] = "2x 23kg bags included"
                 conditions["carry_on"] = "1x 10kg carry-on included"
@@ -341,10 +381,10 @@ class SkyAirlineConnectorClient:
             else:
                 conditions["carry_on"] = "carry-on policy depends on fare — check at checkout"
         else:
-            conditions["fare_upgrade_note"] = "Route page exposes base fare only; no baggage or seat pricing"
-            conditions["carry_on"] = "carry-on add-on from ~USD 10"
-            conditions["checked_bag"] = "checked bag add-on from ~USD 20 — check at checkout"
-        conditions.setdefault("seat", "seat selection from ~USD 5 — add at checkout")
+            conditions["fare_upgrade_note"] = "Sputnik fare calendar — base price only; ancillary prices not available"
+            conditions["carry_on"] = "carry-on not included on base fare — add at checkout"
+            conditions["checked_bag"] = "checked bag not included on base fare — add at checkout"
+        conditions.setdefault("seat", "seat selection available at checkout")
         return conditions
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:

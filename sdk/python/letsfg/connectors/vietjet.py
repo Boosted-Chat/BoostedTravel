@@ -112,51 +112,55 @@ class VietJetConnectorClient:
     # ==================================================================
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        ob_result = await self._search_ow(req)
+        ob_result, ob_anc = await self._search_ow(req)
         if req.return_from and ob_result.total_results > 0:
             ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
-            ib_result = await self._search_ow(ib_req)
+            ib_result, _ = await self._search_ow(ib_req)
             if ib_result.total_results > 0:
                 ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
                 ob_result.total_results = len(ob_result.offers)
         if ob_result.offers:
-            segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
-            anc_origin = segs[0].origin if segs else req.origin
-            anc_dest = segs[-1].destination if segs else req.destination
-            try:
-                ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(
-                        anc_origin, anc_dest,
-                        req.date_from.isoformat() if hasattr(req.date_from, 'isoformat') else str(req.date_from),
-                        req.adults, ob_result.currency or req.currency,
-                    ),
-                    timeout=45.0,
-                )
-                if ancillary:
-                    self._apply_ancillaries(ob_result.offers, ancillary)
-            except (asyncio.TimeoutError, TimeoutError):
-                logger.debug("Ancillary fetch timed out for %s->%s", anc_origin, anc_dest)
-            except Exception as _anc_err:
-                logger.debug("Ancillary fetch error: %s", _anc_err)
+            if ob_anc:
+                self._apply_ancillaries(ob_result.offers, ob_anc)
+            else:
+                segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
+                anc_origin = segs[0].origin if segs else req.origin
+                anc_dest = segs[-1].destination if segs else req.destination
+                try:
+                    ancillary = await asyncio.wait_for(
+                        self._fetch_ancillaries(
+                            anc_origin, anc_dest,
+                            req.date_from.isoformat() if hasattr(req.date_from, 'isoformat') else str(req.date_from),
+                            req.adults, ob_result.currency or req.currency,
+                        ),
+                        timeout=45.0,
+                    )
+                    if ancillary:
+                        self._apply_ancillaries(ob_result.offers, ancillary)
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.debug("Ancillary fetch timed out for %s->%s", anc_origin, anc_dest)
+                except Exception as _anc_err:
+                    logger.debug("Ancillary fetch error: %s", _anc_err)
         return ob_result
 
 
-    async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def _search_ow(self, req: FlightSearchRequest) -> tuple[FlightSearchResponse, dict | None]:
         # 2026: VietJet deep-link works for origin/dest but ignores date param
         # Strategy: deep-link first (sets route), then navigate date slider
+        probe_anc: dict | None = None
         for attempt in range(2):
             # First attempt: deep-link + date navigation
             # Second attempt: form-fill fallback
             use_form = attempt == 1
-            result = await self._try_search(req, use_form=use_form)
+            result, probe_anc = await self._try_search(req, use_form=use_form)
             if result.total_results > 0:
-                return result
+                return result, probe_anc
             if attempt == 0:
                 logger.info("VietJet: deep-link yielded 0 results, trying form-fill fallback")
                 await asyncio.sleep(1.5)
-        return result
+        return result, probe_anc
 
-    async def _try_search(self, req: FlightSearchRequest, use_form: bool = False) -> FlightSearchResponse:
+    async def _try_search(self, req: FlightSearchRequest, use_form: bool = False) -> tuple[FlightSearchResponse, dict | None]:
         t0 = time.monotonic()
         browser = await _get_browser()
         context = await browser.new_context(
@@ -186,52 +190,57 @@ class VietJetConnectorClient:
             all_return_options: list[dict] = []
             lowest_fares_captured: dict = {}
             api_event = asyncio.Event()
+            ssr_captured: dict = {}
+            ssr_event = asyncio.Event()
 
             async def on_response(response):
                 try:
                     url = response.url
-                    if (
-                        response.status == 200
-                        and "vietjet-api" in url
-                        and "search-flight" in url
-                    ):
+                    if response.status == 200 and "vietjet-api" in url:
                         ct = response.headers.get("content-type", "")
                         if "json" not in ct:
                             return
-                        data = await response.json()
-                        if not isinstance(data, dict) or not data.get("status"):
-                            return
-                        travel = data.get("travelOption", {})
-                        # Outbound direction
-                        options = travel.get(route_key, [])
-                        if not options:
-                            for key in travel:
-                                if req.origin in key and req.destination in key:
-                                    options = travel[key]
-                                    break
-                        if options:
-                            if isinstance(options, list):
-                                all_travel_options.extend(options)
-                            else:
-                                all_travel_options.append(options)
-                        # Return direction (for RT)
-                        if is_rt:
-                            ret_options = travel.get(return_route_key, [])
-                            if not ret_options:
+                        if "search-flight" in url:
+                            data = await response.json()
+                            if not isinstance(data, dict) or not data.get("status"):
+                                return
+                            travel = data.get("travelOption", {})
+                            # Outbound direction
+                            options = travel.get(route_key, [])
+                            if not options:
                                 for key in travel:
-                                    if req.destination in key and req.origin in key and key != route_key:
-                                        ret_options = travel[key]
+                                    if req.origin in key and req.destination in key:
+                                        options = travel[key]
                                         break
-                            if ret_options:
-                                if isinstance(ret_options, list):
-                                    all_return_options.extend(ret_options)
+                            if options:
+                                if isinstance(options, list):
+                                    all_travel_options.extend(options)
                                 else:
-                                    all_return_options.append(ret_options)
-                        lf = data.get("lowestFares")
-                        if lf:
-                            lowest_fares_captured.update(lf if isinstance(lf, dict) else {})
-                        if all_travel_options or all_return_options:
-                            api_event.set()
+                                    all_travel_options.append(options)
+                            # Return direction (for RT)
+                            if is_rt:
+                                ret_options = travel.get(return_route_key, [])
+                                if not ret_options:
+                                    for key in travel:
+                                        if req.destination in key and req.origin in key and key != route_key:
+                                            ret_options = travel[key]
+                                            break
+                                if ret_options:
+                                    if isinstance(ret_options, list):
+                                        all_return_options.extend(ret_options)
+                                    else:
+                                        all_return_options.append(ret_options)
+                            lf = data.get("lowestFares")
+                            if lf:
+                                lowest_fares_captured.update(lf if isinstance(lf, dict) else {})
+                            if all_travel_options or all_return_options:
+                                api_event.set()
+                        elif any(k in url for k in ("addon", "ancillar", "/ssr", "bundle")):
+                            data = await response.json()
+                            if isinstance(data, dict) and data:
+                                ssr_captured.update(data)
+                                ssr_event.set()
+                                logger.debug("VietJet: captured SSR/addon response from %s", url)
                 except Exception:
                     pass
 
@@ -269,7 +278,7 @@ class VietJetConnectorClient:
                 logger.warning("VietJet: timed out waiting for search-flight API (%s)", "form" if use_form else "deep-link")
 
             if not all_travel_options:
-                return self._empty(req)
+                return self._empty(req), None
 
             elapsed = time.monotonic() - t0
             outbound_offers = self._parse_travel_options(all_travel_options, req, currency, lowest_fares_captured)
@@ -309,13 +318,197 @@ class VietJetConnectorClient:
                     rt_offers.sort(key=lambda o: o.price)
                     outbound_offers = rt_offers[:50] if rt_offers else outbound_offers
 
-            return self._build_response(outbound_offers, req, elapsed)
+            # ── Live ancillary checkout probe ──────────────────────────
+            probe_anc: dict | None = None
+            if outbound_offers and not ssr_event.is_set():
+                try:
+                    probe_anc = await asyncio.wait_for(
+                        self._probe_vietjet_ancillary(page, ssr_captured, ssr_event),
+                        timeout=18.0,
+                    )
+                except Exception as _pe:
+                    logger.debug("VietJet probe skipped: %s", _pe)
+            elif ssr_event.is_set():
+                probe_anc = self._parse_vietjet_ssr(ssr_captured)
+
+            return self._build_response(outbound_offers, req, elapsed), probe_anc
 
         except Exception as e:
             logger.error("VietJet Playwright error: %s", e)
-            return self._empty(req)
+            return self._empty(req), None
         finally:
             await context.close()
+
+    # ==================================================================
+    # Live ancillary checkout probe
+    # ==================================================================
+
+    async def _probe_vietjet_ancillary(
+        self, page, ssr_captured: dict, ssr_event: asyncio.Event
+    ) -> dict | None:
+        """After search results load, click first 'Select' button and capture
+        live VietJet SSR/addon API response for bag/seat prices."""
+        try:
+            # Try common VietJet English + Vietnamese select button selectors
+            select_btn = None
+            for selector in [
+                "button:has-text('Select')",
+                "button:has-text('Choose')",
+                "button:has-text('Book')",
+                "button:has-text('Chọn')",
+                "[data-testid*='select']",
+                ".btn-select",
+                "button[class*='select']",
+                "button[class*='book']",
+            ]:
+                try:
+                    btn = page.locator(selector).first
+                    await btn.wait_for(state="visible", timeout=4000)
+                    select_btn = btn
+                    logger.debug("VietJet probe: found button via %s", selector)
+                    break
+                except Exception:
+                    pass
+
+            if select_btn is None:
+                logger.debug("VietJet probe: no Select button found on search page")
+                return None
+
+            await select_btn.click()
+
+            # Wait for SSR/addon API response (ssr_event set by on_response handler)
+            try:
+                await asyncio.wait_for(ssr_event.wait(), timeout=14.0)
+            except asyncio.TimeoutError:
+                logger.debug("VietJet probe: SSR event timed out after click")
+                return None
+
+            if not ssr_captured:
+                return None
+
+            result = self._parse_vietjet_ssr(ssr_captured)
+            if result:
+                logger.info(
+                    "VietJet probe: cabin=%s checked=%s seat=%s %s",
+                    result.get("bags_from"), result.get("checked_bag_from"),
+                    result.get("seat_from"), result.get("currency", ""),
+                )
+            return result
+        except Exception as e:
+            logger.debug("VietJet checkout probe failed: %s", e)
+            return None
+
+    def _parse_vietjet_ssr(self, data: dict) -> dict | None:
+        """Parse VietJet SSR/addon API response for live bag/seat prices.
+
+        VietJet uses Navitaire Intelisys backend. SSR response typically:
+        {
+          "data": {
+            "addonList": [
+              {"type": "BAGGAGE", "code": "VB20", "name": "20kg bag",
+               "price": {"amount": 15.0, "currency": "USD"}, ...},
+              {"type": "SEAT", "code": "STSS", "price": {"amount": 5.0, ...}},
+            ]
+          }
+        }
+        Or nested Navitaire SSR structure.
+        """
+        currency = "USD"
+        cabin_price: float | None = None
+        checked_price: float | None = None
+        seat_price: float | None = None
+
+        def _walk(node, depth=0):
+            nonlocal cabin_price, checked_price, seat_price, currency
+            if depth > 10 or not isinstance(node, (dict, list)):
+                return
+            if isinstance(node, list):
+                for item in node:
+                    _walk(item, depth + 1)
+                return
+            # Extract currency
+            for k in ("currency", "currencyCode", "currCode"):
+                v = node.get(k)
+                if isinstance(v, str) and len(v) == 3 and v.isupper():
+                    currency = v
+                    break
+
+            # Identify item type
+            code = str(
+                node.get("ssrCode") or node.get("code") or
+                node.get("type") or node.get("serviceCode") or ""
+            ).upper()
+            name = str(node.get("name") or node.get("description") or "").lower()
+
+            is_cabin = (
+                any(k in code for k in ("CABIN", "HAND", "CARRY")) or
+                any(k in name for k in ("cabin bag", "hand bag", "carry-on", "7kg"))
+            )
+            is_checked = (
+                any(k in code for k in ("BAG", "LUGGAGE", "HOLD", "VB", "CBAG")) or
+                any(k in name for k in ("checked", "hold bag", "luggage", "kg"))
+            ) and not is_cabin
+            is_seat = "SEAT" in code or "seat" in name
+
+            # Extract price
+            price_obj = node.get("price") or node.get("amount") or node.get("fee") or {}
+            price_amt: float | None = None
+            if isinstance(price_obj, dict):
+                price_amt = price_obj.get("amount") or price_obj.get("value")
+                if isinstance(price_obj.get("currency"), str):
+                    currency = price_obj["currency"]
+            elif isinstance(price_obj, (int, float)):
+                price_amt = float(price_obj)
+
+            if price_amt is not None:
+                p = float(price_amt)
+                if p == 0.0:
+                    if is_cabin:
+                        cabin_price = 0.0
+                elif p > 0.0:
+                    if is_cabin and (cabin_price is None or p < cabin_price):
+                        cabin_price = p
+                    elif is_checked and (checked_price is None or p < checked_price):
+                        checked_price = p
+                    elif is_seat and (seat_price is None or p < seat_price):
+                        seat_price = p
+
+            for val in node.values():
+                if isinstance(val, (dict, list)):
+                    _walk(val, depth + 1)
+
+        _walk(data)
+
+        if checked_price is None and seat_price is None and cabin_price is None:
+            return None
+
+        result: dict = {"currency": currency, "source": "checkout_probe"}
+
+        if cabin_price is not None and cabin_price == 0.0:
+            result["bags_from"] = 0.0
+            result["bags_note"] = "7 kg cabin bag included"
+        elif cabin_price is not None:
+            result["bags_from"] = cabin_price
+            result["bags_note"] = f"cabin bag add-on from {currency} {cabin_price:.0f}"
+        else:
+            result["bags_from"] = None
+            result["bags_note"] = "cabin bag available at checkout"
+
+        if checked_price is not None:
+            result["checked_bag_from"] = checked_price
+            result["checked_bag_note"] = f"checked bag from {currency} {checked_price:.0f}"
+        else:
+            result["checked_bag_from"] = None
+            result["checked_bag_note"] = "checked bag add-on — see checkout"
+
+        if seat_price is not None:
+            result["seat_from"] = seat_price
+            result["seat_note"] = f"seat selection from {currency} {seat_price:.0f}"
+        else:
+            result["seat_from"] = None
+            result["seat_note"] = "seat selection available at checkout"
+
+        return result
 
     # ==================================================================
     # Form-fill fallback (homepage → fill form → click "Let's go")
@@ -1238,11 +1431,11 @@ class VietJetConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions.setdefault("seat", seat_note)
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
+            if bags_from is not None:
                 offer.bags_price.setdefault("carry_on", bags_from)
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
+            if checked_from is not None:
                 offer.bags_price.setdefault("checked_bag", checked_from)
-            if seat_from is not None and offer.currency.upper() == anc_currency.upper():
+            if seat_from is not None:
                 offer.bags_price.setdefault("seat", seat_from)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:

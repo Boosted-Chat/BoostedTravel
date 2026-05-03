@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from ..models.flights import (
     FlightOffer,
@@ -336,16 +336,8 @@ class EasyjetConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        """EasyJet STANDARD fare always includes 1 cabin bag — enrich note only."""
-        return {
-            "bags_from": 0.0,
-            "bags_note": "1 cabin bag (56\u00d745\u00d725 cm, up to 15 kg) included in base fare",
-            "checked_bag_from": 18.0,
-            "checked_bag_note": "First checked bag (23 kg) from ~EUR 18",
-            "seat_from": 5.0,
-            "seat_note": "Seat selection add-on from ~EUR 5",
-            "currency": "EUR",
-        }
+        """Bag pricing is parsed live from fare benefits in `_parse_single_flight`."""
+        return None
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
@@ -361,10 +353,10 @@ class EasyjetConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None:
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if bags_from == 0.0:
+                offer.bags_price["cabin_bag"] = 0.0
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
 
     async def _search_fanout(self, req: FlightSearchRequest) -> tuple[list[FlightOffer], str]:
         origins = get_city_airports(req.origin)
@@ -1311,6 +1303,28 @@ class EasyjetConnectorClient:
             stopovers=0,
         )
 
+        # Parse benefits from the chosen fare family to determine what's included
+        bags_price: dict[str, Any] = {}
+        conditions: dict[str, str] = {}
+        std_fare = adt_fares.get("STANDARD") or adt_fares.get("FLEXI") or {}
+        benefit_ids = {b.get("id", "") for b in std_fare.get("benefits", []) if isinstance(b, dict)}
+        if "CABIN_BAG" in benefit_ids or "HAND_BAG" in benefit_ids:
+            bags_price["cabin_bag"] = 0.0
+            conditions["cabin_bag"] = "1 cabin bag (56\u00d745\u00d725 cm, up to 15 kg) included"
+        else:
+            conditions["cabin_bag"] = "Cabin bag: add-on at checkout"
+        if "HOLD_BAG" in benefit_ids or "CHECKED_BAG" in benefit_ids:
+            bags_price["checked_bag"] = 0.0
+            conditions["checked_bag"] = "1 checked bag included"
+        else:
+            # EasyJet doesn't expose holdBag prices in search — live call needed
+            conditions["checked_bag"] = "Checked bag: add-on — price varies by route"
+        if "SEAT_SELECTION" in benefit_ids:
+            bags_price["seat_selection"] = 0.0
+            conditions["seat"] = "Seat selection included"
+        else:
+            conditions["seat"] = "Seat selection: add-on at checkout"
+
         key = f"{flight_no}_{dep_str}_{price}"
 
         return FlightOffer(
@@ -1326,6 +1340,8 @@ class EasyjetConnectorClient:
             is_locked=False,
             source="easyjet_direct",
             source_tier="free",
+            bags_price=bags_price,
+            conditions=conditions,
         )
 
     # ------------------------------------------------------------------

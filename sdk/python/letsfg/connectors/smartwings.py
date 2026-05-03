@@ -152,6 +152,56 @@ async def _get_browser():
         return _cdp_browser
 
 
+# ---------------------------------------------------------------------------
+# Smartwings fare-family → bag policy (Amadeus FlexPricer fare families).
+# These are the documented Smartwings fare bundles as offered on their website.
+# ---------------------------------------------------------------------------
+_QS_CABIN_ONLY = frozenset({"LITE", "BASIC", "SMART", "STANDARD", "ECONOMY"})
+_QS_CHECKED_INCLUDED = frozenset({"PLUS", "COMFORT", "FLEX", "BUSINESS"})
+
+
+def _qs_fare_ancillaries(fare_name: str) -> tuple[dict, dict]:
+    """Return (bags_price, conditions) dicts for a Smartwings fare family name."""
+    uc = fare_name.upper().strip()
+    if uc in _QS_CHECKED_INCLUDED:
+        return (
+            {"cabin_bag": 0.0},
+            {
+                "cabin_bag": "1 cabin bag included",
+                "checked_bag": "1 checked bag (20 kg) included",
+                "seat": "Seat selection: add-on at checkout",
+            },
+        )
+    if uc in _QS_CABIN_ONLY:
+        return (
+            {"cabin_bag": 0.0},
+            {
+                "cabin_bag": "1 cabin bag included",
+                "checked_bag": "Checked bag: add-on at checkout",
+                "seat": "Seat selection: add-on at checkout",
+            },
+        )
+    # LITE / unknown → only personal under-seat bag
+    if "LITE" in uc:
+        return (
+            {},
+            {
+                "cabin_bag": "Personal bag only (40×30×20 cm); cabin bag is paid add-on",
+                "checked_bag": "Checked bag: add-on at checkout",
+                "seat": "Seat selection: add-on at checkout",
+            },
+        )
+    # Fallback: treat as cabin-bag-included (most Smartwings fares include it)
+    return (
+        {"cabin_bag": 0.0},
+        {
+            "cabin_bag": "1 cabin bag included",
+            "checked_bag": "Checked bag: add-on at checkout",
+            "seat": "Seat selection: add-on at checkout",
+        },
+    )
+
+
 class SmartwingsConnectorClient:
     """Smartwings Playwright scraper — homepage form + Amadeus FPOW parsing."""
 
@@ -215,38 +265,10 @@ class SmartwingsConnectorClient:
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str
     ) -> dict | None:
-        from .ancillary_ref import get_ancillary_ref
-        ref = get_ancillary_ref("QS")
-        if not ref:
-            return None
-        cur = ref.get("currency", "EUR")
-        carry_on = ref.get("carry_on")
-        checked_bag = ref.get("checked_bag")
-        seat = ref.get("seat")
-        carry_on_note = ref.get("carry_on_note") or (
-            "1 cabin bag included" if carry_on == 0.0
-            else f"Carry-on add-on from ~{cur} {carry_on:.0f}" if carry_on is not None
-            else None
-        )
-        checked_note = ref.get("checked_bag_note") or (
-            "1 checked bag included" if checked_bag == 0.0
-            else f"First checked bag from ~{cur} {checked_bag:.0f}" if checked_bag is not None
-            else None
-        )
-        seat_note = (
-            "Seat selection included" if seat == 0.0
-            else f"Seat selection from ~{cur} {seat:.0f}" if seat is not None
-            else None
-        )
-        return {
-            "bags_from": carry_on,
-            "bags_note": carry_on_note,
-            "checked_bag_from": checked_bag,
-            "checked_bag_note": checked_note,
-            "seat_from": seat,
-            "seat_note": seat_note,
-            "currency": cur,
-        }
+        # Ancillary conditions (cabin bag / checked bag / seat) are set per-offer
+        # in _parse_flights_page based on the fare family name captured from the
+        # Amadeus FlexPricer DOM (LITE / BASIC / PLUS / FLEX).  No global override needed.
+        return None
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
         seat_note = ancillary.get("seat_note")
@@ -261,10 +283,10 @@ class SmartwingsConnectorClient:
                 offer.conditions["seat"] = seat_note
             if checked_bag_note:
                 offer.conditions["checked_bag"] = checked_bag_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["cabin_bag"] = bags_from
-            if checked_bag_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_bag_from
+            if bags_from == 0.0:
+                offer.bags_price["cabin_bag"] = 0.0
+            if checked_bag_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
     async def _attempt_search(self, req: FlightSearchRequest, t0: float) -> FlightSearchResponse:
         browser = await _get_browser()
 
@@ -601,13 +623,14 @@ class SmartwingsConnectorClient:
                 stopovers=0 if is_direct else 1,
             )
 
-            # Create one offer per fare class (LITE/PLUS/FLEX)
+            # Create one offer per fare class (LITE/BASIC/PLUS/FLEX)
             for i, price in enumerate(prices):
                 fare_name = fare_headers[i] if i < len(fare_headers) else ""
                 suffix = fare_name.lower() if fare_name else str(i)
                 offer_key = f"{flight_no}_{date_str}_{suffix}"
                 offer_id = f"qs_{hashlib.md5(offer_key.encode()).hexdigest()[:12]}"
 
+                bags_price, conditions = _qs_fare_ancillaries(fare_name)
                 offers.append(FlightOffer(
                     id=offer_id,
                     price=round(price, 2),
@@ -621,6 +644,8 @@ class SmartwingsConnectorClient:
                     is_locked=False,
                     source="smartwings_direct",
                     source_tier="free",
+                    bags_price=bags_price,
+                    conditions=conditions,
                 ))
 
         return offers

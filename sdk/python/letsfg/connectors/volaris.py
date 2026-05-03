@@ -759,8 +759,8 @@ class VolarisConnectorClient:
         conditions: dict[str, str] = {}
         bags_price: dict[str, float] = {}
         # Static carry-on and seat notes — overridden only if live bundle data sets them
-        conditions["carry_on"] = f"1 personal item (under seat) included; cabin bag add-on from ~{currency} 250"
-        conditions["seat"] = f"seat selection from ~{currency} 150; included in higher bundles"
+        conditions["carry_on"] = "1 personal item (under seat) included; overhead carry-on not included on base fare"
+        conditions["seat"] = "seat selection not included on base fare; included in higher bundles"
 
         fare_family = self._extract_fare_family(selected_fare)
         if fare_family:
@@ -829,12 +829,10 @@ class VolarisConnectorClient:
             if "checked_bag" in bags_price:
                 conditions["checked_bag"] = f"checked bag add-on from +{currency} {bags_price['checked_bag']:.0f} (bundle upgrade)"
             else:
-                conditions["checked_bag"] = f"no free checked bag (add-on from ~{currency} 500; upgrade via bundle)"
-                bags_price.setdefault("checked_bag", 500.0)
+                conditions["checked_bag"] = "no free checked bag on base fare — upgrade via bundle at checkout"
 
         if "checked_bag" not in conditions:
-            conditions["checked_bag"] = f"no free checked bag (add-on from ~{currency} 500; select bundle at checkout)"
-            bags_price.setdefault("checked_bag", 500.0)
+            conditions["checked_bag"] = "no free checked bag on base fare — select bundle at checkout"
         return conditions, bags_price
 
     @staticmethod

@@ -418,8 +418,7 @@ class UnitedConnectorClient:
         )
         best_pt = (best_product or {}).get("productType", "")
         if best_pt == "ECO-BASIC":
-            offer.bags_price["carry_on"] = 35.0
-            offer.conditions["carry_on"] = "Basic Economy: no free checked bag. First bag from $35"
+            offer.conditions["carry_on"] = "Basic Economy: no free carry-on bag — first bag add-on (price varies)"
         return offer
 
     def _combine_rt(

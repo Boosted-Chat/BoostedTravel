@@ -121,9 +121,10 @@ class FlyadealConnectorClient:
             segs = offers[0].outbound.segments if offers[0].outbound else []
             anc_origin = segs[0].origin if segs else req.origin
             anc_dest = segs[-1].destination if segs else req.destination
+            first_flight_no = segs[0].flight_no if segs else None
             try:
                 ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, offers[0].currency),
+                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, offers[0].currency, flight_no=first_flight_no),
                     timeout=45.0,
                 )
                 if ancillary:
@@ -146,16 +147,11 @@ class FlyadealConnectorClient:
         )
 
     async def _fetch_ancillaries(
-        self, origin: str, dest: str, date_str: str, adults: int, currency: str
+        self, origin: str, dest: str, date_str: str, adults: int, currency: str,
+        flight_no: str | None = None,
     ) -> dict | None:
-        # flyadeal F3 — Go fare: cabin bag 7 kg free, checked bag add-on from 30 SAR
-        return {
-            "checked_bag_note": "checked bag 20 kg not included – add-on from ~30 SAR",
-            "bags_note": "cabin bag 7 kg included free (Go fare)",
-            "seat_note": "seat selection add-on from ~20 SAR",
-            "checked_bag_from": 30.0,
-            "currency": "SAR",
-        }
+        from .ancillary_live_probe import probe_ancillaries
+        return await probe_ancillaries("F3", origin, dest, date_str=date_str, flight_no=flight_no)
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         checked_bag_note = ancillary.get("checked_bag_note")

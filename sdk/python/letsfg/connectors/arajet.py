@@ -100,8 +100,11 @@ class ArajetConnectorClient:
             logger.warning("Arajet calendar %s→%s: %s", req.origin, req.destination, exc)
             return self._empty(req)
 
-        logger.info("Arajet: calendar API returned fare-only data without schedule times; suppressing offers")
-        return self._empty(req)
+        logger.info("Arajet: calendar %s->%s for %s: %d products", req.origin, req.destination, target, len(data.get("months", {}).get("items", [])))
+        offers = self._parse(data, req, target)
+        if not offers:
+            logger.info("Arajet: no offers for %s->%s on %s", req.origin, req.destination, target)
+            return self._empty(req)
 
         # RT: fetch reverse calendar for inbound
         ib_offers: list[FlightOffer] = []
@@ -171,7 +174,84 @@ class ArajetConnectorClient:
     # ------------------------------------------------------------------
 
     def _parse(self, data: dict, req: FlightSearchRequest, target: str) -> list[FlightOffer]:
-        logger.info("Arajet: fare-only calendar parsing is disabled until real schedule times are available")
+        offers: list[FlightOffer] = []
+        exact: list[FlightOffer] = []
+        cheapest_nearby: tuple[float, FlightOffer | None] = (float("inf"), None)
+
+        for month in data.get("months", {}).get("items", []):
+            for week in month.get("weeks", {}).get("items", []):
+                for day in week.get("days", {}).get("items", []):
+                    date_str = day.get("description", "")[:10]
+                    products = day.get("fareProducts")
+                    if not products or not products.get("items"):
+                        continue
+                    for product in products["items"]:
+                        prices = product.get("prices", {}).get("items", [])
+                        if not prices:
+                            continue
+                        price_item = prices[0]
+                        total = price_item.get("totalAmount", {})
+                        price = total.get("value") or price_item.get("baseAmount", {}).get("value")
+                        if not price or float(price) <= 0:
+                            continue
+                        currency = (total.get("currency") or {}).get("code") or "USD"
+                        price_f = round(float(price), 2)
+                        fare_code = product.get("code", "")
+
+                        dep_dt = datetime(req.date_from.year, req.date_from.month, req.date_from.day)
+                        if date_str:
+                            try:
+                                dep_dt = datetime.strptime(date_str, "%Y-%m-%d")
+                            except ValueError:
+                                pass
+
+                        seg = FlightSegment(
+                            airline="DM",
+                            airline_name="Arajet",
+                            flight_no="",
+                            origin=req.origin,
+                            destination=req.destination,
+                            departure=dep_dt,
+                            arrival=dep_dt,
+                            duration_seconds=0,
+                            cabin_class="economy",
+                        )
+                        route = FlightRoute(segments=[seg], total_duration_seconds=0, stopovers=0)
+                        fid = hashlib.md5(f"dm_{req.origin}{req.destination}{date_str}{price_f}".encode()).hexdigest()[:12]
+                        offer = FlightOffer(
+                            id=f"dm_{fid}",
+                            price=price_f,
+                            currency=currency,
+                            price_formatted=f"{price_f:.2f} {currency}",
+                            outbound=route,
+                            inbound=None,
+                            airlines=["Arajet"],
+                            owner_airline="DM",
+                            conditions={
+                                "carry_on": "1x personal item included; overhead carry-on from ~USD 20",
+                                "checked_bag": "no free checked bag — add-on from ~USD 25",
+                                "seat": "seat selection from ~USD 5",
+                            },
+                            booking_url=(
+                                f"https://www.arajet.com/en-us/booking/select"
+                                f"?origin={req.origin}&destination={req.destination}"
+                                f"&date={target}&adt={req.adults or 1}"
+                            ),
+                            is_locked=False,
+                            source="arajet_calendar",
+                            source_tier="free",
+                        )
+                        if date_str == target:
+                            exact.append(offer)
+                        else:
+                            if price_f < cheapest_nearby[0]:
+                                cheapest_nearby = (price_f, offer)
+
+        if exact:
+            exact.sort(key=lambda o: o.price)
+            return exact
+        elif cheapest_nearby[1]:
+            return [cheapest_nearby[1]]
         return []
 
     @staticmethod

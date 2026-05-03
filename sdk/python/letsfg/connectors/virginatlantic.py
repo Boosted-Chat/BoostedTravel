@@ -278,15 +278,16 @@ class VirginAtlanticConnectorClient:
         anc_currency = ancillary.get("currency", "EUR")
         for offer in offers:
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                # setdefault: per-offer values from _build_offer (fareFamilyType) take priority
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
+                offer.conditions.setdefault("seat", seat_note)
+            if bags_from == 0.0:
+                offer.bags_price.setdefault("carry_on", 0.0)
+            if checked_from == 0.0:
+                offer.bags_price.setdefault("checked_bag", 0.0)
 
     async def _search_single(
         self, req: FlightSearchRequest, _retry: int = 0
@@ -539,7 +540,38 @@ class VirginAtlanticConnectorClient:
         if fare_family:
             conditions["fare_family"] = fare_family
 
-        return FlightOffer(
+        # Per-fare-family bag conditions derived from fareFamilyType (live API data)
+        _ff = (fare_family or "").lower()
+        if "light" in _ff:
+            conditions["carry_on"] = "Carry-on bag included."
+            conditions["checked_bag"] = (
+                "Economy Light: no free checked bag. "
+                "First bag from GBP 30. Carry-on included."
+            )
+        elif "classic" in _ff or "delight" in _ff:
+            conditions["carry_on"] = "Carry-on bag included."
+            conditions["checked_bag"] = (
+                "1 checked bag included (23 kg). Carry-on included."
+            )
+        elif "premium" in _ff:
+            conditions["carry_on"] = "Carry-on bag included."
+            conditions["checked_bag"] = (
+                "2 checked bags included (23 kg each, Premium Economy). "
+                "Carry-on included."
+            )
+        elif "upper" in _ff or "bus" in _ff:
+            conditions["carry_on"] = "Carry-on bag included."
+            conditions["checked_bag"] = (
+                "3 checked bags included (32 kg each, Upper Class). "
+                "Carry-on included."
+            )
+        elif _ff:
+            conditions["carry_on"] = "Carry-on bag included."
+            conditions["checked_bag"] = (
+                "1 checked bag included (23 kg). Carry-on included."
+            )
+
+        offer = FlightOffer(
             id=f"vs_{fid}",
             price=price_f,
             currency=currency,
@@ -554,6 +586,12 @@ class VirginAtlanticConnectorClient:
             source_tier="free",
             conditions=conditions,
         )
+        # Set bags_price flags for fare families with free bags
+        if _ff and "light" not in _ff:
+            offer.bags_price["carry_on"] = 0.0
+            if any(x in _ff for x in ("classic", "delight", "premium", "upper", "bus")):
+                offer.bags_price["checked_bag"] = 0.0
+        return offer
 
     # ------------------------------------------------------------------
     # Helpers

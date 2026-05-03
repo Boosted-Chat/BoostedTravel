@@ -96,35 +96,38 @@ class AirAsiaXConnectorClient:
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
-        ob_result = await self._search_ow(req)
+        ob_result, ob_anc = await self._search_ow(req)
         if req.return_from and ob_result.total_results > 0:
             ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
-            ib_result = await self._search_ow(ib_req)
+            ib_result, _ = await self._search_ow(ib_req)
             if ib_result.total_results > 0:
                 ob_result.offers = self._combine_rt(ob_result.offers, ib_result.offers, req)
                 ob_result.total_results = len(ob_result.offers)
         if ob_result.offers:
-            segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
-            anc_origin = segs[0].origin if segs else req.origin
-            anc_dest = segs[-1].destination if segs else req.destination
-            try:
-                ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(
-                        anc_origin, anc_dest,
-                        req.date_from.isoformat() if hasattr(req.date_from, 'isoformat') else str(req.date_from),
-                        req.adults, ob_result.currency or req.currency,
-                    ),
-                    timeout=45.0,
-                )
-                if ancillary:
-                    self._apply_ancillaries(ob_result.offers, ancillary)
-            except (asyncio.TimeoutError, TimeoutError):
-                logger.debug("Ancillary fetch timed out for %s->%s", anc_origin, anc_dest)
-            except Exception as _anc_err:
-                logger.debug("Ancillary fetch error: %s", _anc_err)
+            if ob_anc:
+                self._apply_ancillaries(ob_result.offers, ob_anc)
+            else:
+                segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
+                anc_origin = segs[0].origin if segs else req.origin
+                anc_dest = segs[-1].destination if segs else req.destination
+                try:
+                    ancillary = await asyncio.wait_for(
+                        self._fetch_ancillaries(
+                            anc_origin, anc_dest,
+                            req.date_from.isoformat() if hasattr(req.date_from, 'isoformat') else str(req.date_from),
+                            req.adults, ob_result.currency or req.currency,
+                        ),
+                        timeout=45.0,
+                    )
+                    if ancillary:
+                        self._apply_ancillaries(ob_result.offers, ancillary)
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.debug("Ancillary fetch timed out for %s->%s", anc_origin, anc_dest)
+                except Exception as _anc_err:
+                    logger.debug("Ancillary fetch error: %s", _anc_err)
         return ob_result
 
-    async def _search_ow(self, req: FlightSearchRequest) -> FlightSearchResponse:
+    async def _search_ow(self, req: FlightSearchRequest) -> tuple[FlightSearchResponse, dict | None]:
         t0 = time.monotonic()
         browser = await _get_browser()
         context = await browser.new_context(
@@ -195,17 +198,27 @@ class AirAsiaXConnectorClient:
                 elapsed = time.monotonic() - t0
                 offers = self._parse_response(data, req)
                 if offers:
-                    return self._build_response(offers, req, elapsed)
+                    probe = None
+                    try:
+                        probe = await asyncio.wait_for(
+                            self._probe_checkout_ancillary(page),
+                            timeout=25.0,
+                        )
+                        if probe:
+                            logger.info("AirAsia X: checkout probe succeeded (%s->%s)", req.origin, req.destination)
+                    except Exception as _pe:
+                        logger.debug("AirAsia X: checkout probe skipped: %s", _pe)
+                    return self._build_response(offers, req, elapsed), probe
 
             # Fallback: DOM extraction from __NEXT_DATA__
             offers = await self._extract_from_dom(page, req)
             if offers:
-                return self._build_response(offers, req, time.monotonic() - t0)
-            return self._empty(req)
+                return self._build_response(offers, req, time.monotonic() - t0), None
+            return self._empty(req), None
 
         except Exception as e:
             logger.error("AirAsia X Playwright error: %s", e)
-            return self._empty(req)
+            return self._empty(req), None
         finally:
             await context.close()
 
@@ -691,6 +704,138 @@ class AirAsiaXConnectorClient:
             currency=req.currency, offers=[], total_results=0,
         )
 
+    async def _probe_checkout_ancillary(self, page) -> dict | None:
+        """Click 'Select' on first result, navigate to checkout, extract live ancillary pricing."""
+        try:
+            select_btn = None
+            for selector in [
+                "button:has-text('Select')",
+                "button:has-text('Book')",
+                "button:has-text('Choose')",
+                "[data-testid*='select']",
+            ]:
+                try:
+                    btn = page.locator(selector).first
+                    await btn.wait_for(state="visible", timeout=8000)
+                    select_btn = btn
+                    logger.debug("AirAsia X probe: found button via %s", selector)
+                    break
+                except Exception:
+                    pass
+
+            if select_btn is None:
+                logger.debug("AirAsia X probe: no Select button found on search page")
+                return None
+
+            await select_btn.click()
+            await page.wait_for_url(
+                lambda url: "tripId=" in url,
+                timeout=20000,
+            )
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+
+            raw = await page.evaluate("""() => {
+                try {
+                    const el = document.getElementById('__NEXT_DATA__');
+                    return el ? JSON.parse(el.textContent) : null;
+                } catch { return null; }
+            }""")
+            if not raw:
+                return None
+
+            pp = (raw.get("props") or {}).get("pageProps") or {}
+            result = self._parse_checkout_ancillary(pp)
+            if result:
+                logger.info("AirAsia X probe: carry_on=%s checked=%s seat=%s %s",
+                            result.get("bags_from"), result.get("checked_bag_from"),
+                            result.get("seat_from"), result.get("currency", ""))
+            return result
+        except Exception as e:
+            logger.debug("AirAsia X checkout probe failed: %s", e)
+            return None
+
+    def _parse_checkout_ancillary(self, pp: dict) -> dict | None:
+        """Parse AirAsia checkout pageProps for live bag/seat prices."""
+        anc = pp.get("ancillary") or {}
+        baggage = (
+            anc.get("baggage")
+            or pp.get("baggageList")
+            or {}
+        )
+        currency = baggage.get("currency", "EUR")
+        bag_data = baggage.get("data") or []
+        if not bag_data:
+            return None
+
+        hold_price: float | None = None
+        hold_kg = 15
+        hand_included = False
+        hand_kg = 7
+
+        first_seg = bag_data[0]
+        al = (first_seg.get("ancillarylist") or {})
+
+        for item in al.get("hand") or []:
+            rules = item.get("rules") or {}
+            price_obj = item.get("price") or {}
+            dims = ((item.get("properties") or {}).get("baggageDimension") or [])
+            if rules.get("isIncluded") and price_obj.get("amount", 1) == 0:
+                hand_included = True
+                for dim in dims:
+                    w = dim.get("weight") or {}
+                    if w.get("unit") == "kg":
+                        hand_kg = int(w.get("value", 7))
+                break
+
+        hold_items = sorted(
+            al.get("hold") or [],
+            key=lambda x: (x.get("price") or {}).get("amount") or 99999,
+        )
+        for item in hold_items:
+            price_obj = item.get("price") or {}
+            price_amt = price_obj.get("amount")
+            dims = ((item.get("properties") or {}).get("baggageDimension") or [])
+            if price_amt is not None and float(price_amt) > 0:
+                hold_price = float(price_amt)
+                for dim in dims:
+                    w = dim.get("weight") or {}
+                    if w.get("unit") == "kg":
+                        hold_kg = int(w.get("value", 15))
+                break
+
+        seat_price: float | None = None
+        seat_map = anc.get("seatMap") or pp.get("seatData") or {}
+        for seat_seg in (seat_map.get("data") or []):
+            for row in ((seat_seg.get("seatMap") or {}).get("rows") or []):
+                for seat in (row.get("seats") or []):
+                    p = (seat.get("price") or {}).get("amount")
+                    if p is not None and float(p) > 0:
+                        if seat_price is None or float(p) < seat_price:
+                            seat_price = float(p)
+            if seat_price is not None:
+                break
+
+        result: dict = {"currency": currency, "source": "checkout_probe"}
+        if hand_included:
+            result["bags_from"] = 0.0
+            result["bags_note"] = f"1 cabin bag included ({hand_kg} kg)"
+        else:
+            result["bags_from"] = None
+            result["bags_note"] = "cabin bag add-on — see checkout"
+        if hold_price is not None:
+            result["checked_bag_from"] = hold_price
+            result["checked_bag_note"] = f"checked bag from {currency} {hold_price:.0f} ({hold_kg} kg)"
+        else:
+            result["checked_bag_from"] = None
+            result["checked_bag_note"] = "checked bag add-on — see checkout"
+        if seat_price is not None:
+            result["seat_from"] = seat_price
+            result["seat_note"] = f"seat selection from {currency} {seat_price:.0f}"
+        else:
+            result["seat_from"] = None
+            result["seat_note"] = "seat selection available at checkout"
+        return result
+
     async def _fetch_ancillaries(
         self, origin: str, dest: str, date_str: str, adults: int, currency: str,
     ) -> dict | None:
@@ -758,12 +903,12 @@ class AirAsiaXConnectorClient:
                 offer.conditions["checked_bag"] = checked_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["checked_bag"] = checked_from
-            if seat_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["seat"] = seat_from
+            if bags_from is not None:
+                offer.bags_price.setdefault("carry_on", bags_from)
+            if checked_from is not None:
+                offer.bags_price.setdefault("checked_bag", checked_from)
+            if seat_from is not None:
+                offer.bags_price.setdefault("seat", seat_from)
 
     @staticmethod
     def _combine_rt(

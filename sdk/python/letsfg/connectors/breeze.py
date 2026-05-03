@@ -41,6 +41,65 @@ logger = logging.getLogger(__name__)
 _ancillary_cache: dict[str, tuple[float, dict]] = {}
 _ANCILLARY_CACHE_TTL = 1800
 
+# Breeze fare-product bag policy (inline pricing set per offer at search time).
+# Nickel = no free bags; Wander = carry-on included; You = carry-on + 1 checked.
+_MX_FARE_BAGS: dict[str, dict] = {
+    "nickel": {
+        # Nickel fare: no bags included. Fees vary by route — no confirmed static amount.
+        "carry_on": None,
+        "carry_on_note": "no carry-on included (Breeze Nickel) — fee applies, check at booking",
+        "checked_bag": None,
+        "checked_bag_note": "no checked bag included (Breeze Nickel) — fee applies, check at booking",
+        "seat": None,
+        "seat_note": "seat selection fee applies (Breeze Nickel) — check at booking",
+    },
+    "wander": {
+        "carry_on": 0.0,
+        "carry_on_note": "carry-on included (Breeze Wander fare)",
+        "checked_bag": 25.0,
+        "checked_bag_note": "checked bag from +USD 25 (Breeze Wander — add at booking)",
+        "seat": 10.0,
+        "seat_note": "seat selection from +USD 10 (Breeze Wander)",
+    },
+    "you": {
+        "carry_on": 0.0,
+        "carry_on_note": "carry-on included (Breeze You fare)",
+        "checked_bag": 0.0,
+        "checked_bag_note": "1 checked bag included (Breeze You fare)",
+        "seat": 0.0,
+        "seat_note": "seat selection included (Breeze You fare)",
+    },
+}
+
+
+def _extract_breeze_product(fare_key: str, fare_info: dict) -> str:
+    """Return the Breeze fare product ('nickel', 'wander', 'you') from fare key/info.
+
+    Probes fareKey and multiple fareInfo fields that Navitaire NewSkies may use.
+    Defaults to 'nickel' (most conservative) when the product cannot be identified.
+    """
+    candidates: list[str] = [fare_key]
+    for field in ("fareClass", "fareName", "fareCode", "bundleCode",
+                  "fareProductCode", "fareSellKey", "bundleInformation"):
+        v = str(fare_info.get(field) or "")
+        if v:
+            candidates.append(v)
+    fpi = fare_info.get("fareProductInformation") or {}
+    if isinstance(fpi, dict):
+        for field in ("fareProductCode", "productCode", "productName", "code", "name"):
+            v = str(fpi.get(field) or "")
+            if v:
+                candidates.append(v)
+    for c in candidates:
+        u = c.upper()
+        if "YOU" in u:
+            return "you"
+        if "WAND" in u:
+            return "wander"
+        if "NICK" in u:
+            return "nickel"
+    return "nickel"
+
 _SEARCH_URL_TPL = (
     "https://www.flybreeze.com/booking/availability"
     "?origin={origin}&destination={dest}&beginDate={date}"
@@ -248,17 +307,19 @@ class BreezeConnectorClient:
 
         currency = avail.get("currencyCode", "USD")
 
-        # Build fare price lookup: fareKey → total price
-        fare_prices: dict[str, float] = {}
+        # Build fare data lookup: fareKey → {price, product}
+        fare_data: dict[str, dict] = {}
         for fa in avail.get("faresAvailable") or []:
             fare_key = fa.get("fareKey", "")
-            fares = fa.get("fareInfo", {}).get("fares") or []
+            fare_info = fa.get("fareInfo", {})
+            fares = fare_info.get("fares") or []
             total = 0.0
             for f in fares:
                 for pf in f.get("passengerFares") or []:
                     total += pf.get("fareAmount", 0)
             if total > 0:
-                fare_prices[fare_key] = round(total, 2)
+                product = _extract_breeze_product(fare_key, fare_info)
+                fare_data[fare_key] = {"price": round(total, 2), "product": product}
 
         booking_url = _SEARCH_URL_TPL.format(
             origin=req.origin,
@@ -281,7 +342,7 @@ class BreezeConnectorClient:
             journeys = jbm.get("journey") or (jbm if isinstance(jbm, list) else [])
             for journey in journeys:
                 offer = self._journey_to_offer(
-                    journey, fare_prices, currency, booking_url, req,
+                    journey, fare_data, currency, booking_url, req,
                 )
                 if offer:
                     offers.append(offer)
@@ -291,7 +352,7 @@ class BreezeConnectorClient:
     def _journey_to_offer(
         self,
         journey: dict,
-        fare_prices: dict[str, float],
+        fare_data: dict[str, dict],
         currency: str,
         booking_url: str,
         req: FlightSearchRequest,
@@ -316,12 +377,15 @@ class BreezeConnectorClient:
         # Find cheapest fare for this journey
         price = None
         seats = None
+        selected_product = "nickel"
         for fare_group in journey.get("fares") or []:
             fak = fare_group.get("fareAvailabilityKey", "")
-            if fak in fare_prices:
-                fp = fare_prices[fak]
+            if fak in fare_data:
+                fd = fare_data[fak]
+                fp = fd["price"]
                 if price is None or fp < price:
                     price = fp
+                    selected_product = fd.get("product", "nickel")
                     details = fare_group.get("details") or []
                     min_seats = None
                     for d in details:
@@ -376,7 +440,7 @@ class BreezeConnectorClient:
         dep_key = f"{origin}{destination}{dep_str}{price}"
         offer_id = f"mx_{hashlib.md5(dep_key.encode()).hexdigest()[:12]}"
 
-        return FlightOffer(
+        offer = FlightOffer(
             id=offer_id,
             price=price,
             currency=currency,
@@ -391,6 +455,20 @@ class BreezeConnectorClient:
             source_tier="free",
             availability_seats=seats,
         )
+
+        # Inline bag pricing based on identified fare product
+        bags = _MX_FARE_BAGS.get(selected_product, _MX_FARE_BAGS["nickel"])
+        if bags["carry_on"] is not None:
+            offer.bags_price["carry_on"] = bags["carry_on"]
+        if bags["checked_bag"] is not None:
+            offer.bags_price["checked_bag"] = bags["checked_bag"]
+        if bags["seat"] is not None:
+            offer.bags_price["seat_selection"] = bags["seat"]
+        offer.conditions["carry_on"] = bags["carry_on_note"]
+        offer.conditions["checked_bag"] = bags["checked_bag_note"]
+        offer.conditions["seat"] = bags["seat_note"]
+        offer.conditions["fare_class"] = selected_product
+        return offer
 
     @staticmethod
     def _parse_dt(s: str) -> datetime | None:
@@ -450,15 +528,15 @@ class BreezeConnectorClient:
             ts, cached = _ancillary_cache[cache_key]
             if now - ts < _ANCILLARY_CACHE_TTL:
                 return cached
-        # Breeze: Nickel/Wander/You fares don't include carry-on or checked bag.
-        # Carry-on from ~$20–$50 depending on fare tier and route.
+        # Last-resort static fallback used only when inline pricing failed (parse error).
+        # No dollar amounts — bag fees vary by route.
         result: dict = {
-            "carry_on_from": 20.0,
-            "carry_on_note": "carry-on from +USD 20 (Breeze Nickel fare — add at booking)",
-            "checked_from": 40.0,
-            "checked_note": "first checked bag from +USD 40 (Nickel fare — add at booking)",
-            "seat_from": 10.0,
-            "seat_note": "seat selection from +USD 10",
+            "carry_on_from": None,
+            "carry_on_note": "carry-on fee applies (Breeze) — check at booking",
+            "checked_from": None,
+            "checked_note": "checked bag fee applies (Breeze) — check at booking",
+            "seat_from": None,
+            "seat_note": "seat selection fee applies (Breeze) — check at booking",
             "currency": "USD",
         }
         _ancillary_cache[cache_key] = (now, result)
@@ -474,15 +552,16 @@ class BreezeConnectorClient:
         anc_currency = ancillary.get("currency", "USD")
         for offer in offers:
             ccy_ok = offer.currency.upper() == anc_currency.upper()
-            if carry_on_note:
+            # Guard: do not overwrite inline values already set per fare product
+            if "carry_on" not in offer.conditions and carry_on_note:
                 offer.conditions["carry_on"] = carry_on_note
-            if checked_note:
+            if "checked_bag" not in offer.conditions and checked_note:
                 offer.conditions["checked_bag"] = checked_note
-            if seat_note:
+            if "seat" not in offer.conditions and seat_note:
                 offer.conditions["seat"] = seat_note
-            if carry_on_from is not None and (carry_on_from == 0.0 or ccy_ok):
-                offer.bags_price["carry_on"] = carry_on_from
-            if checked_from is not None and (checked_from == 0.0 or ccy_ok):
-                offer.bags_price["checked_bag"] = checked_from
-            if seat_from is not None and (seat_from == 0.0 or ccy_ok):
-                offer.bags_price["seat_selection"] = seat_from
+            if "carry_on" not in offer.bags_price and carry_on_from == 0.0:
+                offer.bags_price["carry_on"] = 0.0
+            if "checked_bag" not in offer.bags_price and checked_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
+            if "seat_selection" not in offer.bags_price and seat_from == 0.0:
+                offer.bags_price["seat_selection"] = 0.0

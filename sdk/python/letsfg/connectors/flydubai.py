@@ -105,9 +105,10 @@ class FlydubaiConnectorClient:
             segs = ob_result.offers[0].outbound.segments if ob_result.offers[0].outbound else []
             anc_origin = segs[0].origin if segs else req.origin
             anc_dest = segs[-1].destination if segs else req.destination
+            first_flight_no = segs[0].flight_no if segs else None
             try:
                 ancillary = await asyncio.wait_for(
-                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, ob_result.currency),
+                    self._fetch_ancillaries(anc_origin, anc_dest, req.date_from.isoformat(), req.adults, ob_result.currency, flight_no=first_flight_no),
                     timeout=45.0,
                 )
                 if ancillary:
@@ -937,17 +938,17 @@ class FlydubaiConnectorClient:
         )
 
     async def _fetch_ancillaries(
-        self, origin: str, dest: str, date_str: str, adults: int, currency: str
+        self, origin: str, dest: str, date_str: str, adults: int, currency: str,
+        flight_no: str | None = None,
     ) -> dict | None:
-        return None  # Calendar API returns lowestFare only — no fare bundle breakdown
+        from .ancillary_live_probe import probe_ancillaries
+        return await probe_ancillaries("FZ", origin, dest, date_str=date_str, flight_no=flight_no)
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note")
-        checked_note = ancillary.get("checked_bag") or bags_note
+        checked_note = ancillary.get("checked_bag_note")
         seat_note = ancillary.get("seat_note")
-        bags_from = ancillary.get("bags_from")
-        checked_from = ancillary.get("checked_bag_price")
-        anc_currency = ancillary.get("currency", "EUR")
+        checked_from = ancillary.get("checked_bag_from")
         for offer in offers:
             if bags_note:
                 offer.conditions["carry_on"] = bags_note
@@ -955,9 +956,7 @@ class FlydubaiConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
-                offer.bags_price["carry_on"] = bags_from
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
+            if checked_from is not None:
                 offer.bags_price["checked_bag"] = checked_from
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:

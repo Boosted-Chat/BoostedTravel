@@ -538,18 +538,24 @@ class LHGroupBaseConnector:
             ts, data = _ancillary_cache[cache_key]
             if now - ts < _ANCILLARY_CACHE_TTL:
                 return data
+        # Try live prober first
+        try:
+            from .ancillary_live_probe import probe_ancillaries
+            live = await probe_ancillaries(self.AIRLINE_CODE, origin, dest, date_str=date_str)
+            if live:
+                _ancillary_cache[cache_key] = (now, live)
+                return live
+        except Exception:
+            pass
+        # Static fallback: Economy Light fare pricing.
         result: dict = {
-            "bags_note": "Carry-on bag (12 kg) included in all economy fares.",
+            "bags_note": f"Carry-on bag (up to 8 kg) included.",
             "checked_bag": (
-                "Economy Light: no free checked bag "
-                f"(first bag from {self.DEFAULT_CURRENCY} 25 add-on). "
-                "Economy Classic/Flex: 1\u00d723 kg included."
+                f"No free checked bag (Economy Light fare). "
+                f"First checked bag: {self.DEFAULT_CURRENCY} 35."
             ),
-            "seat_note": (
-                f"Seat selection: from {self.DEFAULT_CURRENCY} 10 (Light fare). "
-                "Included in Classic/Flex fares."
-            ),
-            "bags_from": None,
+            "seat_note": f"Seat selection from {self.DEFAULT_CURRENCY} 10.",
+            "bags_from": 35.0,   # Economy Light: first checked bag EUR 35 (exact)
             "currency": self.DEFAULT_CURRENCY,
         }
         _ancillary_cache[cache_key] = (now, result)
@@ -557,19 +563,18 @@ class LHGroupBaseConnector:
 
     def _apply_ancillaries(self, offers: list, ancillary: dict) -> None:
         bags_note = ancillary.get("bags_note", "")
-        checked_note = ancillary.get("checked_bag") or bags_note
+        checked_note = ancillary.get("checked_bag") or ancillary.get("checked_bag_note") or bags_note
         seat_note = ancillary.get("seat_note", "")
-        bags_from = ancillary.get("bags_from")
-        checked_from = ancillary.get("checked_bag_price")
-        anc_currency = ancillary.get("currency", self.DEFAULT_CURRENCY)
+        # Support both static fallback key ("bags_from") and live probe key ("checked_bag_from"/"checked_bag_price")
+        bags_from = ancillary.get("checked_bag_from") or ancillary.get("checked_bag_price") or ancillary.get("bags_from")
         for offer in offers:
+            # carry-on always free on LH Group fares; checked bag is a paid add-on
+            offer.bags_price.setdefault("carry_on", 0.0)
+            if bags_from is not None:
+                offer.bags_price.setdefault("checked_bag", float(bags_from))
             if bags_note:
-                offer.conditions["carry_on"] = bags_note
+                offer.conditions.setdefault("carry_on", bags_note)
             if checked_note:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
-                offer.conditions["seat"] = seat_note
-            if bags_from is not None and offer.currency == anc_currency:
-                offer.bags_price["checked"] = bags_from
-            if checked_from is not None and offer.currency == anc_currency:
-                offer.bags_price["checked"] = checked_from
+                offer.conditions.setdefault("seat", seat_note)

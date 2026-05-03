@@ -32,7 +32,7 @@ from ..models.flights import (
     FlightSearchResponse,
     FlightSegment,
 )
-from .browser import auto_block_if_proxied, get_default_proxy
+from .browser import auto_block_if_proxied
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +62,14 @@ async def _get_context():
         except Exception:
             _pw_context = None
 
-    from playwright.async_api import async_playwright
+    from patchright.async_api import async_playwright as patchright_playwright
 
     os.makedirs(os.path.abspath(_USER_DATA_DIR), exist_ok=True)
-    _pw_instance = await async_playwright().start()
+    _pw_instance = await patchright_playwright().start()
 
     _pw_context = await _pw_instance.chromium.launch_persistent_context(
         os.path.abspath(_USER_DATA_DIR),
-        channel="chrome",
         headless=False,
-        proxy=get_default_proxy(),
         args=[
             "--disable-blink-features=AutomationControlled",
             "--window-position=-2400,-2400",
@@ -99,6 +97,38 @@ async def _ensure_persistent_page():
             pass
 
     ctx = await _get_context()
+
+    # Pre-set OneTrust consent cookies to suppress the cookie banner
+    try:
+        await ctx.add_cookies([
+            {
+                "name": "OptanonAlertBoxClosed",
+                "value": "2025-01-01T00:00:00.000Z",
+                "domain": ".voegol.com.br",
+                "path": "/",
+                "httpOnly": False,
+                "secure": False,
+                "sameSite": "Lax",
+            },
+            {
+                "name": "OptanonConsent",
+                "value": (
+                    "isGpcEnabled=0&datestamp=Wed+Jan+01+2025&version=202510.2.0"
+                    "&browserGpcFlag=0&isIABGlobal=false&hosts=&consentId=gol"
+                    "&interactionCount=1&isAnonUser=1&landingPath=NotLandingPage"
+                    "&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1%2CC0004%3A1"
+                    "&geolocation=BR%3BSP&AwaitingReconsent=false"
+                ),
+                "domain": ".voegol.com.br",
+                "path": "/",
+                "httpOnly": False,
+                "secure": False,
+                "sameSite": "Lax",
+            },
+        ])
+    except Exception:
+        pass
+
     page = await ctx.new_page()
     await auto_block_if_proxied(page)
 
@@ -111,7 +141,9 @@ async def _ensure_persistent_page():
         pass
     await asyncio.sleep(2)
 
-    # Dismiss LGPD/cookie overlays
+    # Dismiss LGPD/cookie overlays (multiple attempts)
+    await _dismiss_cookies(page)
+    await asyncio.sleep(1)
     await _dismiss_cookies(page)
 
     # Wait for Angular to boot and populate session UUID
@@ -133,32 +165,62 @@ async def _ensure_persistent_page():
         if uuid_val:
             logger.info("GOL: Angular SPA ready (UUID=%s...)", uuid_val[:8])
     except Exception:
-        logger.warning("GOL: Angular UUID not found after 15s")
+        logger.warning("GOL: Angular UUID not found after 25s")
+
+    # Wait for auth token — set by gol-auth-api after cookie consent is accepted
+    try:
+        await page.wait_for_function("""() => {
+            const uuid = sessionStorage.getItem('currentTabUUID');
+            if (!uuid) return null;
+            const token = sessionStorage.getItem(uuid + '_@SiteGolB2C:token');
+            return token ? uuid : null;
+        }""", timeout=20000)
+        logger.info("GOL: auth token ready")
+    except Exception:
+        logger.warning("GOL: auth token not found in 20s — banner may still be blocking")
 
     _persistent_page = page
     return page
 
 
 async def _dismiss_cookies(page) -> None:
+    # Try OneTrust standard accept button ID first
     for sel in [
+        "#onetrust-accept-btn-handler",
+        "button#onetrust-accept-btn-handler",
+        "button:has-text('Aceitar todos os cookies')",
+        "button:has-text('Aceitar tudo')",
+        "button:has-text('Aceitar')",
+        "button:has-text('Accept All')",
         "button:has-text('Continuar e fechar')",
         "button:has-text('Continue and close')",
     ]:
         try:
             el = page.locator(sel).first
-            if await el.count() > 0 and await el.is_visible():
-                await el.click(timeout=2000)
-                await asyncio.sleep(0.5)
+            if await el.count() > 0 and await el.is_visible(timeout=1000):
+                await el.click(timeout=3000)
+                await asyncio.sleep(0.8)
                 return
         except Exception:
             continue
     try:
         await page.evaluate("""() => {
+            // Try OneTrust public API
+            if (window.OneTrust && typeof window.OneTrust.acceptAllCookies === 'function') {
+                window.OneTrust.acceptAllCookies();
+                return;
+            }
+            // Click accept button if present
+            const btn = document.querySelector('#onetrust-accept-btn-handler');
+            if (btn) { btn.click(); return; }
+            // Remove overlays
             document.querySelectorAll(
-                '[class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"], '
-                + '[class*="onetrust"], [id*="onetrust"], [class*="lgpd"]'
-            ).forEach(el => { if (el.offsetHeight > 0) el.remove(); });
+                '#onetrust-consent-sdk, #onetrust-banner-sdk, '
+                + '.onetrust-pc-dark-filter, [id^="onetrust"], '
+                + '[class*="cookie-banner"], [class*="lgpd"]'
+            ).forEach(el => el.remove());
             document.body.style.overflow = 'auto';
+            document.documentElement.style.overflow = 'auto';
         }""")
     except Exception:
         pass
@@ -300,13 +362,24 @@ class GolConnectorClient:
 
         async def on_response(response):
             try:
-                if "bff-flight" in response.url and "search" in response.url and response.status == 200:
-                    ct = response.headers.get("content-type", "")
-                    if "json" in ct:
-                        data = await response.json()
-                        if data and isinstance(data, dict) and "offers" in data:
-                            captured_data["json"] = data
-                            api_event.set()
+                if response.status != 200:
+                    return
+                url = response.url
+                if "voegol.com.br" not in url:
+                    return
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct:
+                    return
+                if any(s in url for s in ["/assets/", "/i18n/", "channelcfg-api", "cookielaw", "onetrust", "datadoghq", "/M45P/", "gol-auth-api"]):
+                    return
+                data = await response.json()
+                if not isinstance(data, dict):
+                    return
+                if any(k in data for k in ["offers", "flights", "availability", "itineraries", "recommendations", "brandedFares", "fareOptions"]):
+                    captured_data["json"] = data
+                    captured_data["url"] = url
+                    logger.info("GOL: captured flight data from %s", url)
+                    api_event.set()
             except Exception:
                 pass
 
@@ -402,13 +475,24 @@ class GolConnectorClient:
 
         async def on_response(response):
             try:
-                if "bff-flight" in response.url and "search" in response.url and response.status == 200:
-                    ct = response.headers.get("content-type", "")
-                    if "json" in ct:
-                        data = await response.json()
-                        if data and isinstance(data, dict) and "offers" in data:
-                            captured_data["json"] = data
-                            api_event.set()
+                if response.status != 200:
+                    return
+                url = response.url
+                if "voegol.com.br" not in url:
+                    return
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct:
+                    return
+                if any(s in url for s in ["/assets/", "/i18n/", "channelcfg-api", "cookielaw", "onetrust", "datadoghq", "/M45P/", "gol-auth-api"]):
+                    return
+                data = await response.json()
+                if not isinstance(data, dict):
+                    return
+                if any(k in data for k in ["offers", "flights", "availability", "itineraries", "recommendations", "brandedFares", "fareOptions"]):
+                    captured_data["json"] = data
+                    captured_data["url"] = url
+                    logger.info("GOL: captured return flight data from %s", url)
+                    api_event.set()
             except Exception:
                 pass
 
@@ -624,7 +708,7 @@ class GolConnectorClient:
 
         # Seat selection
         if "seat" not in conditions:
-            conditions["seat"] = f"seat selection from ~{currency} 30 — add at checkout"
+            conditions["seat"] = "seat selection available at checkout"
 
         return conditions, bags_price
 

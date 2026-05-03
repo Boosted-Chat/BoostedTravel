@@ -575,11 +575,11 @@ class ZipairConnectorClient:
                 offer.conditions.setdefault("checked_bag", checked_note)
             if seat_note:
                 offer.conditions.setdefault("seat", seat_note)
-            if bags_from is not None and offer.currency.upper() == anc_currency.upper():
+            if bags_from is not None:
                 offer.bags_price.setdefault("carry_on", bags_from)
-            if checked_from is not None and offer.currency.upper() == anc_currency.upper():
+            if checked_from is not None:
                 offer.bags_price.setdefault("checked_bag", checked_from)
-            if seat_from is not None and offer.currency.upper() == anc_currency.upper():
+            if seat_from is not None:
                 offer.bags_price.setdefault("seat", seat_from)
 
     def _empty(self, req: FlightSearchRequest) -> FlightSearchResponse:

@@ -27,7 +27,7 @@ import os
 import random
 import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from ..models.flights import (
     FlightOffer,
@@ -42,6 +42,31 @@ logger = logging.getLogger(__name__)
 
 _ancillary_cache: dict[str, tuple[float, dict]] = {}
 _ANCILLARY_CACHE_TTL = 1800
+
+_GQL_SEAT_WAIT = 8  # seconds to wait for seat map API response
+_FLIGHT_CARD_SELECTORS = [
+    "[class*='flight'] button",
+    "button[class*='select']",
+    "button[class*='flight']",
+    "[data-testid*='flight'] button",
+    "button:has-text('Select')",
+    "button:has-text('Choose')",
+]
+
+
+def _flatten_keys(data: Any, _depth: int = 0) -> list[str]:
+    """Return all dict keys found in a nested JSON structure (up to depth 8)."""
+    if _depth > 8 or not isinstance(data, (dict, list)):
+        return []
+    if isinstance(data, list):
+        keys: list[str] = []
+        for item in data:
+            keys.extend(_flatten_keys(item, _depth + 1))
+        return keys
+    keys = list(data.keys())
+    for v in data.values():
+        keys.extend(_flatten_keys(v, _depth + 1))
+    return keys
 
 _VIEWPORTS = [
     {"width": 1366, "height": 768},
@@ -96,12 +121,15 @@ class SunCountryConnectorClient:
 
     def __init__(self, timeout: float = 45.0):
         self.timeout = timeout
+        self._last_live_seat_from: float | None = None
 
     async def close(self):
         pass
 
     async def search_flights(self, req: FlightSearchRequest) -> FlightSearchResponse:
         ob_result = await self._search_ow(req)
+        live_seat_from = self._last_live_seat_from
+        self._last_live_seat_from = None
         if req.return_from and ob_result.total_results > 0:
             ib_req = req.model_copy(update={"origin": req.destination, "destination": req.origin, "date_from": req.return_from, "return_from": None})
             ib_result = await self._search_ow(ib_req)
@@ -117,6 +145,7 @@ class SunCountryConnectorClient:
                     self._fetch_ancillaries(
                         anc_origin, anc_dest,
                         req.date_from.isoformat(), req.adults, "USD",
+                        live_seat_from=live_seat_from,
                     ),
                     timeout=10.0,
                 )
@@ -168,17 +197,32 @@ class SunCountryConnectorClient:
 
             token_holder: dict = {}
             token_event = asyncio.Event()
+            seat_captured: dict = {}
+            seat_event = asyncio.Event()
 
             async def on_response(response):
                 try:
+                    ct = response.headers.get("content-type", "")
+                    if "json" not in ct:
+                        return
                     if "/nsk/v1/token" in response.url and response.status in (200, 201):
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct:
-                            data = await response.json()
-                            tok = (data.get("data") or data).get("token", "")
-                            if tok and not token_holder.get("token"):
-                                token_holder["token"] = tok
-                                token_event.set()
+                        data = await response.json()
+                        tok = (data.get("data") or data).get("token", "")
+                        if tok and not token_holder.get("token"):
+                            token_holder["token"] = tok
+                            token_event.set()
+                        return
+                    # Also try to capture any seat map responses during page load
+                    if response.status == 200 and not seat_event.is_set():
+                        data = await response.json()
+                        if isinstance(data, dict):
+                            all_keys = set(_flatten_keys(data))
+                            seat_keys = {k for k in all_keys if any(
+                                kw in k.lower() for kw in ("seat", "cabin", "map")
+                            )}
+                            if seat_keys:
+                                seat_captured["seat_data"] = data
+                                seat_event.set()
                 except Exception:
                     pass
 
@@ -249,6 +293,24 @@ class SunCountryConnectorClient:
                 return []
 
             ob_offers = self._parse_lowfare(result, req)
+
+            # Try live seat pricing via Navitaire seat map API probe
+            if ob_offers and token and not seat_event.is_set():
+                live_seat = await self._probe_navitaire_seat_price(
+                    page, token, req.origin, req.destination
+                )
+                if live_seat is not None:
+                    seat_captured["seat_data"] = {"probed_min_price": live_seat}
+                    seat_event.set()
+
+            if seat_event.is_set():
+                probe_price = seat_captured.get("seat_data", {}).get("probed_min_price")
+                if probe_price is not None:
+                    self._last_live_seat_from = float(probe_price)
+                else:
+                    self._last_live_seat_from = self._extract_min_seat_price(
+                        seat_captured.get("seat_data") or {}
+                    )
 
             # For RT, also fetch inbound lowfares
             if is_rt and ob_offers:
@@ -460,7 +522,18 @@ class SunCountryConnectorClient:
         date_str: str,
         adults: int,
         currency: str,
+        live_seat_from: float | None = None,
     ) -> dict | None:
+        if live_seat_from is not None:
+            return {
+                "carry_on_from": 0.0,
+                "carry_on_note": "1 carry-on bag included",
+                "checked_from": 35.0,
+                "checked_note": "first checked bag from +USD 35 (Basic fare — add at booking)",
+                "seat_from": live_seat_from,
+                "seat_note": f"seat selection from +USD {live_seat_from:.2f} (live, this route)",
+                "currency": "USD",
+            }
         cache_key = f"sy_{origin}_{dest}_{date_str}"
         now = time.time()
         if cache_key in _ancillary_cache:
@@ -496,9 +569,100 @@ class SunCountryConnectorClient:
                 offer.conditions["checked_bag"] = checked_note
             if seat_note:
                 offer.conditions["seat"] = seat_note
-            if carry_on_from is not None and (carry_on_from == 0.0 or ccy_ok):
-                offer.bags_price["carry_on"] = carry_on_from
-            if checked_from is not None and (checked_from == 0.0 or ccy_ok):
-                offer.bags_price["checked_bag"] = checked_from
-            if seat_from is not None and (seat_from == 0.0 or ccy_ok):
-                offer.bags_price["seat_selection"] = seat_from
+            if carry_on_from == 0.0:
+                offer.bags_price["carry_on"] = 0.0
+            if checked_from == 0.0:
+                offer.bags_price["checked_bag"] = 0.0
+            if seat_from == 0.0:
+                offer.bags_price["seat_selection"] = 0.0
+
+    # ------------------------------------------------------------------
+    # Live seat price helpers
+    # ------------------------------------------------------------------
+
+    async def _probe_navitaire_seat_price(
+        self, page, token: str, origin: str, dest: str
+    ) -> float | None:
+        """Try Sun Country Navitaire seat map API to get min seat price."""
+        try:
+            result = await page.evaluate(
+                """async ([token, subKey, origin, dest]) => {
+                    try {
+                        const resp = await fetch(
+                            `https://syprod-api.suncountry.com/ext/v1/seatmap/${origin}/${dest}`,
+                            {
+                                method: 'GET',
+                                headers: {
+                                    'Authorization': token,
+                                    'Ocp-Apim-Subscription-Key': subKey,
+                                    'Accept': 'application/json',
+                                }
+                            }
+                        );
+                        if (!resp.ok) return null;
+                        return await resp.json();
+                    } catch (e) {
+                        return null;
+                    }
+                }""",
+                [token, _SUB_KEY, origin, dest],
+            )
+            if result and isinstance(result, dict):
+                return self._extract_min_seat_price(result)
+        except Exception as _exc:
+            logger.debug("SY: seat map probe error: %s", _exc)
+        return None
+
+    async def _try_capture_seat_prices(
+        self, page, seat_event: asyncio.Event, captured: dict
+    ) -> None:
+        """Click first flight card to trigger seat map API, capture response."""
+        if seat_event.is_set():
+            return
+        for selector in _FLIGHT_CARD_SELECTORS:
+            try:
+                locator = page.locator(selector).first
+                await locator.scroll_into_view_if_needed(timeout=2000)
+                await locator.click(timeout=3000)
+                logger.debug("SY: clicked flight card with selector '%s'", selector)
+                try:
+                    await asyncio.wait_for(seat_event.wait(), timeout=_GQL_SEAT_WAIT)
+                except asyncio.TimeoutError:
+                    logger.debug("SY: seat event timed out after clicking '%s'", selector)
+                return
+            except Exception as _exc:
+                logger.debug("SY: seat card click failed for '%s': %s", selector, _exc)
+
+    @staticmethod
+    def _extract_min_seat_price(data: dict) -> float | None:
+        """Recursively walk API response and return minimum selectable seat price."""
+        _SEAT_ID_KEYS = frozenset({"seatCode", "seatNo", "seat", "code", "row", "column", "letter"})
+        _PRICE_KEYS = frozenset({"price", "amount", "seatPrice", "selectionFee", "fee", "charge"})
+        _MAX_DEPTH = 12
+
+        def _walk(node: Any, depth: int) -> float | None:
+            if depth > _MAX_DEPTH:
+                return None
+            if isinstance(node, list):
+                mins = [v for v in (_walk(item, depth + 1) for item in node) if v is not None]
+                return min(mins) if mins else None
+            if not isinstance(node, dict):
+                return None
+            is_seat = bool(_SEAT_ID_KEYS & node.keys())
+            if is_seat:
+                for pk in _PRICE_KEYS:
+                    raw = node.get(pk)
+                    if raw is None:
+                        continue
+                    if isinstance(raw, dict):
+                        raw = raw.get("amount")
+                    try:
+                        val = float(raw)
+                        if 0.50 <= val <= 250:
+                            return val
+                    except (TypeError, ValueError):
+                        pass
+            mins = [v for v in (_walk(v, depth + 1) for v in node.values()) if v is not None]
+            return min(mins) if mins else None
+
+        return _walk(data, 0)
