@@ -8,12 +8,12 @@
     "url": "https://github.com/LetsFG/LetsFG",
     "source": "github"
   },
-  "version": "2026.5.73",
+  "version": "2026.5.75",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "letsfg-mcp",
-      "version": "2026.5.73",
+      "version": "2026.5.75",
       "transport": {
         "type": "stdio"
       },
