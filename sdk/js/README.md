@@ -14,7 +14,7 @@
 | **Speed** | 8–10 s to first results; longer on a split | 2–5 s (discover) · 8–10 s to first results (full) |
 | **Setup** | `npm install letsfg`, then connect at [letsfg.co/developers/api/mcp](https://letsfg.co/developers/api/mcp) | [letsfg.co/developers](https://letsfg.co/developers) |
 
-> **Want direct airline URLs without any per-booking fee?** Use the [Developer API](https://letsfg.co/developers) — prepaid credits, results in seconds, no checkout step.
+> **Building a product, or need hotels?** Use the [Developer API](https://letsfg.co/developers) — look-to-book search (200 free after every booking, then $0.01), booking through `POST /flights/book`, no booking fee and no transaction fee.
 
 ## Install
 

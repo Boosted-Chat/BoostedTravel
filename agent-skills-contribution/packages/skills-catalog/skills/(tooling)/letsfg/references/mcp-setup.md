@@ -165,7 +165,7 @@ export LETSFG_API_KEY=trav_your_api_key
 | Tool | Description |
 |------|-------------|
 | `authenticate` | Returns the current connect instructions (`add_card_url`, `how`) — a person adds a card at letsfg.co/connect, nothing charged |
-| `setup_payment` | **[Developer API only]** Attach a Stripe payment method to a paid billing account |
+| `setup_payment` | **RETIRED 2026-09-08 with Stripe** — answers `410 Gone`. Connect a Revolut method with `POST /agents/connect-payment` instead |
 | `get_agent_profile` | Account info and usage stats |
 | `load_resources` | Load the in-server usage guide |
 

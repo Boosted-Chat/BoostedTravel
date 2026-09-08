@@ -45,7 +45,7 @@ We aim to acknowledge reports within 48 hours and provide a fix or mitigation wi
 ## API Security Model
 
 - **API keys** authenticate all requests. Keep your key secret.
-- **Revolut** handles card storage and every flight charge (the PFS/MCP lane); Stripe remains only behind the paid Developer API's prepaid balance. LetsFG never stores card numbers.
+- **Revolut** handles card storage and every charge on every lane, including the Developer API. Stripe was removed entirely on 2026-09-08 and its routes answer `410 Gone`. LetsFG never stores card numbers.
 - **Passenger data** (names, emails) is passed directly to the airline for booking. We do not store passenger PII beyond the booking transaction.
 - **HTTPS only** — all API traffic is encrypted in transit.
 

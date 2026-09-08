@@ -38,19 +38,25 @@ No auth required.
 }
 ```
 
-### Setup Payment
+### Connect Payment
 
 ```
-POST /api/v1/agents/setup-payment
+POST /api/v1/agents/connect-payment
 ```
 
 ```json
 {
-  "token": "tok_visa"
+  "status": "connect_required",
+  "connect_url": "https://letsfg.co/connect?dev=sess_abc123",
+  "expires_in_seconds": 3600
 }
 ```
 
-Required before first booking. Card stays on file.
+Open `connect_url` in a browser once and save a card or Revolut Pay. **Nothing is charged to
+connect.** A connected method is what opens search, and it is what bookings and top-ups are
+charged to. The link lasts one hour; connecting again replaces the previous method.
+
+> `POST /api/v1/agents/setup-payment` was retired on 2026-09-08 with Stripe and answers `410 Gone`.
 
 ### Agent Profile
 
@@ -141,81 +147,77 @@ POST /api/v1/flights/search
 }
 ```
 
-### Unlock Offer
-
-```
-POST /api/v1/bookings/unlock
-```
-
-```json
-{
-  "offer_id": "off_xxx"
-}
-```
-
-**Response:**
-
-```json
-{
-  "offer_id": "off_xxx",
-  "confirmed_price": 189.50,
-  "confirmed_currency": "EUR",
-  "offer_expires_at": "2026-04-15T15:30:00Z"
-}
-```
-
-**Errors:**
-- 402 — Payment required: no card on file (attach via setup-payment, or pay via MPP crypto on the challenge)
-- 410 — Offer expired (search again)
-
 ### Book Flight
 
 ```
-POST /api/v1/bookings/book
+POST /api/v1/flights/book
 ```
 
 ```json
 {
-  "offer_id": "off_xxx",
-  "passengers": [
-    {
-      "id": "pas_0",
-      "given_name": "John",
-      "family_name": "Doe",
-      "born_on": "1990-01-15",
-      "gender": "m",
-      "title": "mr",
-      "email": "john@example.com",
-      "phone_number": "+44123456789"
-    }
-  ],
-  "contact_email": "john@example.com",
-  "idempotency_key": "unique-key-123"
+  "search_id": "srch_abc123",
+  "offer_id": "off_def456",
+  "idempotency_key": "your-own-unique-key",
+  "contact_email": "traveller@example.com",
+  "passengers": [{
+    "given_name": "Adam",
+    "family_name": "Kowalski",
+    "born_on": "1990-04-11",
+    "gender": "m",
+    "email": "traveller@example.com",
+    "phone_number": "+48501234567",
+    "phone_country": "PL",
+    "nationality": "PL",
+    "passenger_type": "adult"
+  }]
 }
 ```
 
-**Response:**
+Answers `202` in seconds with a `booking_id`; the booking itself takes 4-11 minutes.
+
+The connected Revolut method is **held, not charged**. A LetsFG booking agent buys the ticket and
+the hold is captured **only against a real airline PNR**; a failed booking releases it. The offer
+price already includes LetsFG's margin, so there is no booking fee and no transaction fee. A
+completed booking also resets the free search allowance to 200.
+
+1 to 9 passengers. Only `given_name` is required by the schema — the server answers `400
+missing_fields` naming exactly what an airline checkout still needs, before anything is charged.
+Always send an `idempotency_key`: a retry with the same key returns the existing booking instead of
+opening a second hold.
+
+### Poll a Booking
+
+```
+GET /api/v1/flights/bookings/{booking_id}
+```
+
+Poll until `terminal` is true. States: `authorised`, `card_issued`, `booking_in_progress`,
+`awaiting_settlement`, then `completed` (with `pnr` and `charged_amount`), `failed` (hold released,
+nothing charged) or `needs_attention` (a human at LetsFG is on it — do not book again).
+
+Polling is also how LetsFG knows you are still there, which keeps a paused booking alive.
+
+### Answer a Booking Question
+
+```
+POST /api/v1/flights/bookings/{booking_id}/answer
+```
+
+While `booking_in_progress`, `question` may carry a seat map (`kind: "seat"`), a paid extra
+(`"extra"`) or a fare increase (`"price_change"`). Echo its `round` — a stale round is refused with
+`409` rather than guessed at.
 
 ```json
-{
-  "booking_reference": "ABC123",
-  "status": "confirmed",
-  "flight_price": 189.50,
-  "currency": "EUR"
-}
+{"round": 2, "confirm": true}
 ```
 
-**Errors:**
-- 402 — Payment declined
-- 403 — Offer not unlocked
-- 409 — Fare changed (re-unlock) or already booked (idempotency match)
-- 410 — 30-minute window expired
+`{"skip": true}` declines an extra or skips seat selection; the booking still completes.
 
-### Get Booking
+### Retired
 
-```
-GET /api/v1/bookings/booking/{booking_id}
-```
+`POST /api/v1/bookings/unlock`, `POST /api/v1/bookings/book` and
+`GET /api/v1/bookings/booking/{id}` were retired on 2026-09-08 and answer `410 Gone` naming their
+replacement. There is no unlock step on either lane any more.
 
 ## Rate Limits
 
@@ -260,7 +262,7 @@ GET /api/v1/bookings/booking/{booking_id}
 | `UNSUPPORTED_ROUTE` | 422 | validation | No providers for route |
 | `AUTH_INVALID` | 401 | business | Bad API key |
 | `PAYMENT_REQUIRED` | 402 | business | No payment method |
-| `PAYMENT_DECLINED` | 402 | business | Stripe charge failed |
+| `PAYMENT_DECLINED` | 402 | business | The connected Revolut method declined; `decline_reason` says why. Nothing was charged |
 | `OFFER_EXPIRED` | 410 | business | Seats sold — search again |
 | `OFFER_NOT_UNLOCKED` | 403 | business | Must unlock before booking |
 | `FARE_CHANGED` | 409 | business | Price changed — re-unlock |

@@ -144,9 +144,12 @@ Search returns structured offers:
 }
 ```
 
-### 3. Unlock — Developer API only (legacy, not part of the agent flow)
+### 3. Unlock — RETIRED 2026-09-08
 
-Confirms live price with airline and reveals the direct booking URL. Locks offer for 30 minutes. Charged to your card (or paid via MPP crypto); free on the prepaid Developer API.
+There is no unlock step on either lane any more, and the route answers `410 Gone`. Unlock existed
+to confirm a live price before charging; booking now HOLDS the fare and captures only against a
+real airline PNR, so a moved price surfaces as a question to accept or decline rather than a
+surprise charge. Call `book_flight` (PFS) or `POST /flights/book` (Developer API) directly.
 
 ```python
 unlocked = bt.unlock(flights.cheapest.id)

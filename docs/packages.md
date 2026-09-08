@@ -37,7 +37,7 @@ pip install letsfg
 
 Provides:
 
-- `LetsFG` client class with `search()`, `unlock()`, `book()`, `me()`, `resolve_location()`, `setup_payment()`
+- `LetsFG` client class with `search()`, `book()`, `me()`, `resolve_location()`. `unlock()` and `setup_payment()` call routes retired on 2026-09-08 and now answer `410 Gone`
 - Server-side search via letsfg.co — Ryanair, Wizz Air, EasyJet, Norwegian, AirAsia, IndiGo, Qatar Airways, LATAM, Finnair, and 190+ more
 - CLI command `letsfg` with all operations (`letsfg auth` implemented the retired Stripe setup and is being migrated to the connect flow; set `LETSFG_BEARER_TOKEN` meanwhile)
 - Typed response models: `FlightSearchResponse`, `UnlockResponse`, `BookingResponse`, `AgentProfile`
@@ -62,7 +62,7 @@ npm install -g letsfg
 
 Provides:
 
-- `LetsFG` client class with `search()`, `unlock()`, `book()`, `me()`
+- `LetsFG` client class with `search()`, `book()`, `me()`. `unlock()` calls a route retired on 2026-09-08
 - CLI command `letsfg` (same interface as Python)
 - TypeScript types for all responses
 
@@ -114,7 +114,7 @@ Add to your MCP config (Claude Desktop, Cursor, etc.):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LETSFG_BEARER_TOKEN` | (none) | Card-backed token from the connect flow. Reaches **flights and hotels** |
-| `LETSFG_API_KEY` | (none) | Developer API key (prepaid credits). Also reaches both; required for the account and payment tools |
+| `LETSFG_API_KEY` | (none) | Developer API key (look-to-book search). Also reaches both; required for the account and payment tools |
 | `LETSFG_BASE_URL` | `https://letsfg.co/developers` | Override the website-owned public API base |
 
 ### Remote MCP (Streamable HTTP)
@@ -145,7 +145,7 @@ claude mcp add --transport http letsfg https://letsfg.co/developers/api/mcp
 |------|-------------|------|
 | `search_flights` | Search via the letsfg.co server-side engine | Bearer or API key |
 | `resolve_location` | Convert city names to IATA codes | API key |
-| `unlock_flight_offer` | Confirm price and reserve. **[Developer API only]** — not part of the agent flow; on a Bearer token call `book_flight` directly | API key |
+| `unlock_flight_offer` | **RETIRED 2026-09-08** — the route answers `410 Gone`. There is no unlock step on either lane; call `book_flight` (PFS) or `POST /flights/book` (Developer API) directly | API key |
 | `book_flight` | Start the booking: the fare plus LetsFG's markup is held on the connected card, a LetsFG booking agent buys the ticket, and the hold is captured only against a real PNR. Returns a `booking_ref` in seconds; the booking takes 4–11 min | Bearer or API key |
 | `get_flight_booking` | Poll a started booking every 20–30 s: `booking_in_progress` → `completed` (PNR) / `failed` (hold released) / `needs_attention` (do not book again) | Bearer |
 
@@ -184,7 +184,7 @@ Public REST integrations use the letsfg.co developer API:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/agents/register` | POST | Create developer account, get API key |
-| `/agents/setup-payment` | POST | Attach Stripe payment method (`payment_method_id` or `token`) |
+| `/agents/connect-payment` | POST | Mint a one-time `connect_url` to save a Revolut method. Nothing is charged to connect |
 | `/agents/top-up` | POST | Fund prepaid developer balance |
 | `/agents/me` | GET | Developer profile and balance |
 | `/flights/search` | POST | Search flights through the public API (consumes prepaid balance) |

@@ -23,7 +23,10 @@
 |--------|-----------------|------------|
 | `400` | Malformed request body or unsupported payment payload | Validate the request body and retry only after fixing it |
 | `401` | Missing or invalid `X-API-Key` | Register again or rotate to a fresh key |
-| `402` | Payment method missing, balance missing, or balance exhausted | Attach Stripe payment and fund balance |
+| `402` | `payment_method_required` — no Revolut method connected | `POST /agents/connect-payment`, open the `connect_url` |
+| `402` | `search_allowance_exhausted` — the look-to-book allowance is used up | Book a flight (resets it to 200) or top up to buy a block of 500 |
+| `402` | `payment_declined` on a booking — the bank refused the hold | Read `decline_reason`; nothing was charged |
+| `410` | A Stripe-era route (`setup-payment`, `hosted-checkout`, `billing-portal`, `bookings/unlock`, `bookings/book`) | The body names the replacement path |
 | `403` | Search access still disabled for the key | Check `agents/me`, then top up or finish onboarding |
 | `409` | Billing setup conflict, often around top-up state | Re-read account state before retrying |
 | `429` | Too many requests | Back off and retry later |

@@ -205,7 +205,7 @@ class FlightSearchCache:
 | Price tracking / alerts | 30-60 minutes | Alerts don't need second-level precision |
 | Historical analysis | 24 hours | Trends over days, not minutes |
 
-**Important (Developer API):** call `unlock()` before booking. The unlock step confirms the live price with the airline regardless of cache state. Cached search results are for display; unlocked prices are the source of truth. On the card-backed PFS lane there is no unlock step: `book_flight` / `POST /api/agent-book` holds the fare on the connected card and the hold is captured only against a real PNR, so a stale price never gets charged.
+**Important: there is no unlock step on either lane any more.** `POST /bookings/unlock` was retired on 2026-09-08 and answers `410 Gone`. Both lanes now work the way the PFS lane always did: booking HOLDS the fare on the connected card and the hold is captured only against a real airline PNR, so a stale cached price can never become a charge — which is the entire problem unlock existed to solve. If the fare has moved by the time the agent reaches checkout you get a `price_change` question to accept or decline, not a silent charge. Developer API: `POST /flights/book`. PFS: `book_flight` / `POST /api/agent-book`.
 
 ## Result Processing Pipeline
 

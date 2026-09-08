@@ -72,7 +72,7 @@ curl https://letsfg.co/developers/api/openapi.json | jq '.paths | keys'
 The public schema currently covers:
 
 - developer registration and hosted onboarding
-- Stripe payment attachment for API-only onboarding
+- Revolut payment connection for API-only onboarding (`/agents/connect-payment`)
 - prepaid balance funding and billing settings
 - flight search, location resolution, and provider inspection
 

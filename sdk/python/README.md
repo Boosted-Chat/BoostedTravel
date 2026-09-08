@@ -14,7 +14,7 @@
 | **Speed** | 8–10 s to first results; longer on a split | 2–5 s (discover) · 8–10 s to first results (full) |
 | **Setup** | `pip install letsfg`, then connect at [letsfg.co/developers/api/mcp](https://letsfg.co/developers/api/mcp) | [letsfg.co/developers](https://letsfg.co/developers) |
 
-> **Want direct airline URLs without any per-booking fee?** Use the [Developer API](https://letsfg.co/developers) — prepaid credits, results in seconds, no per-booking fee.
+> **Building a product, or need hotels?** Use the [Developer API](https://letsfg.co/developers) — look-to-book search (200 free after every booking, then $0.01), booking through `POST /flights/book`, no booking fee and no transaction fee.
 
 ## Install
 
@@ -82,12 +82,14 @@ Prefer the paid Developer API instead? Register there and pass an `api_key` —
 creds = LetsFG.register("my-agent", "agent@example.com")
 bt = LetsFG(api_key=creds["api_key"])  # or set LETSFG_API_KEY env var
 
-# Setup payment (required before unlock)
-bt.setup_payment(token="tok_visa")  # Stripe test token
-# or: bt.setup_payment(payment_method_id="pm_1234567890")
+# Connect a Revolut payment method (nothing is charged to connect)
+# POST /agents/connect-payment returns a one-time link; open it in a browser.
+# setup_payment() below calls the RETIRED Stripe route and now answers 410 Gone.
 ```
 
-> The API accepts only Stripe-generated tokens or `payment_method_id` values — raw card numbers are not accepted.
+> Payments moved to Revolut on 2026-09-08. `setup_payment()` and the hosted-checkout lane were
+> retired with Stripe and answer `410 Gone` naming the replacement:
+> `POST /agents/connect-payment`, then open the returned `connect_url` once in a browser.
 
 ### Verify Your Credentials
 
@@ -459,7 +461,7 @@ Every command supports `--json` for machine-readable output.
 | Variable | Description |
 |----------|-------------|
 | `LETSFG_BEARER_TOKEN` | PFS Bearer token (card-backed, from the connect flow). Takes priority over `~/.letsfg/config.json`. |
-| `LETSFG_API_KEY` | Developer API key (prepaid credits path) |
+| `LETSFG_API_KEY` | Developer API key (look-to-book search + booking) |
 | `LETSFG_BASE_URL` | API URL override (default: `https://letsfg.co`) |
 
 ## How It Works
@@ -467,7 +469,15 @@ Every command supports `--json` for machine-readable output.
 1. **Search** — Free. The server-side engine queries hundreds of airlines and returns real-time offers.
 2. **Book** — Call `POST /api/agent-book` with your Bearer token. The fare plus LetsFG's markup is held on your connected card, a LetsFG booking agent buys the ticket from the seller, and the hold is captured only once a real airline PNR exists (4–11 minutes; poll `POST /api/agent-book/status`). A failed booking releases the hold. Ticket price only, no LetsFG fee, no unlock step.
 
-The Developer API is a separate, paid product: search consumes prepaid credits, and booking a chosen offer requires an `unlock` call (1% fee, min $3) before `book`, which returns a direct airline booking URL.
+The Developer API is a separate product with the same booking model. Search there is
+**look-to-book**: 200 searches free after every booking you make, then blocks of 500 for $5.00
+($0.01 each). Booking is `POST /flights/book` — the fare is held on a connected Revolut method and
+captured only against a real PNR, with **no booking fee and no transaction fee**; the margin is
+inside the price the search returned.
+
+> Retired 2026-09-08: the `unlock` step (and its 1% / min $3 fee) no longer exists, and neither do
+> the Stripe onboarding routes. Both answer `410 Gone` naming their replacement. See
+> <https://letsfg.co/developers/api/docs>.
 
 ---
 

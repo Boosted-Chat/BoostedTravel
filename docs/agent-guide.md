@@ -27,14 +27,14 @@ from letsfg import LetsFG
 bt = LetsFG()  # uses LETSFG_BEARER_TOKEN from environment
 result = bt.search("LHR", "JFK", "2026-06-01")
 
-# Developer API — prepaid credits, direct booking URLs, no per-booking fee
+# Developer API - look-to-book search, direct booking, hotels
 bt = LetsFG(api_key="letsfg_...")
 result = bt.search("LHR", "JFK", "2026-06-01")
 ```
 
 **When to use PFS (card-backed token):** This is the agent path — search and booking. Connect LetsFG as an MCP server at `https://letsfg.co/developers/api/mcp`; approving it opens <https://letsfg.co/connect>, where the person saves a card in a 0.00 Revolut setup (any card, or Revolut Pay / Google Pay — no Revolut account needed). Nothing is charged until a booking is made. 8–10 s to first results per search. The SDK and CLI read the same token from `LETSFG_BEARER_TOKEN`.
 
-**When to use Developer API:** Managed cloud search, billing controls, volume usage, and direct airline URLs with no per-booking fee. Register at [letsfg.co/developers](https://letsfg.co/developers). It is also the **only** way to reach hotels.
+**When to use Developer API:** Managed cloud search, billing controls, volume usage, and booking through `POST /flights/book`. Register at [letsfg.co/developers](https://letsfg.co/developers), then connect a Revolut method — nothing is charged to connect. Flight search is look-to-book: 200 searches free after every booking, then blocks of 500 for $5.00. No booking fee and no transaction fee; the margin is inside the price you saw. It is also the **only** way to reach hotels.
 
 ### Hotels
 
@@ -58,18 +58,18 @@ non-refundable reservation fee; the balance goes straight to the supplier throug
 User request → Agent parses intent → Resolve locations → Search (local free or public prepaid)
     → Filter & rank offers → Present to user → Book
         (PFS: book directly — fare held on the card, captured only against a real PNR;
-         Developer API: unlock, then book)
+         Developer API: POST /flights/book, then poll)
 ```
 
 ## Agent Best Practices
 
 1. **Always resolve locations first.** City names are ambiguous — "London" could be LHR, LGW, STN, LCY, or LTN. Use `resolve_location()` to get IATA codes, then let the user confirm if multiple options exist.
 
-2. **Search is free on PFS.** Search multiple dates and variants freely with a Bearer token. If you are using the Developer API, remember that search consumes prepaid balance, so batch intentionally.
+2. **Search is free on PFS.** Search multiple dates and variants freely with a Bearer token. On the Developer API you get 200 free searches after every booking you make, so ordinary search-then-book traffic costs nothing — only a long run of searching without booking eats into a paid block.
 
-3. **Book promptly.** On PFS, offers expire ~15 minutes after search — book while it's still fresh, or search again. On the Developer API, you have 30 minutes after unlocking to book before you need a fresh unlock.
+3. **Book promptly.** On PFS, offers expire ~15 minutes after search — book while it's still fresh, or search again. On the Developer API a search stays bookable for 6 hours, but fares move, so a stale offer is more likely to come back as a `price_change` question.
 
-4. **Handle price changes gracefully.** Search prices are real-time snapshots. On PFS the fare plus LetsFG's markup is only *held* on the card; the hold is captured once a real PNR exists and released if the booking fails, so a moved price never turns into a surprise charge — `get_flight_booking` reports `failed` with the reason. On the Developer API, the unlock step confirms the actual current price with the airline; inform the user if it differs significantly from the search price before proceeding to book.
+4. **Handle price changes gracefully.** Search prices are real-time snapshots. On BOTH lanes the fare is only *held* on the card; the hold is captured once a real PNR exists and released if the booking fails, so a moved price never turns into a surprise charge. If the fare moves at checkout you get a `price_change` question to accept or decline — PFS reports it through `get_flight_booking`, the Developer API through `GET /flights/bookings/{id}` and `POST /flights/bookings/{id}/answer`. There is no unlock step on either lane any more.
 
 5. **Map passenger IDs correctly.** Search returns `passenger_ids` (e.g., `["pas_0", "pas_1"]`). When booking with multiple passengers, each passenger dict must include the correct `id` from this list. The first adult gets `pas_0`, second gets `pas_1`, etc.
 

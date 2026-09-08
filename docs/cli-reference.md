@@ -33,14 +33,14 @@ The `letsfg` CLI is available via both Python and JavaScript. Same commands, sam
 
 | Command | Description |
 |---------|-------------|
-| `letsfg register` | **[Developer API only]** Create a PAID prepaid account + API key. Most agents want the card-backed token from the connect flow instead |
+| `letsfg register` | **[Developer API only]** Create a Developer API account + API key. Most agents want the card-backed token from the connect flow instead |
 | `letsfg recover --email <email>` | Recover lost API key via email verification |
 | `letsfg auth` | Connect a card at `letsfg.co/connect` and store the token. Registers itself as an OAuth client (PKCE + loopback redirect), opens a browser for a person to approve, writes `~/.letsfg/config.json`. `--no-browser` prints the URL. The old Stripe setup was retired 2026-09-02 and its tokens revoked |
 | `letsfg search <origin> <dest> <date>` | Search flights via the letsfg.co server-side engine (free with Bearer token) |
 | `letsfg locations <query>` | Resolve city/airport to IATA codes |
-| `letsfg unlock <offer_id>` | **[Developer API only]** Unlock offer details. No unlock step exists on PFS |
-| `letsfg book <offer_id>` | Book the flight. On PFS this goes straight to `/api/agent-book` — no unlock needed. The fare is held on the connected card and captured only against a real PNR; the command returns the started booking's `booking_ref`, which you poll at `POST /api/agent-book/status` (4–11 min) |
-| `letsfg setup-payment` | **[Developer API only]** Attach a card to that paid account. Not how agents authenticate |
+| `letsfg unlock <offer_id>` | **RETIRED 2026-09-08.** The server answers `410 Gone`; there is no unlock step on either lane. Book directly — the fare is held, not taken, and captured only against a real PNR |
+| `letsfg book <offer_id>` | Book the flight. No unlock step on either lane. The fare is HELD on the connected card and captured only against a real PNR; the command returns the started booking's reference to poll (4–11 min). PFS polls `POST /api/agent-book/status`; a Developer API key polls `GET /flights/bookings/{booking_id}` |
+| `letsfg setup-payment` | **RETIRED 2026-09-08 with Stripe.** The server answers `410 Gone`. Connect a Revolut method instead: `POST /agents/connect-payment` returns a one-time `connect_url` to open in a browser; nothing is charged to connect |
 | `letsfg me` | View profile & usage stats |
 
 All commands accept `--json` for structured output and `--api-key` to override the environment variable.
@@ -139,9 +139,6 @@ RESULTS=$(letsfg search "$ORIGIN" "$DEST" 2026-04-01 --adults 2 --json)
 OFFER_ID=$(echo "$RESULTS" | jq -r '.offers[0].id')
 echo "Best offer: $OFFER_ID"
 
-# Unlock — Developer API key only; skip this step on a Bearer token
-letsfg unlock "$OFFER_ID"
-
 # Book (on a Bearer token: holds the fare on the connected card, returns booking_ref;
 # poll POST /api/agent-book/status every 20-30 s until completed / failed)
 letsfg book "$OFFER_ID" \
@@ -174,5 +171,5 @@ The code expires in 15 minutes. Once verified, a new API key is issued and your 
 | Variable | Description |
 |----------|-------------|
 | `LETSFG_BEARER_TOKEN` | Card-backed token from the connect flow (PFS search + booking) |
-| `LETSFG_API_KEY` | Developer API key for prepaid account search, unlock, and book |
+| `LETSFG_API_KEY` | Developer API key for look-to-book search and booking |
 | `LETSFG_BASE_URL` | API URL override (default: `https://letsfg.co/developers`) |

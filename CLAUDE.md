@@ -231,25 +231,27 @@ npm publish
 | `POST` | `/api/agent-book` | Book an offer → `{ booking_ref }`; fare held on the card, LetsFG agent buys the ticket |
 | `POST` | `/api/agent-book/status` | Poll `{ booking_ref }` → `booking_in_progress` / `completed` (PNR) / `failed` / `needs_attention` |
 
-### Developer API (prepaid credits)
+### Developer API (look-to-book search)
 Base: `https://letsfg.co/developers/api/v1`
 
 | Method | Path | Description | Billed? |
 |--------|------|-------------|---------|
 | `POST` | `/api/v1/agents/register` | Register for an API key | No |
-| `POST` | `/api/v1/agents/setup-payment` | Attach Stripe payment method | No |
+| `POST` | `/api/v1/agents/connect-payment` | Mint a one-time link to save a Revolut method | No |
 | `GET`  | `/api/v1/agents/me` | Agent profile, balance, and usage stats | No |
 | `POST` | `/api/v1/agents/top-up` | Fund prepaid balance | No |
 | `POST` | `/api/v1/flights/parse-query` | Parse natural language query → IATA codes, dates | **Free** |
-| `POST` | `/api/v1/flights/discover` | Indicative prices for up to 20 destinations, 2–5 s | **1 credit** |
-| `POST` | `/api/v1/flights/search` | Full search, single destination, 8–10 s to first results | **1 credit** |
-| `POST` | `/api/v1/flights/search/async` | Start full search async → `search_id` | **1 credit** |
+| `POST` | `/api/v1/flights/discover` | Indicative prices for up to 20 destinations, 2–5 s | **1 search** |
+| `POST` | `/api/v1/flights/search` | Full search, single destination, 8–10 s to first results | **1 search** |
+| `POST` | `/api/v1/flights/search/async` | Start full search async → `search_id` | **1 search** |
 | `GET`  | `/api/v1/flights/results/{id}` | Poll async search results | No |
-| `POST` | `/api/v1/flights/multi-search` | Full search, N destinations (max 10) | **1 credit/dest** |
+| `POST` | `/api/v1/flights/multi-search` | Full search, N destinations (max 10) | **1 search/dest** |
 | `GET`  | `/api/v1/flights/locations/{q}` | Resolve city/airport name to IATA codes | No |
-| `POST` | `/api/v1/bookings/unlock` | Unlock an offer | No |
-| `POST` | `/api/v1/bookings/book` | Book a flight | No |
-| `GET`  | `/api/v1/bookings/booking/{id}` | Get booking details | No |
+| `POST` | `/api/v1/flights/book` | Book an offer — holds the connected method, dispatches the agent | No |
+| `GET`  | `/api/v1/flights/bookings/{id}` | Poll a booking to a PNR | No |
+| `POST` | `/api/v1/flights/bookings/{id}/answer` | Answer a seat map / extra / price change | No |
+| `POST` | `/api/v1/bookings/unlock` | **RETIRED 2026-09-08** → `410 Gone`, no unlock step exists | — |
+| `POST` | `/api/v1/bookings/book` | **RETIRED 2026-09-08** → `410 Gone`, use `/flights/book` | — |
 | `GET`  | `/.well-known/ai-plugin.json` | OpenAI Plugin manifest | No |
 | `GET`  | `/llms.txt` | LLM instructions | No |
 | `GET`  | `/openapi.json` | OpenAPI spec | No |

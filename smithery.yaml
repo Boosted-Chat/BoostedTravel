@@ -11,7 +11,7 @@ startCommand:
     properties:
       LETSFG_API_KEY:
         type: string
-        description: "LetsFG Developer API key (prepaid credits). Get one at letsfg.co/developers. Reaches both flights and hotels. Not needed if you set LETSFG_BEARER_TOKEN — the free token reaches both too."
+        description: "LetsFG Developer API key (look-to-book search: 200 free after every booking, then $0.01). Get one at letsfg.co/developers. Reaches both flights and hotels. Not needed if you set LETSFG_BEARER_TOKEN — the free token reaches both too."
       LETSFG_BEARER_TOKEN:
         type: string
         description: "FREE token for flights AND hotels. Get one via 'letsfg auth' (zero-amount card setup, nothing charged, 90-day token). The same card authorises both products, so no Developer API account is needed. Hotel booking charges a 5% non-refundable reservation fee; the balance is paid to the hotel later by link."

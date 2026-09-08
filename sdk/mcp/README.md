@@ -239,9 +239,13 @@ place a second hold.
 > `get_flight_booking` at all, so a stdio agent could start a booking and never
 > learn whether it landed — that is fixed.)
 
-**Developer API (prepaid credits, no per-booking fee):**
+**Developer API (look-to-book search, real booking, hotels):**
 
-Search via the [Developer API](https://letsfg.co/developers) returns direct airline booking URLs on every result — no per-booking checkout step. Use this path when you want raw offers at volume without per-booking fees.
+The [Developer API](https://letsfg.co/developers) books flights itself: `POST /flights/book` holds
+the fare on a connected Revolut method and a LetsFG booking agent buys the ticket, exactly like
+this package does. Every offer carries a `booking_url` that points at a letsfg.co page for that
+offer — never a seller deep link. Search is 200 free after every booking, then $0.01. No booking
+fee, no transaction fee. Use this path for volume, account-level billing, or hotels.
 
 The agent has native tools — no API docs needed, no URL building, no token-burning browser automation.
 

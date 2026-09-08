@@ -123,7 +123,7 @@ Same hotel, same room type, same 2-night stay, same free-cancellation policy —
 
 </div>
 
-Search any route, compare live results, and unlock the booking links for the flights you want — no installation needed.
+Search any route, compare live results, and book the flights you want — no installation needed.
 
 **Agents / scripts (free server-side):** Get a Bearer token by putting a payment method on file (nothing is charged) → use `POST /api/search` and `POST /api/agent-book`. This is **PFS — Programmatic Flight Search** powered by the letsfg.co engine. Search is free; the token is short-lived and refreshes itself. See [letsfg.co/for-agents](https://letsfg.co/for-agents) for the full guide.
 
@@ -137,8 +137,8 @@ When you're ready to integrate it into your own agent, keep reading.
 |---|---|---|---|
 | **Best for** | AI agents (Claude, ChatGPT, Cursor, Windsurf), personal use — easiest way in | Scripts/agents calling the API directly with a Bearer token | High-volume commercial integrations that want prepaid billing. **Most agents should not use this** |
 | **Speed** | 8–10 s to first results | 8–10 s to first results | 2–5 s (discover) · 8–10 s to first results (full search) |
-| **Search cost** | Free (card connected once, nothing charged) | Free (card connected once, nothing charged) | Prepaid credits ($0.50/$0.20/$0.10 per search, monthly tiers) |
-| **Booking** | `book_flight` — fare held on your card, agent buys the ticket, real PNR | `POST /api/agent-book` — same flow | Direct airline URLs |
+| **Search cost** | Free (card connected once, nothing charged) | Free (card connected once, nothing charged) | Look-to-book: 200 free after every booking, then $0.01 |
+| **Booking** | `book_flight` — fare held on your card, agent buys the ticket, real PNR | `POST /api/agent-book` — same flow | `POST /flights/book` — same flow, no booking fee |
 | **Setup** | Add `https://letsfg.co/developers/api/mcp` as an MCP server, approve, add a card | Same token, sent as `Authorization: Bearer` — see below | [letsfg.co/developers](https://letsfg.co/developers) |
 | **Runs where** | Our servers (ranking local in the SDK) | Our servers | Our servers |
 
@@ -152,10 +152,10 @@ When you're ready to integrate it into your own agent, keep reading.
 
   `POST /api/agent-access/request` still answers `402` with `add_card_url` and these steps as JSON, so an agent that starts from the endpoint lands in the same place. The MPP lane (a wallet, no card) is unchanged: answer the `WWW-Authenticate: Payment` challenge ($0.01 once) and verify with `Authorization: Payment`. The Stripe `setup_url` / SetupIntent lanes were retired on 2026-09-02 and every token they issued was revoked; reconnect at letsfg.co/connect. Full guide and response schema: [letsfg.co/for-agents](https://letsfg.co/for-agents).
 
-- **Developer API (Path 3):** Paid server-side search at [letsfg.co/developers](https://letsfg.co/developers). Prepaid credits, direct airline booking URLs (no checkout step), full NL query parsing, and a `/discover` endpoint that checks 20 destinations in one call for 1 credit (2–5 s). Includes a free sandbox at `/sandbox/flights/*`. Full docs: [letsfg.co/developers/api/docs](https://letsfg.co/developers/api/docs).
+- **Developer API (Path 3):** Server-side search and booking at [letsfg.co/developers](https://letsfg.co/developers). Look-to-book search (200 free after every booking, then $0.01), real booking through `POST /flights/book` on a connected Revolut method, full NL query parsing, a `/discover` endpoint that checks 20 destinations in one call (2–5 s), hotels, and a free sandbox at `/sandbox/flights/*`. Full docs: [letsfg.co/developers/api/docs](https://letsfg.co/developers/api/docs).
 
 > **Free server-side search:** Use Path 1 or PFS — connect a card once at letsfg.co/connect (nothing charged) and searches run free on our servers. No Playwright, no local install beyond the SDK.<br>
-> **Direct booking URLs with no per-booking fee:** Use the Developer API (Path 3) — prepaid credits, instant results, no checkout layer.
+> **Booking from your own product:** Use the Developer API (Path 3) — look-to-book search, `POST /flights/book`, and no booking or transaction fee. It is also the only path to hotels.
 
 ---
 
@@ -166,13 +166,15 @@ When you're ready to integrate it into your own agent, keep reading.
 | **MCP Server** | ✅ Free (card connected once at letsfg.co/connect) | Fare + markup held, captured on a real PNR. No separate fee | 5% reservation fee | Our servers |
 | **CLI / Python SDK / npm** | ✅ Free (same token) | Same | 5% non-refundable reservation fee | Our servers |
 | **PFS** (raw API via letsfg.co) | ✅ Free (same token, or $0.01 once via MPP) | Same | 5% reservation fee | Our servers |
-| **Developer API** | Prepaid credits | Included (direct airline URLs) | 5% reservation fee | Our servers |
+| **Developer API** | 200 free per booking, then $0.01 | Fare + markup held, captured on a real PNR. No booking fee, no transaction fee | 5% reservation fee | Our servers |
 
 **MCP / CLI / SDK / PFS = free search, real booking, no separate fee.** Connect a card once (a 0.00 Revolut setup, nothing is charged) and searching is free. No credits, no unlock step. Booking works exactly like the website checkout: `book_flight` / `POST /api/agent-book` **holds** the fare plus LetsFG's markup on your card, a LetsFG booking agent buys the ticket from the seller, and the hold is captured only once a real airline PNR exists. If the booking fails the hold is released and nothing is charged. The price you see is the price you pay; the markup is inside it, nothing is added at booking.
 
 **Hotels = 5% now to hold a free-cancellation rate, on every path.** That 5% is what pays for flexibility: it books the room today, but the remaining 95% isn't charged until the hotel's own cancellation deadline, paid straight to the hotel via a `pay_link`. Cancel before that deadline and the only cost is the 5% already paid. See [Hotels](#-hotels--new-and-live) above.
 
-**Developer API = prepaid, business use.** [letsfg.co/developers](https://letsfg.co/developers) returns direct airline booking URLs with no per-booking fee. Monthly billing: $0.50/search for the first 10, $0.20 for 11–1,000, then $0.10/search. Resets monthly. Minimum top-up: $5.
+**Developer API = business use, look-to-book.** [letsfg.co/developers](https://letsfg.co/developers) books flights itself — `POST /flights/book` holds the fare on your connected Revolut method and a LetsFG booking agent buys the ticket, exactly like the other paths. Search is **not** priced per call: you get **200 free searches after every booking you make**, and booking resets the counter. Past that, blocks of 500 for $5.00 ($0.01 each). **No booking fee, no transaction fee** — the margin is inside the price the search returned, so the amount shown is the amount charged. Minimum top-up: $5.
+
+> The monthly per-search tiers ($0.50 / $0.20 / $0.10) were retired on 2026-09-08 along with Stripe. Payments are Revolut: `POST /agents/connect-payment` returns a one-time link that saves a card, and nothing is charged to connect.
 
 > 💡 **Know someone who travels?** The more people discover LetsFG, the more airlines we cover — and the better it gets for everyone. **[⭐ Star](https://github.com/LetsFG/LetsFG)** · **[Share with a friend](#-join-the-community-)**
 
@@ -189,7 +191,7 @@ When you're ready to integrate it into your own agent, keep reading.
 | Works in AI agents? | No API | **MCP · CLI · PFS (card connected once, free) · Developer API (prepaid)** |
 | Booking | Redirects to OTA checkout | **Real airline PNR, e-ticket to inbox** |
 | Cabin class filter | No | **Economy, premium, business, first** |
-| Cost to you | Hidden markup | **CLI/PFS: free search, no LetsFG fee on booking. Developer API: prepaid credits.** |
+| Cost to you | Hidden markup | **CLI/PFS: free search, no LetsFG fee on booking. Developer API: 200 free searches per booking, no booking fee.** |
 
 ---
 
@@ -259,9 +261,9 @@ curl -X POST https://letsfg.co/api/agent-book/status \
 
 `failed` means the hold was released and nothing was charged; `needs_attention` means a human at LetsFG is checking it, do not book again. A missing passenger detail returns `missing_fields` and charges nothing. Without a card the endpoint answers `payment_method_required` with `add_card_url`. Full guide and response schema: [letsfg.co/for-agents](https://letsfg.co/for-agents).
 
-### ⚡ Developer API — paid, server-side, direct booking URLs
+### ⚡ Developer API — server-side search, booking and hotels
 
-A **separate paid product** for high-volume commercial integrations; most agents should not use it. Prepaid credits, results in seconds, direct airline booking URLs — plus `/discover` (20 destinations in one call, 1 credit), async polling, NL query parsing, and a free sandbox.
+A **separate product** for high-volume commercial integrations; most agents should not use it. Look-to-book search, results in seconds, and real booking through `POST /flights/book` — plus `/discover` (20 destinations in one call), async polling, NL query parsing, hotels, and a free sandbox.
 
 ```bash
 # Register, then search with your API key
@@ -275,7 +277,7 @@ curl -X POST https://letsfg.co/developers/api/v1/flights/search \
   -d '{"origin":"LHR","destination":"BCN","date_from":"2026-06-15"}'
 ```
 
-Pricing: $0.50/search for the first 10 each month, $0.20 for 11–1,000, $0.10 beyond. Minimum top-up $5. Test for free in the sandbox first. Full docs: [letsfg.co/developers/api/docs](https://letsfg.co/developers/api/docs).
+Pricing: 200 searches free after every booking, then blocks of 500 for $5.00 ($0.01 each). No booking fee, no transaction fee. Minimum top-up $5. Test for free in the sandbox first. Full docs: [letsfg.co/developers/api/docs](https://letsfg.co/developers/api/docs).
 
 <details>
 <summary><strong>Full search → book flow (MCP / PFS agent path, no unlock step)</strong></summary>
@@ -290,8 +292,10 @@ get_flight_booking  every 20–30 s → completed (PNR, charged_amount) | failed
 
 Over raw HTTP the same four steps are `POST /api/search`, `GET /api/results/<id>`, `POST /api/agent-book`, `POST /api/agent-book/status`.
 
-`letsfg unlock` is a **Developer API–only** command for the paid, prepaid-credit
-product above — it isn't part of this flow. See [CLI Commands](#cli-commands).
+`letsfg unlock` was **retired on 2026-09-08** and its route answers `410 Gone`.
+There is no unlock step on either lane: booking holds the fare and captures only
+against a real PNR, which is what unlock existed to protect against. See
+[CLI Commands](#cli-commands).
 
 </details>
 
@@ -320,7 +324,7 @@ Approve the connection when your client asks; the consent step opens letsfg.co/c
 The stdio package (`npx -y letsfg-mcp`) still works for search if you give it a token in `LETSFG_BEARER_TOKEN`; its own `authenticate` tool points at the retired Stripe enrolment and is being moved to the connect flow.
 
 <details>
-<summary>Optional: use the Developer API instead (paid, prepaid credits, direct booking URLs)</summary>
+<summary>Optional: use the Developer API instead (look-to-book search, POST /flights/book, hotels)</summary>
 
 ```json
 {
@@ -621,10 +625,10 @@ affiliated with, sponsored by, or endorsed by Omarchy or 37signals.
 | `letsfg auth` | Connect a card at letsfg.co/connect and store the token (self-registers, PKCE + loopback redirect, opens a browser). `--no-browser` prints the URL |
 | `letsfg search <origin> <dest> <date>` | Search flights (free with a card-backed token) |
 | `letsfg register` | **[Developer API only]** Register an account for the paid, prepaid-credit product — not part of the agent flow |
-| `letsfg setup-payment` | **[Developer API only]** Attach a payment method (required for `unlock`) — not part of the agent flow |
+| `letsfg setup-payment` | **RETIRED 2026-09-08 with Stripe** — the route answers `410 Gone`. Connect a Revolut method with `POST /agents/connect-payment` instead |
 | `letsfg recover --email <email>` | Recover lost API key via email |
 | `letsfg locations <query>` | Resolve city/airport to IATA codes |
-| `letsfg unlock <offer_id>` | **[Developer API only]** Confirm live price and reveal the booking URL. Legacy — not part of the agent flow, use `letsfg book` |
+| `letsfg unlock <offer_id>` | **RETIRED 2026-09-08** — the route answers `410 Gone`. There is no unlock step on either lane; use `letsfg book` |
 | `letsfg book <offer_id>` | Book the flight: holds the fare on the connected card, a LetsFG agent buys the ticket, returns a `booking_ref` to poll |
 | `letsfg me` | View profile & usage stats |
 
@@ -684,10 +688,10 @@ Card connected at letsfg.co/connect -> Bearer token -> POST /api/search -> poll 
 2. **Search** — `POST https://letsfg.co/api/search` with `Authorization: Bearer <token>`. Returns `{ search_id }`. Poll `GET /api/results/<search_id>` immediately, then every 2 s, until `status` leaves `searching`. Then keep polling while `split_ticket_pending` or `gf_enrich_pending` is true — the split-ticket offer merges in after the status turns terminal.
 3. **Book** — `POST /api/agent-book` → `booking_ref`; poll `POST /api/agent-book/status` until `completed` (PNR) or `failed` (hold released, nothing charged).
 
-### Developer API — paid, direct booking URLs
+### Developer API — server-side search and booking
 
 ```
-Register → Fund balance → Discover or Search (credits) → Direct booking URL (no checkout)
+Register → Connect a Revolut method → Search (200 free per booking) → POST /flights/book → poll to a PNR
 ```
 
 1. **Discover** — `POST /flights/discover` with up to 20 destinations, get indicative prices sorted cheapest-first. 1 credit, 2–5 s. Use to rank options before committing to a full search.
@@ -735,17 +739,19 @@ Results + booking via POST /api/agent-book (hold on card -> LetsFG agent -> PNR)
 **Developer API**
 ```
 Product / Team / Agent
-        │  API key + prepaid credits
+        │  API key + a connected Revolut method
         ▼
 letsfg.co/developers/api/v1
-  ├─ /flights/discover      (indicative prices, 20 dest, 1 credit, 2–5 s)
-  ├─ /flights/search        (full search, 1 credit, 8–10 s to first results)
+  ├─ /flights/discover      (indicative prices, 20 dest, 2–5 s)
+  ├─ /flights/search        (full search, 8–10 s to first results)
   ├─ /flights/search/async  (non-blocking + poll)
   ├─ /flights/parse-query   (Gemini NL parsing, free)
+  ├─ /flights/book          (holds the fare on the connected method)
+  ├─ /flights/bookings/{id} (poll to a real PNR, 4–11 min)
   └─ /sandbox/flights/*     (fake data, same schema, free)
         │
         ▼
-Direct airline booking_url - no checkout step
+Real airline PNR - the hold is captured only once it exists
 ```
 
 <details>

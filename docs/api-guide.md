@@ -39,28 +39,38 @@
 <div class="docs-step-strip">
     <span class="docs-step">1. Register</span>
     <span class="docs-step-arrow">/</span>
-    <span class="docs-step">2. Attach Stripe payment</span>
+    <span class="docs-step">2. Connect a Revolut method</span>
     <span class="docs-step-arrow">/</span>
-    <span class="docs-step">3. Top up balance</span>
+    <span class="docs-step">3. Search</span>
     <span class="docs-step-arrow">/</span>
-    <span class="docs-step">4. Search</span>
+    <span class="docs-step">4. Book</span>
     <span class="docs-step-arrow">/</span>
-    <span class="docs-step">5. Check account state</span>
+    <span class="docs-step">5. Poll the booking</span>
 </div>
 
 Public search is not anonymous. Requests stay blocked until the developer account has:
 
 - an API key from `POST /agents/register`
-- a Stripe payment method attached through `POST /agents/setup-payment` or hosted checkout
-- prepaid balance funded through `POST /agents/top-up`
+- a Revolut payment method connected through `POST /agents/connect-payment` — open the returned
+  `connect_url` once in a browser. **Nothing is charged to connect**, and a connected method is
+  what opens search
+
+Prepaid balance is **not** required to start. Flight search is look-to-book: 200 searches are free
+after every booking you make, and booking resets the counter. Balance only buys extra blocks of
+search past that allowance (`POST /agents/top-up`).
+
+> **Stripe was retired on 2026-09-08.** `setup-payment`, `hosted-checkout`, `billing-portal` and the
+> whole `/bookings/*` unlock-then-book lane answer `410 Gone` naming their replacement.
 
 ## What the public contract currently covers
 
 The live public schema currently documents these groups of endpoints:
 
-- account registration and hosted checkout
-- Stripe payment attachment, billing portal, billing settings, and key rotation
-- prepaid top-up and account inspection
+- account registration and account inspection
+- Revolut payment connection (`/agents/connect-payment`), billing settings, and key rotation
+- prepaid top-up, for search blocks past the free look-to-book allowance
+- **flight booking**: `/flights/book`, `/flights/bookings/{id}` and `/flights/bookings/{id}/answer`
+  — see [Booking flights](api-booking.md)
 - NL query parsing (`/flights/parse-query` — free, Gemini-powered)
 - flight search, location resolution, and provider inspection
 - discovery search — indicative prices for up to 20 destinations in one call (`/flights/discover` — 1 credit)
@@ -71,12 +81,14 @@ The live public schema currently documents these groups of endpoints:
 
 ## Search activation checklist
 
-Before you send paid search traffic, make sure `GET /agents/me` shows all of the following:
+Before you send search traffic, make sure `GET /agents/me` shows:
 
-- `payment_ready: true`
+- `payment.connected: true` — a Revolut method is saved
 - `access_granted: true`
 - `developer_api.api_access_enabled: true`
-- `developer_api.balance_cents` greater than `0`
+- `developer_api.flight_search.searches_remaining` greater than `0`
+
+`balance_cents` matters only once the free allowance is used up, and only then to buy another block.
 
 ## Read these pages in order
 
@@ -84,7 +96,7 @@ Before you send paid search traffic, make sure `GET /agents/me` shows all of the
     <a class="docs-resource-card" href="api-onboarding/">
         <p class="docs-card-kicker">Step 1</p>
         <h3>Onboarding and billing</h3>
-        <p>Register, attach Stripe, top up balance, open the billing portal, and rotate the key safely.</p>
+        <p>Register, connect a Revolut method, understand the look-to-book allowance, and rotate the key safely.</p>
     </a>
 
     <a class="docs-resource-card" href="api-search/">
@@ -93,8 +105,14 @@ Before you send paid search traffic, make sure `GET /agents/me` shows all of the
         <p>Resolve locations, shape the search payload, inspect providers, and store the response fields that matter.</p>
     </a>
 
-    <a class="docs-resource-card" href="api-errors/">
+    <a class="docs-resource-card" href="api-booking/">
         <p class="docs-card-kicker">Step 3</p>
+        <h3>Booking flights</h3>
+        <p>Hold the fare on the connected card, dispatch the booking agent, poll to a PNR, and answer a seat map or a price change.</p>
+    </a>
+
+    <a class="docs-resource-card" href="api-errors/">
+        <p class="docs-card-kicker">Step 4</p>
         <h3>Errors and limits</h3>
         <p>Map account state and request-body mistakes to the status codes your integration will actually see.</p>
     </a>

@@ -14,7 +14,7 @@
 > See <https://letsfg.co/for-agents>.
 
 <div class="docs-callout">
-  <strong>Pick the correct path first.</strong> Use Option A (free Bearer token) if you want search with no credit card. Use Option B (Developer API) if you want direct airline booking URLs or managed billing.
+  <strong>Pick the correct path first.</strong> Use Option A (free Bearer token) if you want search and booking with no billing account. Use Option B (Developer API) if you want managed billing, hotels, or account-level controls.
 </div>
 
 ## Choose the right mode
@@ -22,7 +22,7 @@
 | Mode | Best for | Setup | Search cost | Booking |
 |------|----------|-------|-------------|---------|
 | MCP / SDK (card-backed token) | Agents, assistants, zero-cost search and booking | Connect the MCP at `letsfg.co/developers/api/mcp`; consent saves a card at `letsfg.co/connect` | Free | `book_flight` / `POST /api/agent-book` — fare held on the card, captured against a real PNR |
-| Public Developer API | Managed cloud search, products, teams, no per-booking fee | Register, attach Stripe, top up balance | Prepaid credits | Direct airline URLs, no fee |
+| Public Developer API | Managed cloud search, products, teams, hotels | Register, then connect a Revolut method (nothing charged) | Look-to-book: 200 free after every booking, then $5.00 per 500 | `POST /flights/book` — fare held on the connected method, captured against a real PNR. No booking fee, no transaction fee |
 | Hotels | Booking a room, not a flight | Developer API key + card on file | Free search, card required | 5% at booking, balance via pay link |
 
 **Hotels work on the same credential.** They accept either the card-backed PFS token or a
@@ -113,20 +113,26 @@ curl -X POST https://letsfg.co/developers/api/v1/agents/register \
 
 Expected response fields include `agent_id`, `api_key`, and `payment_ready`.
 
-### 2. Attach a Stripe payment method
-
-For API-only onboarding, send a Stripe-generated `payment_method_id` or `token`.
+### 2. Connect a Revolut payment method
 
 ```bash
-curl -X POST https://letsfg.co/developers/api/v1/agents/setup-payment \
+curl -X POST https://letsfg.co/developers/api/v1/agents/connect-payment \
   -H "X-API-Key: letsfg_your_api_key" \
   -H "Content-Type: application/json" \
-  -d '{"payment_method_id": "pm_123"}'
+  -d '{"return_url": "https://example.com/account"}'
 ```
 
-If you have a browser available, you can also start hosted onboarding from the developers page or `POST /agents/hosted-checkout`.
+Open the returned `connect_url` in a browser and save a card or Revolut Pay.
+**Nothing is charged to connect.** The link lasts one hour, and a connected
+method is what opens search.
 
-### 3. Fund prepaid balance
+> Stripe was retired on 2026-09-08. `setup-payment` and `hosted-checkout` answer
+> `410 Gone` naming this replacement.
+
+### 3. Fund prepaid balance (optional)
+
+Only needed once you exceed the free look-to-book allowance — 200 searches after
+every booking. Balance buys further blocks of 500 for $5.00.
 
 ```bash
 curl -X POST https://letsfg.co/developers/api/v1/agents/top-up \
@@ -190,7 +196,7 @@ The profile response shows whether payment is ready, whether API access is enabl
 | `401 API key is required` | Search was attempted without `X-API-Key` | Register first and send the returned key |
 | `402 Connect a payment method and fund your prepaid API balance before searching` | No payment method or no balance | Call `setup-payment`, then `top-up` |
 | `403 Fund your prepaid API balance before using flight search` | The key exists but public search is not activated | Fund balance through `POST /agents/top-up` |
-| `400` on `setup-payment` | Raw card data or browser checkout fields were sent | Send only Stripe-generated `payment_method_id` or `token` |
+| `410` on `setup-payment` / `hosted-checkout` | Retired with Stripe on 2026-09-08 | Call `POST /agents/connect-payment` and open the `connect_url` |
 
 ## Search flags
 

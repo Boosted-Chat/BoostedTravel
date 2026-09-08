@@ -168,16 +168,62 @@ class TravelAssistant:
 
         return dict(sorted(by_airline.items(), key=lambda x: x[1]["price"]))
 
-    async def unlock_and_book(self, offer_id: str, search_id: str):
-        """Developer API path: unlock an offer to get the live price, then return booking details.
-        On a card-backed Bearer token there is no unlock — call bt.book() directly."""
-        unlocked = await asyncio.to_thread(bt.unlock, offer_id, search_id)
-        return {
-            "confirmed_price": unlocked["price"],
-            "currency": unlocked["currency"],
-            "booking_url": unlocked.get("booking_url"),
-            "expires_at": unlocked.get("expires_at"),
-        }
+    async def book(self, search_id: str, offer_id: str, passengers: list[dict]):
+        """Book an offer over the Developer API. There is NO unlock step since 2026-09-08.
+
+        Written against the REST endpoints directly rather than the SDK: the SDK's book() still
+        routes its Developer-API path through the retired unlock lane, and it has no polling or
+        question helpers yet.
+
+        The fare is HELD on the connected Revolut method, never taken up front, and captured only
+        once a real airline PNR exists - so a fare that moved cannot become a charge for a ticket
+        you did not get. The offer price already includes LetsFG's margin: no booking fee, no
+        transaction fee.
+        """
+        import httpx
+
+        base = "https://letsfg.co/developers/api/v1"
+        headers = {"X-API-Key": os.environ["LETSFG_API_KEY"]}
+
+        async with httpx.AsyncClient(timeout=60) as http:
+            started = (await http.post(f"{base}/flights/book", headers=headers, json={
+                "search_id": search_id,
+                "offer_id": offer_id,
+                "passengers": passengers,
+                # A retry must never open a second hold on the card.
+                "idempotency_key": f"{search_id}:{offer_id}",
+            })).json()
+
+            if not started.get("ok"):
+                # Nothing was charged. `error` says which condition failed; `missing_fields`
+                # names exactly what an airline checkout still needs from the traveller.
+                return started
+
+            booking_id = started["booking_id"]
+            while True:
+                await asyncio.sleep(5)
+                state = (await http.get(f"{base}/flights/bookings/{booking_id}",
+                                        headers=headers)).json()
+
+                # Polling is also how LetsFG knows you are still there, which keeps a paused
+                # booking alive. A `question` means the run is waiting on you - a seat map, a
+                # paid extra, or a fare increase - and it expires.
+                question = state.get("question")
+                if question:
+                    await http.post(
+                        f"{base}/flights/bookings/{booking_id}/answer", headers=headers,
+                        json={
+                            "round": question["round"],          # echo it; a stale round is 409
+                            "confirm": question["kind"] != "extra",
+                            "skip": question["kind"] == "extra",
+                        },
+                    )
+                    continue
+
+                if state.get("terminal"):
+                    # completed (pnr + charged_amount) | failed (hold released) |
+                    # needs_attention (a human at LetsFG is on it - do not book again)
+                    return state
 
 # Usage
 assistant = TravelAssistant()

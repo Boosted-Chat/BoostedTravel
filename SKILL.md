@@ -42,7 +42,7 @@ description: "LetsFG — Agent-native flight and hotel search and booking API. H
 | Mode | Best for | Speed | Cost |
 |------|----------|-------|------|
 | **MCP / SDK / CLI** (PFS card-backed token) | **Almost every agent.** Search + booking | 8–10 s to first results | Free auth, free search, booking at the price on the offer |
-| **Developer API** (`https://letsfg.co/developers`) | Business / commercial / high-volume | 2–5 s (discover) · 8–10 s to first results (full search) | Prepaid credits; direct booking URLs, no per-booking fee |
+| **Developer API** (`https://letsfg.co/developers`) | Business / commercial / high-volume, and the only path to hotels | 2–5 s (discover) · 8–10 s to first results (full search) | Look-to-book: 200 searches free after every booking, then $0.01. Booking via `POST /flights/book`, no booking fee, no transaction fee |
 
 ## Skills
 
@@ -94,8 +94,8 @@ Resolve city names to IATA airport/city codes.
 - **Output:** List of matching IATA codes (e.g. LON, LHR, LGW, STN, LTN, LCY)
 
 ### unlock_flight_offer
-Confirm live price with airline and reveal the direct booking URL. Reserves the offer for 30 minutes.
-- **Developer API only.** There is no unlock step on a PFS Bearer token: call `/api/agent-book` instead. Legacy path — not part of the agent flow.
+**RETIRED 2026-09-08 — the route answers `410 Gone`.**
+- There is no unlock step on either lane. Booking holds the fare and captures only against a real PNR, which is what unlock existed to protect against. Call `/api/agent-book` (PFS) or `POST /flights/book` (Developer API) instead.
 - **Endpoint:** `POST /api/v1/bookings/unlock`
 - **Input:** offer_id from search results (only required parameter)
 - **Output:** confirmed_price, confirmed_currency, booking_url, offer_expires_at
@@ -507,5 +507,5 @@ def search_with_retry(bt, origin, dest, date, max_retries=3):
 - E-tickets sent directly to passenger email
 - Search is always free and unlimited
 - PFS (Bearer token): book directly, no unlock step — the fare is held on the connected card, a LetsFG booking agent buys the ticket, captured only once a real PNR exists; failed booking = hold released, nothing charged
-- Developer API: unlock reveals the direct booking URL, then book (legacy — the agent flow books directly)
+- Developer API: `POST /flights/book` — the same hold-then-capture flow, then poll `GET /flights/bookings/{id}`. Search there is look-to-book (200 free after every booking) and there is no booking or transaction fee
 - API designed for machines, not browsers

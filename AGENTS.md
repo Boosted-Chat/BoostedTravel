@@ -44,23 +44,34 @@ LetsFG is the largest agent-native flight search and booking toolkit. It gives y
 | Mode | Best for | Speed | Cost |
 |------|----------|-------|------|
 | **CLI / SDK / MCP** (PFS payment token) | **Almost every agent.** Search + booking | 8–10 s to first results; longer to `completed`, longer again on a split | Free auth, free search, no LetsFG fee on booking |
-| **Developer API** ([letsfg.co/developers](https://letsfg.co/developers)) | Business / commercial / high-volume | 2–5 s (discover) · 8–10 s to first results (full search) | Prepaid credits (monthly tiers — see below); direct booking URLs, no per-booking fee |
+| **Developer API** ([letsfg.co/developers](https://letsfg.co/developers)) | Business / commercial / high-volume, and the only path to hotels | 2–5 s (discover) · 8–10 s to first results (full search) | Look-to-book: 200 searches free after every booking, then $0.01. Booking through `POST /flights/book`, no booking fee, no transaction fee |
 
 **Quick decision:**
 - You are an agent that wants to search and book → **use the MCP / SDK / CLI** with a PFS card-backed token (connect through the hosted MCP, described below). This is almost certainly you.
-- You need guaranteed speed for a product, or want direct booking URLs with no per-booking fee → **use the Developer API** at [letsfg.co/developers](https://letsfg.co/developers).
+- You need guaranteed speed for a product, account-level billing controls, or hotels → **use the Developer API** at [letsfg.co/developers](https://letsfg.co/developers).
 
 > **Important:** `GET /en?q=...` does not work for automated agents. The website is protected by Cloudflare Turnstile. All agent/script access must use `POST /api/search` with a Bearer token.
 
-### Developer API search pricing (monthly)
+### Developer API search pricing (look-to-book)
 
-Billing resets on the 1st of each UTC calendar month:
+**Not per search, and not monthly.** You get **200 free searches after every booking you make**,
+and a completed booking resets the counter to 200. Past that, searches come in blocks of **500 for
+$5.00** ($0.01 each) from prepaid balance.
 
-| Monthly searches | Price per search |
-|-----------------|-----------------|
-| 1 – 10          | $0.50 (basic monthly fee) |
-| 11 – 1,000      | $0.20 |
-| 1,001+          | $0.10 (rate stays fixed) |
+| | |
+|---|---|
+| Look-to-book ratio | **200:1** |
+| Per excess search | **$0.01** |
+| Booking fee | **$0** |
+| Transaction fee | **0%** |
+
+A search that returns no offers never consumes allowance, and neither does one that fails on an
+outage. LetsFG's margin is already inside the price on every offer the search returns, so the
+amount shown is the amount charged — nothing is added at booking.
+
+> The monthly tiers ($0.50 / $0.20 / $0.10 per search) were retired on 2026-09-08, along with
+> Stripe. Payments are Revolut: `POST /agents/connect-payment` returns a one-time link that saves a
+> card; nothing is charged to connect.
 
 Minimum top-up: $5. Register at [letsfg.co/developers](https://letsfg.co/developers).
 
@@ -296,8 +307,8 @@ cheapest = min(result["offers"], key=lambda o: o["price"])
 print(f'{result["total_results"]} offers, cheapest: {cheapest["price"]} {cheapest["currency"]}')
 ```
 
-The `LetsFG` client class (`from letsfg import LetsFG`) wraps the paid Developer
-API instead — use it only if you're on prepaid credits (`api_key="letsfg_..."`).
+The `LetsFG` client class (`from letsfg import LetsFG`) wraps the Developer API
+instead — use it only if you have a Developer API key (`api_key="letsfg_..."`).
 
 ### JavaScript/TypeScript SDK + CLI
 ```bash

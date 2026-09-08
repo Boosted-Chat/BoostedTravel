@@ -38,6 +38,7 @@ nav:
     - API Overview: api-guide.md
     - Onboarding & Billing: api-onboarding.md
     - Search & Results: api-search.md
+    - Booking Flights: api-booking.md
     - Hotels: hotels.md
     - Errors & Limits: api-errors.md
     - OpenAPI & Swagger: openapi.md

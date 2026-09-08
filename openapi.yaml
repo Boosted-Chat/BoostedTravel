@@ -7,31 +7,48 @@ info:
     plus real bookable hotel inventory — built for AI agents (OpenClaw, Perplexity Computer,
     Claude, Cursor, Windsurf) and developers.
 
-    Hotels accept either a Developer API key (X-API-Key) or the free PFS token — the same card authorises both.
-    They require a card on file for every call, search included, and booking charges a 5%
-    non-refundable reservation fee with the balance paid directly to the supplier.
+    Hotels accept either a Developer API key (X-API-Key) or the free PFS token — the same card
+    authorises both. They require a card on file for every call, search included, and booking
+    charges a 5% non-refundable reservation fee with the balance paid directly to the supplier.
 
     ## How It Works
-    1. **Search** (free) — real-time offers from hundreds of airlines
-    2. **Unlock** — Developer API only, legacy; confirm live price, reveal direct booking URL. PFS agents skip this and call POST /api/agent-book instead.
-    3. **Book** (ticket price, Developer API only) — create real airline PNR
+    1. **Register** — `POST /agents/register` returns your API key. No card needed.
+    2. **Connect a card** — `POST /agents/connect-payment` returns a one-time `connect_url`.
+       Open it in a browser and save a card or Revolut Pay. **Nothing is charged to connect.**
+    3. **Search** — `POST /flights/search`. Every offer carries `booking_url` (a letsfg.co page
+       for that exact offer) and `book_url` (the API route that books it).
+    4. **Book** — `POST /flights/book` with the `search_id`, the offer `id` and your passengers.
+       The connected method is **held, not charged**; a LetsFG booking agent buys the ticket and
+       the hold is captured only against a real airline PNR. A failed booking releases the hold.
+    5. **Poll** — `GET /flights/bookings/{booking_id}` until `terminal` is true (4–11 minutes).
+
+    ## Pricing
+    Flight search is **look-to-book**, not per search: **200 searches are free after every
+    booking you make**, and booking resets the counter. Past that, searches come in blocks of
+    500 for $5.00 ($0.01 each) from your prepaid balance — `POST /agents/top-up`. Running out
+    answers `402 search_allowance_exhausted` with the numbers.
+
+    **There is no booking fee and no transaction fee.** LetsFG's margin is already inside the
+    price on every offer the search returns, so the amount shown is the amount charged.
 
     ## Authentication
     Two paths:
 
-    **PFS Bearer token** (free search + booking): One-time payment-method-on-file via `letsfg auth` (90-day token). Nothing is charged — a zero-amount Stripe setup.
-    ```
-    curl -X POST https://letsfg.co/api/agent-access/request
-    # add a card at setup_url (or confirm the SetupIntent headlessly), then:
-    curl -X POST https://letsfg.co/api/agent-access/verify -d '{"setup_session_id":"cs_..."}'
-    # -> {"token": "eyJ..."}
-    ```
+    **PFS Bearer token** (free search + booking): one-time card-on-file through
+    <https://letsfg.co/connect>. Nothing is charged — a zero-amount Revolut setup. Obtained by
+    connecting the MCP server at `https://letsfg.co/developers/api/mcp`, or via `letsfg auth`.
 
-    **Developer API key** (prepaid credits, no per-booking fee):
+    **Developer API key** (look-to-book search, direct booking, hotels):
     ```
     pip install letsfg
     letsfg register --name my-agent --email you@example.com
     ```
+
+    > **Stripe was retired on 2026-09-08.** `/agents/setup-payment`, `/agents/hosted-checkout`,
+    > `/agents/billing-portal` and the whole `/bookings/*` unlock-then-book lane now answer
+    > `410 Gone` naming their replacement. Connect a Revolut method with
+    > `POST /agents/connect-payment` and book with `POST /flights/book`.
+
   contact:
     name: LetsFG Support
     email: contact@letsfg.co
@@ -145,12 +162,14 @@ components:
       properties:
         id:
           type: string
-          description: "Offer ID (use for unlock/book)"
+          description: "Offer ID. Pass it to POST /flights/book together with the search_id."
           example: "off_abc123"
         price:
           type: number
           format: float
-          description: "Total price for all passengers"
+          description: |
+            Price per person, INCLUDING LetsFG's margin — this is the amount that gets charged,
+            not a base the fee is added to later. There is no booking fee and no transaction fee.
           example: 189.50
         currency:
           type: string
@@ -173,6 +192,19 @@ components:
         stopovers:
           type: integer
           description: "Number of stops"
+        booking_url:
+          type: string
+          format: uri
+          description: |
+            A letsfg.co page for THIS offer — safe to show a person or open in a browser. Never a
+            seller deep link: the seller link stays server-side and only LetsFG's booking agent
+            follows it.
+          example: "https://letsfg.co/en/offer/srch_123/off_abc123"
+        book_url:
+          type: string
+          format: uri
+          description: "The API route that books this offer on your connected method."
+          example: "https://letsfg.co/developers/api/v1/flights/book"
         outbound:
           $ref: '#/components/schemas/FlightRoute'
         inbound:
@@ -357,7 +389,12 @@ components:
           type: string
         api_key:
           type: string
-          description: "Your API key (prefix: trav_). Store securely."
+          description: "Your API key (prefix: trav_). Store securely — it is shown once."
+        payment_ready:
+          type: boolean
+          description: "False until a Revolut method is connected via POST /agents/connect-payment."
+        tier:
+          type: string
         message:
           type: string
 
@@ -380,16 +417,256 @@ components:
         created_at:
           type: string
           format: date-time
+        payment:
+          type: object
+          description: "The connected Revolut method."
+          properties:
+            connected:
+              type: boolean
+            brand:
+              type: string
+            last4:
+              type: string
+            type:
+              type: string
+              description: "card | revolut_pay"
+        developer_api:
+          type: object
+          properties:
+            flight_search:
+              $ref: '#/components/schemas/FlightSearchAllowance'
 
-    SetupPaymentRequest:
+    FlightSearchAllowance:
+      type: object
+      description: "Where this account stands against the look-to-book allowance."
+      properties:
+        model:
+          type: string
+          example: "look_to_book"
+        free_searches_per_booking:
+          type: integer
+          description: "Free searches granted after every booking."
+          example: 200
+        searches_since_booking:
+          type: integer
+        searches_remaining:
+          type: integer
+          description: "Free allowance plus purchased blocks, minus what you have used."
+        blocks_purchased:
+          type: integer
+        block_size:
+          type: integer
+          example: 500
+        block_price_cents:
+          type: integer
+          example: 500
+
+    ConnectPaymentResponse:
       type: object
       properties:
-        token:
+        status:
           type: string
-          description: "Stripe token (e.g. tok_visa for testing)"
-        payment_method_id:
+          example: "connect_required"
+        connect_url:
           type: string
-          description: "Stripe PaymentMethod ID"
+          format: uri
+          description: "Open in a browser to save a card or Revolut Pay. Nothing is charged."
+          example: "https://letsfg.co/connect?dev=sess_abc123"
+        expires_in_seconds:
+          type: integer
+          example: 3600
+        payment:
+          type: object
+          description: "The currently connected method, if any."
+        message:
+          type: string
+
+    DeveloperPassenger:
+      type: object
+      description: |
+        The same shape the MCP `book_flight` tool takes, field for field, so an integration built
+        against either lane feeds the other. Only `given_name` is required by the schema — the
+        server decides what an airline form still needs and answers `400 missing_fields` naming
+        exactly those, before anything is charged.
+      required: [given_name]
+      properties:
+        given_name:
+          type: string
+          description: "First/given name exactly as on the travel document"
+        family_name:
+          type: string
+          description: "Surname exactly as on the travel document"
+        no_family_name:
+          type: boolean
+          description: "True when the traveller genuinely has no surname"
+        born_on:
+          type: string
+          description: "YYYY-MM-DD"
+        gender:
+          type: string
+          description: "'m' or 'f' — the airline form's title is derived from it"
+        email:
+          type: string
+          format: email
+          description: "The lead passenger's email receives the airline confirmation"
+        phone_number:
+          type: string
+          example: "+48501234567"
+        phone_country:
+          type: string
+          description: "ISO-3166 alpha-2, e.g. PL"
+        nationality:
+          type: string
+          description: "ISO-3166 alpha-2"
+        address_line1:
+          type: string
+        address_line2:
+          type: string
+        address_city:
+          type: string
+        address_state:
+          type: string
+        address_postal:
+          type: string
+        address_country:
+          type: string
+          description: "ISO-3166 alpha-2 country of residence"
+        passport_number:
+          type: string
+          description: "Optional. Asked for, never required."
+        passport_country:
+          type: string
+        passport_expiry:
+          type: string
+          description: "YYYY-MM-DD"
+        passport_issue:
+          type: string
+          description: "YYYY-MM-DD"
+        passenger_type:
+          type: string
+          enum: [adult, child, infant]
+          default: adult
+
+    DeveloperBookRequest:
+      type: object
+      required: [search_id, offer_id, passengers]
+      properties:
+        search_id:
+          type: string
+          description: "`search_id` from the search response. An offer is bookable only inside its own search."
+        offer_id:
+          type: string
+          description: "`id` of one offer from that search"
+        passengers:
+          type: array
+          minItems: 1
+          maxItems: 9
+          items:
+            $ref: '#/components/schemas/DeveloperPassenger'
+        contact_email:
+          type: string
+          format: email
+          description: "Where the confirmation goes. Defaults to the lead passenger's email."
+        idempotency_key:
+          type: string
+          maxLength: 64
+          description: "Retrying with the same key returns the same booking instead of opening a second hold."
+        want_seat:
+          type: boolean
+          default: false
+          description: "Pause at the airline's seat map and ask (see the booking's `question`)."
+
+    BookAccepted:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        booking_id:
+          type: string
+        state:
+          type: string
+          example: "authorised"
+        dispatched:
+          type: boolean
+        held:
+          type: object
+          description: "What is HELD on the connected method — not taken."
+          properties:
+            amount:
+              type: number
+            currency:
+              type: string
+            card:
+              type: object
+        charged:
+          type: number
+          description: "Always 0 at this point. Capture happens only against a real PNR."
+        offer:
+          type: object
+        poll_url:
+          type: string
+          format: uri
+        message:
+          type: string
+
+    BookingStatus:
+      type: object
+      properties:
+        booking_id:
+          type: string
+        state:
+          type: string
+          enum: [authorised, card_issued, booking_in_progress, awaiting_settlement, completed, failed, needs_attention]
+        terminal:
+          type: boolean
+          description: "True for completed, failed and needs_attention."
+        pnr:
+          type: string
+        currency:
+          type: string
+        held_amount:
+          type: number
+        charged_amount:
+          type: number
+          description: "Set once the hold is captured against a real PNR."
+        card_last4:
+          type: string
+        failure_reason:
+          type: string
+        decline_reason:
+          type: string
+        updated_at_ms:
+          type: integer
+        offer:
+          type: object
+        question:
+          type: object
+          nullable: true
+          description: |
+            Present only while `booking_in_progress` and something needs you. `kind` is `seat`,
+            `extra` or `price_change`; `round` must be echoed to the answer route.
+        message:
+          type: string
+
+    BookingAnswerRequest:
+      type: object
+      required: [round]
+      properties:
+        round:
+          type: integer
+          minimum: 1
+          description: "Echo the `round` of the question you are answering. A stale round is refused."
+        seats:
+          type: array
+          items:
+            type: object
+          description: "Seat choices for a `seat` question, one per passenger."
+        confirm:
+          type: boolean
+          description: "Accept a `price_change` or `extra` question."
+        skip:
+          type: boolean
+          description: "Decline the extra, or skip seat selection."
 
     LocationResult:
       type: object
@@ -456,32 +733,73 @@ paths:
         '401':
           description: Invalid or missing API key
 
-  /api/v1/agents/setup-payment:
+  /api/v1/agents/connect-payment:
     post:
-      operationId: setupPayment
-      summary: Set up payment method
-      description: "Attach a Stripe payment method. Required before unlock (PFS path) or book."
+      operationId: connectPayment
+      summary: Connect a Revolut payment method
+      description: |
+        Returns a one-time `connect_url`. Open it in a browser — yourself, or hand it to whoever
+        pays for this account — and save a card or Revolut Pay. The page saves the method for
+        merchant use with a zero-amount order: **nothing is charged to connect**.
+
+        The link is valid for one hour. `GET /agents/me` → `payment.connected` turns true once the
+        method is saved. Connecting again replaces the previous method.
+
+        A connected method is what opens flight search; it is also what bookings, top-ups and
+        auto-refills are charged to, customer not present.
       tags: [Authentication]
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetupPaymentRequest'
+              type: object
+              properties:
+                return_url:
+                  type: string
+                  format: uri
+                  description: "Where to send the browser after the method is saved."
       responses:
         '200':
-          description: Payment method attached
+          description: Connect link minted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectPaymentResponse'
         '401':
           description: Invalid or missing API key
+        '503':
+          description: Card connection temporarily unavailable
+
+  /api/v1/agents/setup-payment:
+    post:
+      operationId: setupPaymentRetired
+      deprecated: true
+      summary: "RETIRED — use POST /agents/connect-payment"
+      description: |
+        Retired on 2026-09-08 together with Stripe. Answers `410 Gone` with the replacement path.
+        Kept in the spec so an older integration is told what to call instead of getting a 404.
+      tags: [Authentication]
+      responses:
+        '410':
+          description: "Gone. Call POST /agents/connect-payment."
 
   /api/v1/flights/search:
     post:
       operationId: searchFlights
       summary: Search flights
       description: |
-        Search hundreds of airlines for flights. Free and unlimited.
-        Results include price, airlines, duration, stopovers, and booking conditions.
-        City codes (LON, NYC, PAR) automatically expand to all airports in that city.
+        Search hundreds of airlines. City codes (LON, NYC, PAR) expand to every airport in
+        that city.
+
+        **Billing is look-to-book**: 200 searches free after every booking, then blocks of 500
+        for $5.00 from prepaid balance. A search that returns no offers is never metered.
+        Requires a connected payment method (`POST /agents/connect-payment`) — a `402` names
+        which condition failed (`payment_method_required` or `search_allowance_exhausted`).
+
+        **Prices already include LetsFG's margin**, so the amount shown is the amount charged.
+        Every offer carries `booking_url` — a letsfg.co page for that exact offer, safe to hand
+        to a human — and `book_url`, the API route that books it on the connected method.
       tags: [Flights]
       requestBody:
         required: true
@@ -498,8 +816,117 @@ paths:
                 $ref: '#/components/schemas/FlightSearchResponse'
         '401':
           description: Invalid or missing API key
+        '402':
+          description: |
+            No connected payment method, or the look-to-book allowance is used up. The body's
+            `error` is `payment_method_required` or `search_allowance_exhausted`; the latter
+            carries `free_searches_per_booking`, `searches_since_booking`, `block_size` and
+            `block_price_cents`.
         '422':
           description: Invalid request (bad IATA code, date in past, etc.)
+
+  /api/v1/flights/book:
+    post:
+      operationId: bookFlightOffer
+      summary: Book a flight offer
+      description: |
+        Book one offer from one of your own searches, on the Revolut method connected to this key.
+
+        The method is **held, not charged**, for the fare plus the payment markup. A LetsFG
+        booking agent then buys the ticket from the seller and the hold is captured **only against
+        a real airline PNR**. If the booking fails the hold is released and nothing is taken.
+
+        Answers `202` within seconds with a `booking_id`; the booking itself takes 4–11 minutes.
+        Poll `GET /flights/bookings/{booking_id}` until `terminal` is true. A completed booking
+        also resets your free-search allowance.
+
+        Retrying with the same `idempotency_key` returns the existing booking rather than opening
+        a second hold. Nothing is charged on any refusal.
+      tags: [Bookings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeveloperBookRequest'
+      responses:
+        '202':
+          description: Hold placed and the booking agent dispatched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookAccepted'
+        '400':
+          description: |
+            `missing_fields` (the lead passenger is missing details an airline checkout requires —
+            the list names them), `party_too_large`, `currency_unsupported`, `offer_not_bookable`.
+        '402':
+          description: "`payment_method_required`, or `payment_declined` with a `decline_reason`."
+        '404':
+          description: "`search_not_found` or `offer_not_found` — searches stay bookable for 6 hours."
+        '409':
+          description: "`package_blocked` — this traveller booked in the last 24h (package-travel rules)."
+        '503':
+          description: "`temporarily_unavailable`."
+
+  /api/v1/flights/bookings/{booking_id}:
+    get:
+      operationId: getFlightBooking
+      summary: Poll a booking
+      description: |
+        The state of a booking you opened. Poll every few seconds; the poll is also how LetsFG
+        knows you are still there, which keeps a paused booking alive.
+
+        While `booking_in_progress`, `question` may carry a seat map, a paid extra, or a fare
+        increase the run is holding a cart for — answer it through
+        `POST /flights/bookings/{booking_id}/answer` within its window, or the run continues
+        without it.
+      tags: [Bookings]
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Booking state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingStatus'
+        '404':
+          description: No such booking on this account
+
+  /api/v1/flights/bookings/{booking_id}/answer:
+    post:
+      operationId: answerBookingQuestion
+      summary: Answer an open booking question
+      description: |
+        Answer the open `question` on a booking. Echo its `round` — a stale round is refused with
+        `409` rather than guessed at.
+
+        Seat question: `{round, seats: [...]}` to choose, or `{round, skip: true}`.
+        Price change or paid extra: `{round, confirm: true}` to accept, `{round, skip: true}` to
+        decline. Declining an extra still completes the booking without it.
+      tags: [Bookings]
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingAnswerRequest'
+      responses:
+        '200':
+          description: Answer accepted
+        '409':
+          description: "`no_open_question`, or the `round` is stale."
 
   /api/v1/flights/resolve-location:
     get:
@@ -728,11 +1155,13 @@ paths:
   /api/v1/bookings/unlock:
     post:
       operationId: unlockOffer
-      summary: Unlock a flight offer
+      deprecated: true
+      summary: "RETIRED — there is no unlock step any more"
       description: |
-        Confirm the live price with the airline and reveal the direct booking URL.
-        Developer API only, legacy — there is no unlock endpoint on a PFS Bearer token.
-        The confirmed price may differ from the search price (airline prices change in real-time).
+        Retired on 2026-09-08 and answers `410 Gone`. There is no unlock step: every offer a
+        search returns is bookable directly with `POST /flights/book`, which holds the fare on
+        your connected method and captures only against a real PNR — so a moved price can never
+        become a surprise charge, which is what unlock existed to prevent.
       tags: [Bookings]
       requestBody:
         required: true
@@ -756,11 +1185,13 @@ paths:
 
   /api/v1/bookings/book:
     post:
-      operationId: bookFlight
-      summary: Book a flight
+      operationId: bookFlightRetired
+      deprecated: true
+      summary: "RETIRED — use POST /flights/book"
       description: |
-        Create a real airline booking (PNR). Ticket price charged via Stripe.
-        Passenger names must match government ID. E-ticket sent to contact email.
+        Retired on 2026-09-08 together with Stripe and answers `410 Gone`. Use
+        `POST /flights/book`, which takes the `search_id` alongside the offer id, charges the
+        connected Revolut method, and returns `202` with a `booking_id` to poll.
       tags: [Bookings]
       requestBody:
         required: true
