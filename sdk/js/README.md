@@ -54,7 +54,7 @@ const flights = await bt.search('GDN', 'BER', '2026-03-03');
 const best = cheapestOffer(flights);
 console.log(offerSummary(best));
 
-// Book — ticket price only, no LetsFG fee, no unlock step. Starts the booking:
+// Book — no booking fee, no transaction fee — our margin is already in the price you saw; no unlock step. Starts the booking:
 // the fare is HELD on your card and a LetsFG agent buys the ticket (4-11 min).
 const result = await bt.book(
   best.id,
@@ -111,8 +111,9 @@ address (passport optional). A missing detail returns `missing_details` with
 same trip while one is in progress — that would place a second hold.
 
 Prefer the paid Developer API instead? Pass `apiKey` instead of `bearerToken` —
-`search()`/`book()` dispatch automatically. That path requires `unlock()`
-— retired 2026-09-08, the route answers `410 Gone` and there is no unlock step or fee.
+`search()`/`book()` dispatch automatically. That path needs a `searchId` (an offer
+is bookable only inside the search that produced it) and has no unlock step:
+`unlock()` was retired 2026-09-08, the route answers `410 Gone`, and there is no fee.
 
 ## Quick Start (CLI)
 
@@ -131,14 +132,15 @@ letsfg book off_xxx --search-id srch_xxx -p '{"given_name":"John","family_name":
 
 ### `bt.search(origin, destination, dateFrom, options?)`
 ### `bt.resolveLocation(query)`
-### `bt.unlock(offerId)` — Developer API only
 ### `bt.book(offerId, passengers, contactEmail, contactPhone?, idempotencyKey?, searchId?)`
 Dispatches on which credential is set: `bearerToken` → PFS booking via
 `POST /api/agent-book` (pass `searchId`, one passenger with full details;
 returns `booking_ref` — poll `POST /api/agent-book/status`). `apiKey` → paid
-Developer API `book` (requires `unlock()` first, supports multiple passengers
-and `idempotencyKey`).
-### `bt.setupPayment(token?)` — Developer API only
+Developer API `book` (requires `searchId`, no unlock step, supports multiple
+passengers and `idempotencyKey`; returns a `booking_id` to poll).
+### `bt.getBooking(bookingId)` / `bt.answerBooking(...)` / `bt.bookAndWait(...)` — Developer API only
+### `bt.connectPayment()` — Developer API only. Returns `connect_url`; nothing is charged
+### `bt.setupPayment()` / `bt.unlock()` — **retired 2026-09-08, both throw locally**
 ### `bt.me()`
 ### `LetsFG.register(agentName, email, baseUrl?, ownerName?, description?)` — Developer API only, most agents don't need this
 

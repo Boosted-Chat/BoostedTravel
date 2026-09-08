@@ -212,7 +212,7 @@ To avoid unexpected updates:
 | `book_flight` | Start a real booking: fare held on the connected card, a LetsFG agent buys the ticket, captured on a real PNR | Ticket price (LetsFG's markup is inside the price) | Places a hold, creates the booking |
 | `get_flight_booking` | Poll a booking started by `book_flight` until `completed` / `failed` / `needs_attention` | FREE | None (read-only) |
 | `unlock_flight_offer` | **RETIRED 2026-09-08** — the tool refuses locally and the route answers `410 Gone` | — | Call `book_flight` directly |
-| `setup_payment` | **Developer API only** — attach a card to a paid prepaid account. Not how agents connect | FREE | Updates payment |
+| `connect_payment` | **Developer API only** — mint a link to connect a payment method to a paid prepaid account. Not how agents connect. Replaced `setup_payment` on 2026-09-08 with the Stripe lane | FREE | Returns `connect_url` |
 | `get_agent_profile` | Usage stats & payment status | FREE | None (read-only) |
 
 ### Booking Flow
@@ -333,7 +333,7 @@ All search and booking run server-side at letsfg.co. No local browsers or scrape
 | `resolve_location` | Your machine → letsfg.co | City/airport name |
 | `book_flight` | Your machine → letsfg.co → LetsFG booking agent → seller | Passenger name, DOB, nationality, email, phone, address; the hold goes to Revolut |
 | `get_flight_booking` | Your machine → letsfg.co | booking_ref |
-| `unlock_flight_offer` / `setup_payment` | Your machine → letsfg.co (Developer API only) | Offer ID / payment token |
+| `connect_payment` | Your machine → letsfg.co (Developer API only) | Nothing but your API key; the card is entered by a person on the returned page |
 
 ---
 

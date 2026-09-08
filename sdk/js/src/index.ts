@@ -837,15 +837,40 @@ export class LetsFG {
   }
 
   /**
-   * [Developer API only] Attach a card to a PAID prepaid Developer API account.
+   * [Developer API] Mint a one-time link for connecting a Revolut payment method.
    *
-   * Most agents should NOT call this. It is unrelated to authenticating for
-   * search and booking — for that, run `letsfg auth`, which puts a card on file
-   * through a zero-amount setup and creates no billing account.
+   * This replaced setupPayment() on 2026-09-08. Nothing is charged to connect, and
+   * card details never touch LetsFG: the returned `connect_url` opens a hosted page
+   * where the developer saves a card, Revolut Pay or Google Pay. A PERSON must open
+   * it in a browser — there is no endpoint that takes card details, so do not ask a
+   * user for a card number and do not try to automate this step.
+   *
+   * Most agents should NOT need a Developer API account at all. To authenticate for
+   * search and booking, run `letsfg auth`, which creates no billing account.
    */
-  async setupPayment(token = 'tok_visa'): Promise<Record<string, unknown>> {
+  async connectPayment(): Promise<Record<string, unknown>> {
     this.requireApiKey();
-    return this.post<Record<string, unknown>>('/developers/api/v1/agents/setup-payment', { token });
+    return this.post<Record<string, unknown>>('/developers/api/v1/agents/connect-payment', {});
+  }
+
+  /**
+   * RETIRED 2026-09-08 with Stripe. Throws instead of calling the server.
+   *
+   * `/agents/setup-payment` answers 410 Gone. Payment enrolment moved onto the same
+   * Revolut rail as the rest of the product: call connectPayment() and open the
+   * `connect_url` it returns.
+   *
+   * Kept as a method, and throwing locally rather than making the request, for the
+   * same reason as unlock() — an older caller gets one clear sentence at the line that
+   * is actually wrong, not a 410 body to decode and not a TypeError somewhere else.
+   */
+  async setupPayment(_token?: string): Promise<Record<string, unknown>> {
+    throw new LetsFGError(
+      'setupPayment() was retired on 2026-09-08 with Stripe and the endpoint answers 410 Gone. ' +
+        'Call connectPayment() instead and open the connect_url it returns; nothing is charged ' +
+        'to connect. See https://letsfg.co/developers/api/docs',
+      410,
+    );
   }
 
   /**

@@ -83,10 +83,10 @@ flights = bt.search("LHR", "JFK", "2026-04-15")
 letsfg register --name my-agent --email agent@example.com
 ```
 
-Then attach a payment method (required before unlock):
+Then connect a payment method (nothing is charged; there is no unlock step):
 
 ```bash
-letsfg setup-payment --token tok_visa
+letsfg connect-payment   # prints a link to open in a browser
 ```
 
 ## Workflow
@@ -152,10 +152,14 @@ real airline PNR, so a moved price surfaces as a question to accept or decline r
 surprise charge. Call `book_flight` (PFS) or `POST /flights/book` (Developer API) directly.
 
 ```python
-unlocked = bt.unlock(flights.cheapest.id)
-print(f"Confirmed: {unlocked.confirmed_price} {unlocked.confirmed_currency}")
-print(f"Booking URL: {unlocked.booking_url}")
-print(f"Expires: {unlocked.offer_expires_at}")
+# unlock() raises LetsFGError(410) locally — it does not call the server. Book instead:
+booking = bt.book_and_wait(
+    offer_id=flights.cheapest.id,
+    search_id=flights.search_id,
+    passengers=[{"given_name": "John", "family_name": "Doe", "born_on": "1990-01-15"}],
+    contact_email="you@example.com",
+)
+print(booking)
 ```
 
 ```bash
@@ -205,11 +209,12 @@ for date in dates:
     if result.offers and (best is None or result.cheapest.price < best[1].price):
         best = (date, result.cheapest)
 
-# Only unlock the winner
-unlocked = bt.unlock(best[1].id)
+# Book only the winner — there is no unlock step
+booking = bt.book(best[1].id, passengers=[{...}], contact_email="you@example.com",
+                  search_id=best[1].search_id)
 ```
 
-### Filter Before Unlocking
+### Filter Before Booking
 
 ```python
 flights = bt.search("LHR", "JFK", "2026-06-01", limit=50)
@@ -222,7 +227,8 @@ candidates = [
 
 if candidates:
     best = min(candidates, key=lambda o: o.price)
-    unlocked = bt.unlock(best.id)
+    booking = bt.book(best.id, passengers=[{...}], contact_email="you@example.com",
+                      search_id=flights.search_id)
 ```
 
 ## Error Handling
@@ -233,20 +239,21 @@ if candidates:
 | `RATE_LIMITED` (429) | Transient | Wait and retry |
 | `INVALID_IATA` (422) | Validation | Use `resolve_location()` to fix |
 | `OFFER_EXPIRED` (410) | Business | Search again for fresh offers |
-| `PAYMENT_REQUIRED` (402) | Business | Attach a card: `letsfg setup-payment` (or pay via MPP on the 402 challenge) |
-| `FARE_CHANGED` (409) | Business | Re-unlock to get current price |
+| `PAYMENT_REQUIRED` (402) | Business | Connect a card: `letsfg connect-payment` prints a link (or pay via MPP on the 402 challenge) |
+| `FARE_CHANGED` (409) | Business | The fare moved — answer the `price_change` question to accept or decline it |
 
 ```python
 from letsfg import LetsFG, OfferExpiredError, PaymentRequiredError
 
 try:
-    unlocked = bt.unlock(offer_id)
+    booking = bt.book(offer_id, passengers=[{...}], contact_email="you@example.com",
+                      search_id=search_id)
 except OfferExpiredError:
-    # Airline sold the seats — search again
+    # Airline sold the seats — search again and book from the fresh results
     flights = bt.search(origin, dest, date)
 except PaymentRequiredError:
-    # No card on file — attach one (or pay via MPP crypto on the 402 challenge)
-    print("Attach a card: letsfg setup-payment")
+    # No card on file — connect one (or pay via MPP crypto on the 402 challenge)
+    print("Connect a card:", bt.connect_payment()["connect_url"])
 ```
 
 ## Search Flags

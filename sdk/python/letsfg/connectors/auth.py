@@ -27,7 +27,7 @@ approve once in a browser -- do not ask a user for a card number.
 RETIRED 2026-09-02: the Stripe enrolment lanes (setup_url, setup_session_id,
 payment_method_id, card_token) and every token they issued.
 
-NOTE: unrelated to `letsfg register` / `letsfg setup-payment`, which belong to
+NOTE: unrelated to `letsfg register` / `letsfg connect-payment`, which belong to
 the separate, paid Developer API and create a billing account most agents do
 not want.
 """

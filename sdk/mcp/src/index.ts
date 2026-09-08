@@ -260,7 +260,7 @@ const GUIDE_TEXT =
   'Run `letsfg auth`, or call the **authenticate** tool. It connects a card at https://letsfg.co/connect — a 0.00 Revolut setup, nothing charged. A person approves once in a browser; there is no endpoint that mints a token from card details. You pay the fare only when you book, and it is held, not taken, until the airline confirms.\n' +
   '\n' +
   '## DO NOT create a Developer API account\n' +
-  'Do NOT call /developers/api/v1/agents/register or /developers/api/v1/agents/setup-payment, and do NOT run `letsfg register` or `letsfg setup-payment`. Those belong to a SEPARATE paid, prepaid-balance product for high-volume commercial integrations, and they create a billing account you almost certainly do not want. Older versions of these docs pointed there by default; that was wrong. Use the payment-token auth above.\n' +
+  'Do NOT call /developers/api/v1/agents/register or /developers/api/v1/agents/connect-payment, and do NOT run `letsfg register` or `letsfg connect-payment`. Those belong to a SEPARATE paid, prepaid-balance product for high-volume commercial integrations, and they create a billing account you almost certainly do not want. Older versions of these docs pointed there by default; that was wrong. Use the payment-token auth above.\n' +
   '\n' +
   '## Pricing\n' +
   '- Auth: FREE — zero-amount card setup, nothing charged\n' +
@@ -555,24 +555,25 @@ const TOOLS = [
       'https://letsfg.co/for-agents, section "Option B". Both land on the same card screen.\n\n' +
       'RETIRED 2026-09-02: the Stripe lanes (setup_url, setup_session_id, payment_method_id, ' +
       'card_token) and every token they issued. Passing them now fails.\n\n' +
-      'This does NOT create a Developer API billing account. Do not use setup_payment for this.',
+      'This does NOT create a Developer API billing account. Do not use connect_payment for this.',
     inputSchema: {
       type: 'object',
       properties: {},
     },
   },
   {
-    name: 'setup_payment',
+    name: 'connect_payment',
     description:
-      '[Developer API only — you almost certainly want `authenticate` instead] Attaches a card to a ' +
-      'PAID prepaid Developer API account. Refuses to run unless LETSFG_API_KEY is set, because agents ' +
-      'kept calling this and creating billing accounts they did not need.',
+      '[Developer API only — you almost certainly want `authenticate` instead] Mints a one-time link ' +
+      'for connecting a payment method to a PAID prepaid Developer API account. Nothing is charged to ' +
+      'connect and card details never touch LetsFG: a PERSON opens the returned connect_url in a ' +
+      'browser and saves a card, Revolut Pay or Google Pay there. Do not ask a user for card numbers ' +
+      'and do not try to automate that step. Refuses to run unless LETSFG_API_KEY is set, because ' +
+      'agents kept calling this and creating billing accounts they did not need. Replaced setup_payment ' +
+      'on 2026-09-08, when the Stripe lane was retired.',
     inputSchema: {
       type: 'object',
-      properties: {
-        token: { type: 'string', description: "Payment token (e.g., 'tok_visa' for testing)" },
-        payment_method_id: { type: 'string', description: 'Payment method ID (pm_xxx)' },
-      },
+      properties: {},
     },
   },
   {
@@ -864,19 +865,33 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
       return JSON.stringify(await readJson(resp, '/api/agent-access/request'), null, 2);
     }
 
-    case 'setup_payment': {
+    // 'setup_payment' is no longer in the tool list; the case stays so an agent built against
+    // the old schema gets a sentence instead of an unknown-tool error or a bare 410.
+    case 'setup_payment':
+    case 'connect_payment': {
       if (!API_KEY) {
         return JSON.stringify({
           error: 'wrong_tool',
           detail:
-            'setup_payment attaches a card to a PAID Developer API account and is not how agents authenticate. ' +
-            'Use the `authenticate` tool instead — nothing is charged and no billing account is created.',
+            'connect_payment attaches a payment method to a PAID Developer API account and is not how ' +
+            'agents authenticate. Use the `authenticate` tool instead — nothing is charged and no ' +
+            'billing account is created.',
         }, null, 2);
       }
-      const body: Record<string, unknown> = {};
-      if (args.token) body.token = args.token;
-      if (args.payment_method_id) body.payment_method_id = args.payment_method_id;
-      const result = await apiRequest('POST', '/developers/api/v1/agents/setup-payment', body);
+      if (name === 'setup_payment' || args.token || args.payment_method_id) {
+        // Say what changed rather than silently succeeding on a different lane: a caller
+        // that passed a Stripe token needs to know the token did nothing.
+        const result = await apiRequest('POST', '/developers/api/v1/agents/connect-payment', {});
+        return JSON.stringify({
+          note:
+            'setup_payment and its token / payment_method_id arguments were retired on 2026-09-08 with ' +
+            'Stripe; /agents/setup-payment answers 410 Gone. Anything you passed was ignored. This is ' +
+            'the replacement, connect_payment: open connect_url in a browser to save a card. Nothing ' +
+            'is charged.',
+          ...(result as Record<string, unknown>),
+        }, null, 2);
+      }
+      const result = await apiRequest('POST', '/developers/api/v1/agents/connect-payment', {});
       return JSON.stringify(result, null, 2);
     }
 

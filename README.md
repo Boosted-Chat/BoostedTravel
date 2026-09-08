@@ -191,7 +191,7 @@ When you're ready to integrate it into your own agent, keep reading.
 | Works in AI agents? | No API | **MCP · CLI · PFS (card connected once, free) · Developer API (prepaid)** |
 | Booking | Redirects to OTA checkout | **Real airline PNR, e-ticket to inbox** |
 | Cabin class filter | No | **Economy, premium, business, first** |
-| Cost to you | Hidden markup | **CLI/PFS: free search, no LetsFG fee on booking. Developer API: 200 free searches per booking, no booking fee.** |
+| Cost to you | Hidden markup | **CLI/PFS: free search; no booking fee and no transaction fee. Developer API: 200 free searches after every booking, then $0.01/search; no booking fee, no transaction fee.** |
 
 ---
 

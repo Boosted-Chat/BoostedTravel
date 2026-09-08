@@ -3,8 +3,8 @@
 > ### ⚠️ Agents: do not create a Developer API account
 >
 > Do **NOT** call `/developers/api/v1/agents/register` or
-> `/developers/api/v1/agents/setup-payment`, and do **NOT** run
-> `letsfg register` or `letsfg setup-payment`. Those belong to a separate,
+> `/developers/api/v1/agents/connect-payment`, and do **NOT** run
+> `letsfg register` or `letsfg connect-payment`. Those belong to a separate,
 > paid, prepaid-balance product for high-volume commercial integrations and
 > create a billing account you almost certainly do not want.
 >
@@ -159,7 +159,7 @@ The letsfg.co website is for human users and is protected by Cloudflare Turnstil
 
 `POST https://letsfg.co/api/agent-access/request` still answers `402` with these steps as JSON (`add_card_url`, `how`), so an agent that starts from the endpoint lands in the same place.
 
-> **Retired 2026-09-02:** the Stripe enrolment lanes (`setup_url`, `setup_intent_id`, `payment_method_id`, `card_token`) and every token they issued. Such a token now answers `401 TOKEN_REVOKED`; `POST /api/agent-access/verify` answers `410` for a Stripe credential. Connect the card again at <https://letsfg.co/connect>. The CLI's `letsfg auth` and the SDKs' `payment_auth()` implemented that lane; a connect-flow login for them is coming — until then the token comes from the MCP connection.
+> **Retired 2026-09-02:** the Stripe enrolment lanes (`setup_url`, `setup_intent_id`, `payment_method_id`, `card_token`) and every token they issued. Such a token now answers `401 TOKEN_REVOKED`; `POST /api/agent-access/verify` answers `410` for a Stripe credential. Connect the card again at <https://letsfg.co/connect>. The CLI's `letsfg auth` and the SDKs' `payment_auth()` implemented that lane. `letsfg auth` now drives the connect flow itself: it registers as an OAuth client (dynamic registration), opens <https://letsfg.co/connect> for the card, and stores the access and refresh tokens in `~/.letsfg/config.json`. The SDKs also read `LETSFG_BEARER_TOKEN`.
 
 **One card = one account.** A payment method identifies exactly one account; connecting a card that is already in use lands on the existing account. Quotas and rate limits are bucketed per card, not per token.
 

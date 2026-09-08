@@ -5,8 +5,8 @@
 ## ⚠️ Read this first
 
 **Do NOT call `/developers/api/v1/agents/register`.**
-**Do NOT call `/developers/api/v1/agents/setup-payment`.**
-**Do NOT run `letsfg register` or `letsfg setup-payment`.**
+**Do NOT call `/developers/api/v1/agents/connect-payment`.**
+**Do NOT run `letsfg register` or `letsfg connect-payment`.**
 
 Those belong to a **separate, paid, prepaid-balance product** for high-volume
 commercial integrations, and they create a billing account you almost certainly
@@ -43,7 +43,7 @@ LetsFG is the largest agent-native flight search and booking toolkit. It gives y
 
 | Mode | Best for | Speed | Cost |
 |------|----------|-------|------|
-| **CLI / SDK / MCP** (PFS payment token) | **Almost every agent.** Search + booking | 8–10 s to first results; longer to `completed`, longer again on a split | Free auth, free search, no LetsFG fee on booking |
+| **CLI / SDK / MCP** (PFS payment token) | **Almost every agent.** Search + booking | 8–10 s to first results; longer to `completed`, longer again on a split | Free auth, free search, no booking fee and no transaction fee (our margin is in the price shown) |
 | **Developer API** ([letsfg.co/developers](https://letsfg.co/developers)) | Business / commercial / high-volume, and the only path to hotels | 2–5 s (discover) · 8–10 s to first results (full search) | Look-to-book: 200 searches free after every booking, then $0.01. Booking through `POST /flights/book`, no booking fee, no transaction fee |
 
 **Quick decision:**
@@ -237,8 +237,9 @@ from letsfg import LetsFG
 
 bt = LetsFG(api_key="letsfg_...")
 flights = bt.search("LHR", "JFK", "2026-06-01")
-unlocked = bt.unlock(flights.cheapest.id)
-booked = bt.book(unlocked.offer_id, passengers=[...], contact_email="you@example.com")
+# No unlock step. book() returns a booking_id to poll; book_and_wait() polls for you.
+booked = bt.book(flights.cheapest.id, passengers=[...], contact_email="you@example.com",
+                 search_id=flights.search_id, idempotency_key="your-unique-key")
 ```
 
 ## Installation & CLI Usage
@@ -272,7 +273,7 @@ letsfg search JFK LHR 2026-05-01 --max-stops 0
 # Resolve city to IATA codes
 letsfg locations "New York"
 
-# Book an offer from your search (free — ticket price only, no LetsFG fee)
+# Book an offer from your search (no booking fee, no transaction fee — our margin is already in the price you saw)
 letsfg book off_xxx --search-id srch_abc --passenger '{"given_name":"Ada","family_name":"Lovelace","born_on":"1990-04-01","gender":"f"}' --email you@example.com
 ```
 
@@ -390,7 +391,7 @@ local server can set `LETSFG_API_KEY` instead of `LETSFG_BEARER_TOKEN` —
 | `letsfg book <offer_id> --search-id <id>` | Start a booking: holds the fare on the connected card, prints a `booking_ref` to poll | Price shown on the offer |
 | `letsfg me` | View profile & usage | Free |
 | `letsfg register` | **[Paid Developer API only — most agents should not run this]** Creates a billing account | Free |
-| `letsfg setup-payment` | **[Paid Developer API only — agents connect at letsfg.co/connect instead]** | Free |
+| `letsfg connect-payment` | **[Paid Developer API only — agents connect at letsfg.co/connect instead]** Prints a link; nothing is charged. `letsfg setup-payment` is an alias, kept because the old name is in published docs | Free |
 | `letsfg unlock <offer_id> --api-key <key>` | **[Developer API only]** Confirm price, required before `book` on that path. Legacy | — |
 | `letsfg recover --email <email>` | Recover lost Developer API key via email | Free |
 
@@ -551,7 +552,7 @@ The SDK raises specific exceptions for each failure mode. All errors include mac
 | `MISSING_PARAMETER` | validation | 422 | Required field missing |
 | `INVALID_PARAMETER` | validation | 422 | Field value out of range or wrong type |
 | `AUTH_INVALID` | business | 401 | Bearer token / API key missing or invalid |
-| `PAYMENT_REQUIRED` | business | 402 | No card on file. PFS: response includes `add_card_url` (https://letsfg.co/connect) — connect the card there. Developer API: `letsfg setup-payment`. |
+| `PAYMENT_REQUIRED` | business | 402 | No card on file. PFS: response includes `add_card_url` (https://letsfg.co/connect) — connect the card there. Developer API: `letsfg connect-payment`, then open the printed link. |
 | `OFFER_NOT_FOUND` | business | 404 | Offer expired (~15 min after search) or unknown `offer_id`/`search_id` — search again |
 | `PAYMENT_DECLINED` | business | 402 | Card refused. PFS: nothing charged, `add_card_url` points at letsfg.co/connect. Developer API: the unlock charge failed — check card details |
 | `FARE_CHANGED` | business | 409 | Price changed since search (Developer API) — re-unlock |
@@ -602,7 +603,7 @@ This section documents the safety guarantees that make LetsFG safe for autonomou
 | `resolve_location` | None (read-only) | Free | Yes | Yes |
 | `get_agent_profile` | None (read-only) | Free | Yes | Yes |
 | `book_offer` (PFS) | Holds the fare and starts a real booking | Price shown on the offer | **No** — a second call places a second hold | **No** — poll `/api/agent-book/status` instead |
-| `setup_payment` (Developer API) | Updates payment method | Free | Yes | Yes (last write wins) |
+| `connect_payment` (Developer API) | Mints a link for connecting a payment method | Free | Yes | Yes (last write wins) |
 | `unlock` | **RETIRED 2026-09-08** — answers `410 Gone`, there is no unlock step and no fee | — | — | — |
 
 ### Don't Double-Book
@@ -658,7 +659,7 @@ def search_and_book(origin_iata, dest_iata, date, passenger, contact_email):
     cheapest = min(result["offers"], key=lambda o: o["price"])
     print(f"Found {result['total_results']} offers, cheapest: {cheapest['price']} {cheapest['currency']}")
 
-    # Step 2: Book (free — ticket price only, no LetsFG fee)
+    # Step 2: Book (no booking fee, no transaction fee — our margin is already in the price you saw)
     try:
         booked = asyncio.run(book_offer(
             search_id=result["search_id"],
@@ -688,8 +689,9 @@ search_and_book(
 
 Searching is free. Booking goes through `POST /api/agent-book`: the price shown
 on the offer is held on the connected card and captured only once a real PNR
-exists — no separate LetsFG fee. The retired unlock fee (1% of ticket, min $3) applies
-only on the paid Developer API.
+exists. There is no booking fee and no transaction fee — our margin is already
+included in the price on every offer, so the amount you were shown is the amount
+charged. There is no unlock step on any lane.
 
 ### Search Wide, Book Once
 
@@ -976,7 +978,7 @@ class FlightAgent:
             else:
                 best_offer = min(result["offers"], key=lambda o: o["price"])
 
-            # Book (free — ticket price only, no LetsFG fee)
+            # Book (no booking fee, no transaction fee — our margin is already in the price you saw)
             try:
                 booked = asyncio.run(book_offer(
                     search_id=result["search_id"], offer_id=best_offer["id"],

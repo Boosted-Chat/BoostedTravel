@@ -13,12 +13,13 @@ Programmatic search (free, requires Bearer token):
     import asyncio
     result = asyncio.run(search_local("SHA", "CTU", "2026-03-20"))
 
-Full API (search + unlock + book, requires API key):
+Full API (search + book, requires API key). No unlock step — it was retired
+2026-09-08 and unlock() now raises:
     from letsfg import LetsFG
     bt = LetsFG(api_key="letsfg_...")
     flights = bt.search("GDN", "BER", "2026-03-03")
-    bt.unlock(flights.offers[0].id)
-    bt.book(flights.offers[0].id, passenger={...})
+    bt.book(flights.offers[0].id, passengers=[{...}], contact_email="you@example.com",
+            search_id=flights.search_id)
 """
 
 from letsfg.client import (

@@ -3,8 +3,8 @@
 > ### ⚠️ Agents: do not create a Developer API account
 >
 > Do **NOT** call `/developers/api/v1/agents/register` or
-> `/developers/api/v1/agents/setup-payment`, and do **NOT** run
-> `letsfg register` or `letsfg setup-payment`. Those belong to a separate,
+> `/developers/api/v1/agents/connect-payment`, and do **NOT** run
+> `letsfg register` or `letsfg connect-payment`. Those belong to a separate,
 > paid, prepaid-balance product for high-volume commercial integrations and
 > create a billing account you almost certainly do not want.
 >
@@ -37,11 +37,12 @@
 The live public schema currently includes paths for:
 
 - `POST /agents/register`
-- `POST /agents/hosted-checkout`
-- `POST /agents/hosted-checkout/complete`
-- `POST /agents/setup-payment`
+- `POST /agents/connect-payment`
 - `POST /agents/top-up`
-- `POST /agents/billing-portal`
+- `POST /agents/hosted-checkout` — **retired 2026-09-08**, answers `410 Gone`
+- `POST /agents/hosted-checkout/complete` — **retired 2026-09-08**, answers `410 Gone`
+- `POST /agents/setup-payment` — **retired 2026-09-08**, answers `410 Gone`
+- `POST /agents/billing-portal` — **retired 2026-09-08**, answers `410 Gone`
 - `POST /agents/billing-settings`
 - `POST /agents/rotate-key`
 - `GET /agents/me`
@@ -86,7 +87,7 @@ The public schema currently covers:
   <a class="docs-resource-card" href="api-onboarding/">
     <p class="docs-card-kicker">Billing</p>
     <h3>Onboarding and billing</h3>
-    <p>Map the schema to the real registration, setup-payment, top-up, and billing-portal flow.</p>
+    <p>Map the schema to the real registration, connect-payment and top-up flow.</p>
   </a>
 
   <a class="docs-resource-card" href="api-search/">

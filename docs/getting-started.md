@@ -3,8 +3,8 @@
 > ### ⚠️ Agents: do not create a Developer API account
 >
 > Do **NOT** call `/developers/api/v1/agents/register` or
-> `/developers/api/v1/agents/setup-payment`, and do **NOT** run
-> `letsfg register` or `letsfg setup-payment`. Those belong to a separate,
+> `/developers/api/v1/agents/connect-payment`, and do **NOT** run
+> `letsfg register` or `letsfg connect-payment`. Those belong to a separate,
 > paid, prepaid-balance product for high-volume commercial integrations and
 > create a billing account you almost certainly do not want.
 >
@@ -173,7 +173,7 @@ The profile response shows whether payment is ready, whether API access is enabl
   <a class="docs-resource-card" href="api-onboarding/">
     <p class="docs-card-kicker">Billing</p>
     <h3>Onboarding and billing</h3>
-    <p>Use the browserless setup-payment and top-up flow or the hosted checkout flow when a browser is available.</p>
+    <p>Register, connect a payment method with connect-payment, and top up prepaid balance when the free look-to-book allowance runs out.</p>
   </a>
 
   <a class="docs-resource-card" href="api-search/">

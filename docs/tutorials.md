@@ -3,8 +3,8 @@
 > ### ⚠️ Agents: do not create a Developer API account
 >
 > Do **NOT** call `/developers/api/v1/agents/register` or
-> `/developers/api/v1/agents/setup-payment`, and do **NOT** run
-> `letsfg register` or `letsfg setup-payment`. Those belong to a separate,
+> `/developers/api/v1/agents/connect-payment`, and do **NOT** run
+> `letsfg register` or `letsfg connect-payment`. Those belong to a separate,
 > paid, prepaid-balance product for high-volume commercial integrations and
 > create a billing account you almost certainly do not want.
 >
@@ -522,25 +522,25 @@ async def resilient_book(origin, dest, date, passengers, max_search_retries=2):
 
     best = search["offers"][0]
 
-    # Step 2: Unlock (confirms live price)
+    # Step 2: Book (not retryable — payment involved). There is no unlock step:
+    # the fare is HELD and captured only against a real airline PNR, so a price that
+    # moved surfaces as a question rather than a surprise charge. On a Bearer token
+    # this STARTS the booking and returns booking_ref; poll POST /api/agent-book/status
+    # every 20-30 s until completed / failed / needs_attention.
     try:
-        unlocked = bt.unlock(best["id"], search["search_id"])
+        booking = bt.book(best["id"], search["search_id"], passengers)
     except OfferExpiredError:
-        # Search result too old — re-search and try again
+        # Search result too old — re-search and book from the fresh results
         search = bt.search(origin, dest, date, sort="price", limit=5)
         if not search.get("offers"):
             return {"status": "expired", "message": "Offer expired and no alternatives found"}
         best = search["offers"][0]
-        unlocked = bt.unlock(best["id"], search["search_id"])
+        booking = bt.book(best["id"], search["search_id"], passengers)
 
-    # Step 3: Book (not retryable — payment involved). On a Bearer token this
-    # STARTS the booking and returns booking_ref; poll POST /api/agent-book/status
-    # every 20-30 s until completed / failed / needs_attention.
-    booking = bt.book(best["id"], search["search_id"], passengers)
     return {
         "status": "booked",
         "confirmation": booking.get("confirmation_code"),
-        "price": unlocked["price"],
-        "currency": unlocked["currency"],
+        "price": best["price"],
+        "currency": best.get("currency", ""),
     }
 ```

@@ -30,8 +30,9 @@ export LETSFG_BEARER_TOKEN=eyJ...     # the card-backed token from the connect f
 letsfg search LHR BCN 2026-06-15
 ```
 
-**Search is free and booking costs the ticket price.** There is no unlock step
-and no LetsFG fee on any path. The Developer API works the same way: no booking
+**Search is free and the price you saw is the price charged.** There is no unlock
+step, no booking fee and no transaction fee on any path — our margin is already
+included in every offer price. The Developer API works the same way: no booking
 fee and no transaction fee, with the margin already inside the offer price. Its
 unlock step and 1% (min $3) fee were retired on 2026-09-08.
 
@@ -126,7 +127,7 @@ bt = LetsFG()  # reads LETSFG_BEARER_TOKEN
 flights = bt.search("GDN", "BER", "2026-03-03")
 print(f"{flights.total_results} offers, cheapest: {flights.cheapest.summary()}")
 
-# Book — ticket price only, no LetsFG fee, no unlock step. Starts the booking:
+# Book — no booking fee, no transaction fee — our margin is already in the price you saw; no unlock step. Starts the booking:
 # the fare is HELD on your card and a LetsFG agent buys the ticket (4-11 min).
 result = bt.book(
     offer_id=flights.cheapest.id,
@@ -209,10 +210,10 @@ flights = bt.search(
 # passenger_ids will be ["pas_0", "pas_1", "pas_2"]
 print(f"Passenger IDs: {flights.passenger_ids}")
 
-# Developer API: unlock, then book with details for EACH passenger
-unlocked = bt.unlock(flights.cheapest.id)
+# Developer API: book with details for EACH passenger. No unlock step.
 booking = bt.book(
-    offer_id=unlocked.offer_id,
+    offer_id=flights.cheapest.id,
+    search_id=flights.search_id,
     passengers=[
         {"id": "pas_0", "given_name": "John", "family_name": "Doe", "born_on": "1990-01-15", "gender": "m", "title": "mr"},
         {"id": "pas_1", "given_name": "Jane", "family_name": "Doe", "born_on": "1992-03-20", "gender": "f", "title": "ms"},
@@ -317,12 +318,12 @@ from letsfg import LetsFG, LetsFGError, PaymentRequiredError, OfferExpiredError
 
 bt = LetsFG(api_key="letsfg_...")
 try:
-    unlocked = bt.unlock(offer_id)
-    booking = bt.book(offer_id=unlocked.offer_id, passengers=[...], contact_email="...")
+    booking = bt.book(offer_id=offer_id, search_id=search_id,
+                      passengers=[...], contact_email="...")
 except PaymentRequiredError:
-    print("Run bt.setup_payment() first")
+    print("Run bt.connect_payment() and open the connect_url it returns")
 except OfferExpiredError:
-    print("Offer expired, or the 30-minute post-unlock window closed — search and unlock again")
+    print("Offer expired — search again and book from the fresh results")
 except LetsFGError as e:
     print(f"API error ({e.status_code}): {e.message}")
 ```
@@ -331,7 +332,7 @@ except LetsFGError as e:
 |-----------|-----------|-------|
 | `AuthenticationError` | 401 | Missing or invalid API key (Developer API) |
 | `BearerTokenError` | 401 | Missing, expired or revoked Bearer token — reconnect through the MCP (PFS) |
-| `PaymentRequiredError` | 402 | No payment method (call `setup_payment()`, Developer API) |
+| `PaymentRequiredError` | 402 | No payment method (call `connect_payment()`, Developer API) |
 | `OfferExpiredError` | 410 | Offer no longer available (Developer API) |
 | `LetsFGError` | any | Base class for all API errors |
 
@@ -376,7 +377,7 @@ def search_with_retry(origin, dest, date, max_retries=3):
 
 Searching is free (10 per 10 min, 30 per hour, 100 per day per card). On
 PFS, booking goes through `POST /api/agent-book` — the fare is held on your
-card and captured only on a real PNR, ticket price only, no LetsFG fee.
+card and captured only on a real PNR. No booking fee, no transaction fee — our margin is already in the price you saw.
 Compare before booking:
 
 ```python
@@ -419,7 +420,7 @@ letsfg search JFK LHR 2026-05-01 --adults 3 --cabin C --max-stops 0
 # Machine-readable output (for agents) — includes search_id, needed for book
 letsfg search LON BCN 2026-04-01 --json
 
-# Book — ticket price only, no LetsFG fee, no unlock step. Holds the fare on
+# Book — no booking fee, no transaction fee — our margin is already in the price you saw; no unlock step. Holds the fare on
 # your card and starts the LetsFG booking agent; prints the booking_ref to poll.
 letsfg book off_xxx --search-id srch_xxx \
   --passenger '{"given_name":"John","family_name":"Doe","born_on":"1990-01-15","gender":"m","nationality":"GB","phone_number":"+447700900123","phone_country":"GB","address_line1":"1 Analytical Way","address_city":"London","address_postal":"N1 9GU","address_country":"GB"}' \
@@ -450,11 +451,11 @@ letsfg locations "Berlin"
 | `auth` | Connect a card at letsfg.co/connect and store the token — self-registers, PKCE + loopback redirect, opens a browser. `--no-browser` prints the URL | FREE |
 | `search` | Search flights between any two airports, prints `search_id` | FREE |
 | `locations` | Resolve city name to IATA codes | FREE |
-| `book` | Start a booking for an offer from your search (`--search-id` required). Fare held on your card, captured on a real PNR; poll `/api/agent-book/status` | Ticket price only, no LetsFG fee |
+| `book` | Start a booking for an offer from your search (`--search-id` required). Fare held on your card, captured on a real PNR; poll `/api/agent-book/status` | No booking fee, no transaction fee |
 | `me` | Show agent profile and usage stats | FREE |
-| `unlock` | **[Developer API only]** Unlock offer (confirms price, reveals booking URL). Requires `--api-key`. Legacy | — |
+| `unlock` | **RETIRED 2026-09-08** — prints the replacement and exits non-zero. There is no unlock step | — |
 | `register` | **[Developer API only]** Register new Developer API key | FREE |
-| `setup-payment` | **[Developer API only]** Attach payment card (required for unlock) | FREE |
+| `connect-payment` | **[Developer API only]** Print a link for connecting a payment method. Nothing is charged. `setup-payment` is an alias | FREE |
 
 Every command supports `--json` for machine-readable output.
 

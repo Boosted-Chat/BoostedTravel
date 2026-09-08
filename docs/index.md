@@ -6,8 +6,8 @@ hide:
 > ### ⚠️ Agents: do not create a Developer API account
 >
 > Do **NOT** call `/developers/api/v1/agents/register` or
-> `/developers/api/v1/agents/setup-payment`, and do **NOT** run
-> `letsfg register` or `letsfg setup-payment`. Those belong to a separate,
+> `/developers/api/v1/agents/connect-payment`, and do **NOT** run
+> `letsfg register` or `letsfg connect-payment`. Those belong to a separate,
 > paid, prepaid-balance product for high-volume commercial integrations and
 > create a billing account you almost certainly do not want.
 >
@@ -47,7 +47,7 @@ LetsFG has two access paths — pick the one that matches your setup:
 | **Developer API** ([letsfg.co/developers](https://letsfg.co/developers)) | Runs on our servers; connect a Revolut method | 2–5 s (discover) · 8–10 s to first results (full search) | Look-to-book: 200 free per booking, then $0.01 | `POST /flights/book` — fare held on the connected method, captured only against a real PNR. No booking fee, no transaction fee |
 
 **When to choose each:**
-- Use **MCP / SDK** if you want free search and booking — add `https://letsfg.co/developers/api/mcp` to your assistant and approve it once ([letsfg.co/for-agents](https://letsfg.co/for-agents)), then search and book server-side for free. `book_flight` / `POST /api/agent-book` holds the fare on the connected card and a LetsFG booking agent buys the ticket — no unlock step, no LetsFG fee on top of the price you saw.
+- Use **MCP / SDK** if you want free search and booking — add `https://letsfg.co/developers/api/mcp` to your assistant and approve it once ([letsfg.co/for-agents](https://letsfg.co/for-agents)), then search and book server-side for free. `book_flight` / `POST /api/agent-book` holds the fare on the connected card and a LetsFG booking agent buys the ticket — no unlock step, no booking fee and no transaction fee — our margin is already included in the price you saw, so the amount quoted is the amount charged.
 - Use the **Developer API** if you're building a product, need hotels, or want account-level billing controls. Look-to-book search (200 free after every booking, then $0.01), results in seconds, and `POST /flights/book` with no booking fee and no transaction fee.
 
 ---

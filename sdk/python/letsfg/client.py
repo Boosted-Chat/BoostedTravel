@@ -1,35 +1,37 @@
 """
 LetsFG Python SDK — agent-native flight search & booking.
 
-Zero-config, zero-browser, zero-markup. Built for autonomous agents.
-Search is free. Booking charges the price shown on the offer.
+Zero-config, zero-browser, zero price bias. Built for autonomous agents.
+Search is free. Booking adds no booking fee and no transaction fee: our margin is
+already included in the price on every offer, so the amount you were shown is the
+amount charged.
 
     from letsfg import LetsFG
 
     bt = LetsFG(api_key="letsfg_...")
-    
-    # Setup payment (one-time — required before booking via PFS path)
-    bt.setup_payment(token="tok_visa")
-    
-    # Search (FREE)
+
+    # One-time: connect a payment method. Nothing is charged to connect.
+    # (setup_payment() was retired with Stripe on 2026-09-08 and now raises.)
+    print(bt.connect_payment()["connect_url"])   # open this in a browser
+
+    # Search
     flights = bt.search("LON", "BCN", "2026-04-01")
     print(flights.cheapest.summary())
-    
-    # Unlock (FREE)
-    unlock = bt.unlock(flights.cheapest.id)
-    
-    # Book (ticket price charged via Stripe)
-    booking = bt.book(
+
+    # Book. There is no unlock step — unlock() was retired on 2026-09-08 and raises.
+    # The fare is HELD on the connected method and captured only once a real airline
+    # PNR exists; a failed booking releases the hold and charges nothing.
+    booking = bt.book_and_wait(
         offer_id=flights.cheapest.id,
+        search_id=flights.search_id,
         passengers=[{
-            "id": flights.passenger_ids[0],
             "given_name": "John", "family_name": "Doe",
             "born_on": "1990-01-15", "gender": "m", "title": "mr",
             "email": "john@example.com"
         }],
-        contact_email="john@example.com"
+        contact_email="john@example.com",
     )
-    print(f"PNR: {booking.booking_reference}")
+    print(booking)
 """
 
 from __future__ import annotations
@@ -618,7 +620,8 @@ class LetsFG:
         Book a flight.
 
         Uses a Bearer token (PFS path) if available — run `letsfg auth` once or
-        set LETSFG_BEARER_TOKEN. Free, ticket price only, no LetsFG fee — pass
+        set LETSFG_BEARER_TOKEN. Free search; no booking fee and no transaction fee
+        on booking (our margin is already in the price you saw) — pass
         search_id (from search_local()'s result) and only the first entry in
         passengers is used (one passenger per PFS booking). Returns a dict:
         either {"ok": True, "booked": True, "order_id": ...} or
@@ -1017,18 +1020,46 @@ class LetsFG:
         return self._post("/api/v1/hotels/cancel", {"confirmation": confirmation},
                           timeout=self.HOTEL_CANCEL_TIMEOUT)
 
-    def setup_payment(self, token: str = "tok_visa") -> dict:
+    def connect_payment(self) -> dict:
         """
-        Set up a payment method using a payment token.
+        [Developer API] Mint a one-time link for connecting a Revolut payment method.
 
-        Args:
-            token: Payment token (default: "tok_visa" for testing).
+        This replaced setup_payment on 2026-09-08. Nothing is charged to connect, and
+        card details never touch LetsFG: the returned ``connect_url`` opens a hosted
+        page where the developer saves a card, Revolut Pay or Google Pay.
+
+        A person must open that URL in a browser — there is no endpoint that takes card
+        details, so do not ask a user for a card number and do not try to automate it.
 
         Returns:
-            Dict with status and payment_method_id.
+            Dict with ``status``, ``connect_url``, ``expires_in_seconds``, and ``payment``
+            (the currently connected method, if any).
         """
         self._require_api_key()
-        return self._post("/api/v1/agents/setup-payment", {"token": token})
+        return self._post("/api/v1/agents/connect-payment", {})
+
+    def setup_payment(self, token: str = "") -> dict:
+        """
+        RETIRED 2026-09-08 with Stripe. Raises instead of calling the server.
+
+        ``/agents/setup-payment`` answers 410 Gone. Payment enrolment moved onto the same
+        Revolut rail the rest of the product uses: call :meth:`connect_payment` and open
+        the ``connect_url`` it returns.
+
+        Kept as a method, and raising locally rather than making the request, for the same
+        reason as :meth:`unlock` — an older caller gets one clear sentence at the line that
+        is actually wrong, not a 410 body to decode and not an AttributeError elsewhere.
+
+        Raises:
+            LetsFGError: always.
+        """
+        raise LetsFGError(
+            "setup_payment() was retired on 2026-09-08 with Stripe and the endpoint answers "
+            "410 Gone. Call connect_payment() instead and open the connect_url it returns; "
+            "nothing is charged to connect. "
+            "See https://letsfg.co/developers/api/docs",
+            410,
+        )
 
     def start_checkout(
         self,
@@ -1038,47 +1069,29 @@ class LetsFG:
         checkout_token: str = "",
     ) -> CheckoutProgress:
         """
-        Drive automated checkout up to (not including) payment — SAFE, no charge.
+        RETIRED 2026-09-08. Raises instead of calling the server.
 
-        This navigates the airline's website through flight selection, passenger
-        details, and extras, stopping at the payment page. The user can then
-        complete payment manually via the returned booking_url.
+        ``/bookings/start-checkout`` answers 410 Gone, and its ``checkout_token``
+        came from :meth:`unlock`, which was retired the same day. Booking runs
+        server-side now: :meth:`book` holds the fare on the connected payment
+        method, a LetsFG agent buys the ticket, and the hold is captured only once
+        a real airline PNR exists.
 
-        Requires a checkout token from unlock() — the unlock step must be
-        completed before checkout automation runs. This prevents abuse since the
-        token is verified with the closed-source backend.
+        Kept as a method, and raising locally rather than making the request, for the
+        same reason as :meth:`unlock` — an older caller gets one clear sentence at the
+        line that is actually wrong.
 
-        For airlines without automated checkout, returns the booking_url
-        for manual completion.
-
-        Args:
-            offer_id: The offer ID from search results.
-            passengers: Passenger details. If None, uses safe test data
-                (Test Traveler, test@example.com). Pass real data for
-                actual bookings.
-            checkout_token: Token from unlock() response. Required.
-
-        Returns:
-            CheckoutProgress with status, screenshot, and booking_url.
+        Raises:
+            LetsFGError: always.
         """
-        self._require_api_key()
-        pax_list = []
-        if passengers:
-            for p in passengers:
-                if isinstance(p, Passenger):
-                    pax_list.append(p.to_dict())
-                else:
-                    pax_list.append(p)
-
-        body: dict[str, Any] = {
-            "offer_id": offer_id,
-            "checkout_token": checkout_token,
-        }
-        if pax_list:
-            body["passengers"] = pax_list
-
-        data = self._post("/api/v1/bookings/start-checkout", body)
-        return CheckoutProgress.from_dict(data)
+        raise LetsFGError(
+            "start_checkout() was retired on 2026-09-08 and the endpoint answers 410 Gone. "
+            "Its checkout_token came from unlock(), which was retired the same day. Call "
+            "book() instead: the fare is held on the connected payment method and captured "
+            "only against a real airline PNR. "
+            "See https://letsfg.co/developers/api/docs",
+            410,
+        )
 
     def start_checkout_local(self, *args, **kwargs) -> CheckoutProgress:
         """Removed — booking now runs server-side. Use book() instead."""

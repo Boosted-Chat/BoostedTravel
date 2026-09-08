@@ -536,7 +536,7 @@ def auth(
     airline confirms. The access token lasts about an hour and refreshes itself
     from the stored refresh token.
 
-    Unrelated to `letsfg register` / `letsfg setup-payment`, which belong to the
+    Unrelated to `letsfg register` / `letsfg connect-payment`, which belong to the
     separate paid Developer API.
     """
     from letsfg.connectors.auth import connect_auth, BearerTokenError
@@ -857,22 +857,28 @@ def recover(
 
 # ── Setup Payment ──────────────────────────────────────────────────────────
 
-@app.command("setup-payment")
-def setup_payment(
-    token: str = typer.Option("tok_visa", "--token", "-t", help="Payment token"),
+@app.command("connect-payment")
+def connect_payment(
+    token: str = typer.Option("", "--token", "-t", hidden=True, help="Retired Stripe token — ignored"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
     api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
     base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
 ):
-    """[Developer API only] Attach a card to a PAID developer account.
+    """[Developer API only] Get a link to connect a payment method to a PAID developer account.
 
     Most agents do NOT need this. `letsfg auth` already puts a payment method on
     file for search and booking, without a billing account.
+
+    Replaced `letsfg setup-payment` on 2026-09-08; that name still works and lands here.
+    Nothing is charged to connect, and card details never touch LetsFG — the printed link
+    opens a hosted page where you save a card, Revolut Pay or Google Pay.
     """
-    _warn_developer_api_command("letsfg setup-payment")
+    _warn_developer_api_command("letsfg connect-payment")
+    if token:
+        print("\n  Note: --token was part of the Stripe enrolment, retired 2026-09-08. Ignoring it.")
     bt = _get_client(api_key, base_url)
     try:
-        result = bt.setup_payment(token=token)
+        result = bt.connect_payment()
     except LetsFGError as e:
         _err(f"{e.message}")
 
@@ -880,12 +886,18 @@ def setup_payment(
         _json_out(result)
         return
 
-    status = result.get("status", "unknown")
-    if status == "ready":
-        print(f"\n  ✓ Payment ready!")
-        print(f"    You can now unlock offers and book flights.\n")
+    url = result.get("connect_url", "")
+    if url:
+        print(f"\n  Open this in a browser to connect a payment method:\n")
+        print(f"    {url}\n")
+        print(f"    Nothing is charged. Re-run `letsfg me` afterwards to confirm it landed.\n")
     else:
-        _err(f"Payment setup failed: {result.get('message', status)}")
+        _err(f"Could not mint a connect link: {result.get('message', result.get('status', 'unknown'))}")
+
+
+# `letsfg setup-payment` kept as an alias rather than deleted: it is in published
+# READMEs and in people's scripts, and a "command not found" tells them nothing.
+app.command("setup-payment", hidden=True)(connect_payment)
 
 
 # ── Profile ───────────────────────────────────────────────────────────────

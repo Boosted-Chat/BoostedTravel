@@ -206,7 +206,7 @@ async function cmdBook(args: string[]) {
   }
 
   if ('booked' in result) {
-    // PFS path — free, ticket price only, no LetsFG fee, no unlock step.
+    // PFS path — free search; no booking fee, no transaction fee — our margin is already in the price you saw; no unlock step.
     if (result.booked) {
       console.log(`\n  ✓ Booking confirmed!`);
       console.log(`    Order ID: ${result.order_id}`);
@@ -313,24 +313,33 @@ async function cmdRegister(args: string[]) {
   console.log(`\n    Next: letsfg search GDN BCN 2026-07-15\n`);
 }
 
+// Reached by `letsfg connect-payment` and by `letsfg setup-payment`, kept as an alias
+// because that name is in published READMEs and in people's scripts — a "command not
+// found" tells them nothing. --token was part of the Stripe enrolment, retired
+// 2026-09-08; it is accepted and ignored rather than erroring on an old invocation.
 async function cmdSetupPayment(args: string[]) {
   const jsonOut = hasFlag(args, '--json') || hasFlag(args, '-j');
   const apiKey = getFlag(args, '--api-key', '-k');
   const baseUrl = getFlag(args, '--base-url');
-  const token = getFlag(args, '--token', '-t') || 'tok_visa';
+  if (getFlag(args, '--token', '-t')) {
+    console.log('\n  Note: --token was part of the Stripe enrolment, retired 2026-09-08. Ignoring it.');
+  }
 
   const bt = new LetsFG({ apiKey, baseUrl });
-  const result = await bt.setupPayment(token);
+  const result = await bt.connectPayment();
 
   if (jsonOut) {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
 
-  if (result.status === 'ready') {
-    console.log(`\n  ✓ Payment ready! You can now search and book flights.\n`);
+  const url = result.connect_url as string | undefined;
+  if (url) {
+    console.log(`\n  Open this in a browser to connect a payment method:\n`);
+    console.log(`    ${url}\n`);
+    console.log(`    Nothing is charged. Run \`letsfg me\` afterwards to confirm it landed.\n`);
   } else {
-    console.error(`  ✗ Payment setup failed: ${result.message || result.status}`);
+    console.error(`  ✗ Could not mint a connect link: ${result.message || result.status}`);
     process.exit(1);
   }
 }
@@ -375,13 +384,14 @@ Commands:
   auth                             Connect a card at letsfg.co/connect. Nothing charged
   search <origin> <dest> <date>    Search for flights (free), prints search_id
   locations <query>                Resolve city name to IATA codes
-  book <offer_id> --search-id ...  Book a flight. No LetsFG fee, no unlock step
+  book <offer_id> --search-id ...  Book a flight. No booking or transaction fee, no unlock step
   me                               Show agent profile
 
 Developer API only (a SEPARATE paid product — most agents should not use these;
 they create a billing account. Use auth above instead):
   register --name ... --email ... Create a paid Developer API account
-  setup-payment                   Attach a card to that paid account
+  connect-payment                 Print a link to connect a card to that paid account
+  setup-payment                   Alias of connect-payment (the Stripe lane retired 2026-09-08)
   unlock <offer_id>               RETIRED 2026-09-08 — no unlock step, book directly
 
 Options:
@@ -420,7 +430,8 @@ async function main() {
       case 'register':
         await cmdRegister(args);
         break;
-      case 'setup-payment':
+      case 'connect-payment':
+      case 'setup-payment':  // alias, kept: the old name is in published READMEs
         await cmdSetupPayment(args);
         break;
       case 'me':

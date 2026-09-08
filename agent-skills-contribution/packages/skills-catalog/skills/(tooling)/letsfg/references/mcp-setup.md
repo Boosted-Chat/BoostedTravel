@@ -9,8 +9,8 @@ pip install letsfg
 letsfg register --name my-agent --email you@example.com
 # Save the trav_xxx key
 
-# Attach a payment method (required before unlock)
-letsfg setup-payment --token tok_visa
+# Connect a payment method (nothing is charged; there is no unlock step)
+letsfg connect-payment   # prints a link to open in a browser
 ```
 
 Or via cURL:
