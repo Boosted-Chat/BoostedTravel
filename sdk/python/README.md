@@ -10,7 +10,7 @@
 | | **CLI / SDK** (PFS Bearer token) | **Developer API** |
 |---|---|---|
 | **Search cost** | Free (card-backed token from [letsfg.co/connect](https://letsfg.co/connect), nothing charged) | Prepaid credits |
-| **Booking** | `POST /api/agent-book` — fare held on your card, a LetsFG agent buys the ticket, captured only on a real PNR. Every offer. | Direct airline URL (unlock required first, 1% fee min $3) |
+| **Booking** | `POST /api/agent-book` — fare held on your card, a LetsFG agent buys the ticket, captured only on a real PNR. Every offer. | `POST /flights/book` — the same hold-then-capture flow, no unlock step, no booking or transaction fee |
 | **Speed** | 8–10 s to first results; longer on a split | 2–5 s (discover) · 8–10 s to first results (full) |
 | **Setup** | `pip install letsfg`, then connect at [letsfg.co/developers/api/mcp](https://letsfg.co/developers/api/mcp) | [letsfg.co/developers](https://letsfg.co/developers) |
 
@@ -31,8 +31,9 @@ letsfg search LHR BCN 2026-06-15
 ```
 
 **Search is free and booking costs the ticket price.** There is no unlock step
-and no LetsFG fee on the CLI/SDK path. The 1% unlock fee (min $3) only exists
-on the separate, paid Developer API.
+and no LetsFG fee on any path. The Developer API works the same way: no booking
+fee and no transaction fee, with the margin already inside the offer price. Its
+unlock step and 1% (min $3) fee were retired on 2026-09-08.
 
 ## Authentication
 
@@ -396,8 +397,9 @@ if best:
     )
 ```
 
-On the Developer API, the same idea applies before `unlock()` (1% fee, min $3)
-— search every candidate for free, then unlock only the winner.
+On the Developer API the same idea applies to the look-to-book allowance: 200
+searches are free after every booking, so search every candidate, then book the
+winner — the booking resets the allowance.
 
 ## Quick Start (CLI)
 

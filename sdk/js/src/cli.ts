@@ -10,7 +10,6 @@
  *   letsfg me
  *
  * Developer API only (separate paid product):
- *   letsfg unlock off_xxx --api-key letsfg_...
  *   letsfg register --name my-agent --email agent@example.com
  */
 
@@ -158,39 +157,21 @@ async function cmdSearch(args: string[]) {
   if (creds.bearerToken) {
     console.log(`\n  To book: letsfg book <offer_id> --search-id ${result.search_id} --passenger '{...}' --email you@example.com\n`);
   } else {
-    console.log(`\n  To unlock: letsfg unlock <offer_id>`);
-    console.log(`  Passenger IDs needed for booking: ${JSON.stringify(result.passenger_ids)}\n`);
+    console.log(`\n  To book: letsfg book <offer_id> --search-id ${result.search_id} --passenger '{...}' --email you@example.com\n`);
   }
 }
 
-async function cmdUnlock(args: string[]) {
-  const jsonOut = hasFlag(args, '--json') || hasFlag(args, '-j');
-  const apiKey = getFlag(args, '--api-key', '-k');
-  const baseUrl = getFlag(args, '--base-url');
-  const offerId = args[0];
-
-  if (!offerId) {
-    console.error('Usage: letsfg unlock <offer_id>');
-    process.exit(1);
-  }
-
-  const bt = new LetsFG({ apiKey, baseUrl });
-  const result = await bt.unlock(offerId);
-
-  if (jsonOut) {
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-
-  if (result.unlock_status === 'unlocked') {
-    console.log(`\n  ✓ Offer unlocked!`);
-    console.log(`    Confirmed price: ${result.confirmed_currency} ${result.confirmed_price?.toFixed(2)}`);
-    console.log(`    Expires at: ${result.offer_expires_at}`);
-    console.log(`\n    Next: letsfg book ${offerId} --passenger '{...}' --email you@example.com\n`);
-  } else {
-    console.error(`  ✗ Unlock failed: ${result.message}`);
-    process.exit(1);
-  }
+async function cmdUnlock(_args: string[]) {
+  // RETIRED 2026-09-08. Prints the replacement rather than calling a route that answers 410.
+  console.error(
+    '\n  letsfg unlock was retired on 2026-09-08 and the endpoint answers 410 Gone.\n' +
+      '\n  There is no unlock step any more. Book directly:\n' +
+      "    letsfg book <offer_id> --search-id <search_id> --passenger '{...}' --email you@example.com\n" +
+      '\n  The fare is HELD on your connected payment method and captured only once a real\n' +
+      '  airline PNR exists, which is what unlock existed to protect against. If the fare moves\n' +
+      '  at checkout you are asked to accept or decline it.\n',
+  );
+  process.exit(1);
 }
 
 async function cmdBook(args: string[]) {
@@ -347,7 +328,7 @@ async function cmdSetupPayment(args: string[]) {
   }
 
   if (result.status === 'ready') {
-    console.log(`\n  ✓ Payment ready! You can now unlock offers and book flights.\n`);
+    console.log(`\n  ✓ Payment ready! You can now search and book flights.\n`);
   } else {
     console.error(`  ✗ Payment setup failed: ${result.message || result.status}`);
     process.exit(1);
@@ -373,10 +354,9 @@ async function cmdMe(args: string[]) {
   console.log(`  Email: ${p.email}`);
   console.log(`  Tier:  ${p.tier}`);
   const access = p.access_granted || false;
-  console.log(`  Access:  ${access ? '✓ Granted (search, unlock, book)' : '✗ Not granted'}`);
+  console.log(`  Access:  ${access ? '✓ Granted (search, book)' : '✗ Not granted'}`);
   console.log(`  Payment: ${p.payment_ready ? '✓ Ready' : '—'}`);
   console.log(`  Searches: ${u.total_searches || 0}`);
-  console.log(`  Unlocks:  ${u.total_unlocks || 0}`);
   console.log(`  Bookings: ${u.total_bookings || 0}`);
   console.log(`  Total spent: $${((u.total_spent_cents || 0) / 100).toFixed(2)}\n`);
 }
@@ -402,7 +382,7 @@ Developer API only (a SEPARATE paid product — most agents should not use these
 they create a billing account. Use auth above instead):
   register --name ... --email ... Create a paid Developer API account
   setup-payment                   Attach a card to that paid account
-  unlock <offer_id>               [Developer API only] Unlock offer (legacy)
+  unlock <offer_id>               RETIRED 2026-09-08 — no unlock step, book directly
 
 Options:
   --json, -j          Output raw JSON

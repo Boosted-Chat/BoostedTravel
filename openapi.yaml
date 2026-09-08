@@ -1209,6 +1209,6 @@ paths:
         '401':
           description: Invalid or missing API key
         '410':
-          description: Offer expired (30-min window passed)
+          description: "Gone — this route is retired. Use POST /flights/book."
         '422':
           description: Invalid passenger data

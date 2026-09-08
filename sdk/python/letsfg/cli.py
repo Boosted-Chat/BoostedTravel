@@ -6,7 +6,6 @@ Usage (search — free, no API key):
     letsfg search LON BCN 2026-04-01 --return 2026-04-08 --sort price
 
 Usage (booking — requires API key):
-    letsfg unlock off_xxx
     letsfg book off_xxx --passenger '{"id":"pas_xxx","given_name":"John",...}'
     letsfg register --name my-agent --email agent@example.com
     letsfg me
@@ -559,36 +558,18 @@ def unlock(
     api_key: Optional[str] = typer.Option(None, "--api-key", "-k", envvar="LETSFG_API_KEY"),
     base_url: Optional[str] = typer.Option(None, "--base-url", envvar="LETSFG_BASE_URL"),
 ):
-    """[Developer API only] Unlock a flight offer (legacy).
+    """RETIRED 2026-09-08. There is no unlock step - book directly.
 
-    Not part of the agent flow: there is no unlock endpoint on a PFS Bearer token.
-    Use `letsfg book` directly after `letsfg search`.
+    Kept as a command so an older script gets one clear sentence instead of "no such command".
     """
-    bt = _get_client(api_key, base_url)
-    try:
-        result = bt.unlock(offer_id)
-    except LetsFGError as e:
-        _err(f"{e.message}")
-
-    if output_json:
-        _json_out({
-            "offer_id": result.offer_id,
-            "unlock_status": result.unlock_status,
-            "confirmed_price": result.confirmed_price,
-            "confirmed_currency": result.confirmed_currency,
-            "offer_expires_at": result.offer_expires_at,
-            "payment_charged": result.payment_charged,
-            "payment_amount_cents": result.payment_amount_cents,
-        })
-        return
-
-    if result.is_unlocked:
-        print(f"\n  ✓ Offer unlocked!")
-        print(f"    Confirmed price: {result.confirmed_currency} {result.confirmed_price:.2f}")
-        print(f"    Expires at: {result.offer_expires_at}")
-        print(f"\n    Next: letsfg book {offer_id} --passenger '{{...}}' --email you@example.com\n")
-    else:
-        _err(f"Unlock failed: {result.message}")
+    _err(
+        "letsfg unlock was retired on 2026-09-08 and the endpoint answers 410 Gone.\n\n"
+        "There is no unlock step any more. Book directly:\n"
+        "  letsfg book <offer_id> --search-id <search_id> --passenger '{...}' --email you@example.com\n\n"
+        "The fare is HELD on your connected payment method and captured only once a real airline "
+        "PNR exists, which is what unlock existed to protect against. If the fare moves at "
+        "checkout you are asked to accept or decline it."
+    )
 
 
 # ── Book ──────────────────────────────────────────────────────────────────

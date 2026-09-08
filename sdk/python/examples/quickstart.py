@@ -46,7 +46,8 @@ async def main() -> None:
 
     if offers:
         print(f"\nUnlock offer #{1} (reveals direct booking link):")
-        print(f"  letsfg unlock {offers[0].get('id', '<offer_id>')}\n")
+        print(f"  letsfg book {offers[0].get('id', '<offer_id>')} --search-id <search_id> \\\n"
+              f"    --passenger '{{\"given_name\":\"...\"}}' --email you@example.com\n")
 
 
 if __name__ == "__main__":

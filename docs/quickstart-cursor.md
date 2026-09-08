@@ -99,7 +99,7 @@ The agent will:
 
 **"TOKEN_REVOKED"** → a token from the retired Stripe setup. Remove and re-add the server so the consent step saves the card again.
 
-**"Connect a payment method and fund your prepaid API balance before searching"** → you are on the paid Developer API key (Option C), not the connect flow. Remove the `X-API-Key` header, or fund the account.
+**A `402` on search** → you are on the Developer API key (Option C), not the connect flow. Remove the `X-API-Key` header to use the free lane, or connect a Revolut method with `POST /agents/connect-payment`. If the error is `search_allowance_exhausted`, book a flight (which resets the 200 free searches) or top up to buy a block.
 
 **Tools not appearing** → Check `.cursor/mcp.json` is valid JSON. Reload window.
 

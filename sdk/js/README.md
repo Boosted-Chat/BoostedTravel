@@ -112,7 +112,7 @@ same trip while one is in progress — that would place a second hold.
 
 Prefer the paid Developer API instead? Pass `apiKey` instead of `bearerToken` —
 `search()`/`book()` dispatch automatically. That path requires `unlock()`
-(1% fee, min $3) before `book()`.
+— retired 2026-09-08, the route answers `410 Gone` and there is no unlock step or fee.
 
 ## Quick Start (CLI)
 

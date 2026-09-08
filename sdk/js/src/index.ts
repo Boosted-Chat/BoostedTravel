@@ -12,7 +12,7 @@
  * const bt = new LetsFG({ bearerToken: process.env.LETSFG_BEARER_TOKEN });
  * const flights = await bt.search('GDN', 'BER', '2026-03-03');
  *
- * // Developer API (prepaid credits)
+ * // Developer API (look-to-book search: 200 free after every booking)
  * const bt2 = new LetsFG({ apiKey: 'letsfg_...' });
  * const flights2 = await bt2.search('LHR', 'JFK', '2026-04-15');
  * ```
@@ -149,7 +149,7 @@ export interface SearchOptions {
 export interface LetsFGConfig {
   /** PFS Bearer token from `letsfg auth`. Enables free search via POST /api/search polling. */
   bearerToken?: string;
-  /** Developer API key (prepaid credits, no per-booking fee). */
+  /** Developer API key. Look-to-book search; no booking fee, no transaction fee. */
   apiKey?: string;
   baseUrl?: string;
   timeout?: number;
@@ -472,13 +472,25 @@ export class LetsFG {
   }
 
   /**
-   * Unlock a flight offer — confirms live price, reveals direct airline booking URL.
-   * Developer API only, legacy — there is no unlock endpoint on a PFS Bearer
-   * token, so PFS callers use book() directly.
+   * RETIRED 2026-09-08. Throws instead of calling the server.
+   *
+   * There is no unlock step on any lane. Unlock existed to confirm a live price
+   * before charging; booking now HOLDS the fare on the connected payment method
+   * and captures only once a real airline PNR exists, so a fare that moved
+   * cannot become a charge for a ticket you did not get. If it moves at
+   * checkout you get a `price_change` question to accept or decline instead.
+   *
+   * Kept as a method, and throwing locally rather than making the request, so an
+   * older caller gets one clear sentence at the line that is actually wrong —
+   * not a 410 body to decode, and not a TypeError somewhere else.
    */
-  async unlock(offerId: string): Promise<UnlockResult> {
-    this.requireApiKey();
-    return this.post<UnlockResult>('/developers/api/v1/bookings/unlock', { offer_id: offerId });
+  async unlock(_offerId: string): Promise<UnlockResult> {
+    throw new LetsFGError(
+      'unlock() was retired on 2026-09-08 and the endpoint answers 410 Gone. There is no unlock ' +
+        'step: call book() directly. The fare is held on the connected payment method and ' +
+        'captured only against a real airline PNR. See https://letsfg.co/developers/api/docs',
+      410,
+    );
   }
 
   /**
@@ -490,9 +502,14 @@ export class LetsFG {
    * complete, { ok, booked: false, booking_url } — hand the link to the user,
    * nothing was charged.
    *
-   * Developer API (X-API-Key): charges ticket price + service fee via Stripe,
-   * creates a real PNR. Requires unlock() first. Always provide
-   * idempotencyKey to prevent double-bookings on retry.
+   * Developer API (X-API-Key): POST /flights/book. NO unlock step. searchId is
+   * REQUIRED — an offer is bookable only inside the search that produced it.
+   * The connected Revolut method is HELD, not charged; a LetsFG booking agent
+   * buys the ticket and the hold is captured only against a real airline PNR.
+   * Returns the 202 { ok, booking_id, state, held, charged: 0, poll_url } —
+   * poll getBooking(bookingId) until `terminal`, or use bookAndWait().
+   * Always provide idempotencyKey: a retry with the same key returns the
+   * existing booking instead of opening a second hold on the card.
    */
   async book(
     offerId: string,
@@ -522,15 +539,113 @@ export class LetsFG {
     }
 
     this.requireApiKey();
+    if (!searchId) {
+      throw new LetsFGError(
+        'searchId is required to book on the Developer API — pass the search_id from search()\'s ' +
+          'result. An offer can only be booked inside the search that produced it. (Before ' +
+          '2026-09-08 this argument was ignored on this path.)',
+        400,
+      );
+    }
+    const pax = passengers.map((p) => ({ ...p })) as Array<Record<string, unknown>>;
+    if (contactPhone && pax.length && !pax[0].phone_number) pax[0].phone_number = contactPhone;
     const body: Record<string, unknown> = {
+      search_id: searchId,
       offer_id: offerId,
-      booking_type: 'flight',
-      passengers,
+      passengers: pax,
       contact_email: contactEmail,
-      contact_phone: contactPhone,
     };
     if (idempotencyKey) body.idempotency_key = idempotencyKey;
-    return this.post<BookingResult>('/developers/api/v1/bookings/book', body);
+    return this.post<Record<string, unknown>>('/developers/api/v1/flights/book', body);
+  }
+
+  /**
+   * Poll a Developer API flight booking.
+   *
+   * Poll every few seconds until `terminal` is true. The poll is ALSO how LetsFG
+   * knows you are still there, which is what keeps a booking paused on a
+   * question alive — so do not back off to minutes.
+   *
+   * States: authorised, card_issued, booking_in_progress, awaiting_settlement,
+   * then completed (with `pnr` and `charged_amount`), failed (hold released,
+   * nothing charged) or needs_attention (a human at LetsFG is on it — do not
+   * book again).
+   */
+  async getBooking(bookingId: string): Promise<Record<string, unknown>> {
+    this.requireApiKey();
+    return this.getWithAuth<Record<string, unknown>>(
+      `/developers/api/v1/flights/bookings/${encodeURIComponent(bookingId)}`,
+    );
+  }
+
+  /**
+   * Answer the open `question` on a booking.
+   *
+   * Echo the question's `round`. A stale round is refused with 409 rather than
+   * guessed at, so an answer to an old question can never be applied to a new
+   * one. Seat: { seats: [...] } or { skip: true }. Price change or paid extra:
+   * { confirm: true } or { skip: true } — declining an extra still completes
+   * the booking, without it.
+   */
+  async answerBooking(
+    bookingId: string,
+    round: number,
+    answer: { seats?: Array<Record<string, unknown>>; confirm?: boolean; skip?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
+    this.requireApiKey();
+    return this.post<Record<string, unknown>>(
+      `/developers/api/v1/flights/bookings/${encodeURIComponent(bookingId)}/answer`,
+      { round, ...answer },
+    );
+  }
+
+  /**
+   * Book and poll to a terminal state. Mirrors bookHotelAndWait().
+   *
+   * Blocks for as long as the booking takes (4–11 minutes typically), so use
+   * book() + getBooking() instead if your caller has a request timeout.
+   *
+   * `onQuestion` returns the answer for answerBooking(). Without it, a fare
+   * increase is ACCEPTED and a paid extra is DECLINED — the conservative
+   * reading of "the traveller asked for this flight".
+   */
+  async bookAndWait(
+    offerId: string,
+    passengers: Passenger[],
+    contactEmail: string,
+    searchId: string,
+    opts: {
+      contactPhone?: string;
+      idempotencyKey?: string;
+      pollMs?: number;
+      timeoutMs?: number;
+      onQuestion?: (q: Record<string, unknown>) => { seats?: Array<Record<string, unknown>>; confirm?: boolean; skip?: boolean };
+    } = {},
+  ): Promise<Record<string, unknown>> {
+    const { contactPhone = '', idempotencyKey = '', pollMs = 5000, timeoutMs = 900000, onQuestion } = opts;
+    const started = (await this.book(
+      offerId, passengers, contactEmail, contactPhone, idempotencyKey, searchId,
+    )) as Record<string, unknown>;
+    if (!started || started.ok !== true) return started; // a refusal: nothing was charged
+
+    const bookingId = String(started.booking_id);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      const state = await this.getBooking(bookingId);
+      const question = state.question as Record<string, unknown> | null | undefined;
+      if (question) {
+        const answer = onQuestion
+          ? onQuestion(question)
+          : question.kind === 'extra'
+            ? { skip: true }
+            : { confirm: true };
+        await this.answerBooking(bookingId, Number(question.round), answer);
+        continue;
+      }
+      if (state.terminal) return state;
+    }
+    return this.getBooking(bookingId);
   }
 
   // ── Hotels ──────────────────────────────────────────────────────────

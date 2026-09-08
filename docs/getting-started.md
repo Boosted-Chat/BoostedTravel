@@ -111,7 +111,7 @@ curl -X POST https://letsfg.co/developers/api/v1/agents/register \
   -d '{"agent_name": "my-agent", "email": "you@example.com"}'
 ```
 
-Expected response fields include `agent_id`, `api_key`, and `payment_ready`.
+Expected response fields include `agent_id`, `api_key`, `tier` and `payment_ready` (false until a Revolut method is connected).
 
 ### 2. Connect a Revolut payment method
 
@@ -194,8 +194,9 @@ The profile response shows whether payment is ready, whether API access is enabl
 | Problem | What it means | What to do |
 |---------|---------------|------------|
 | `401 API key is required` | Search was attempted without `X-API-Key` | Register first and send the returned key |
-| `402 Connect a payment method and fund your prepaid API balance before searching` | No payment method or no balance | Call `setup-payment`, then `top-up` |
-| `403 Fund your prepaid API balance before using flight search` | The key exists but public search is not activated | Fund balance through `POST /agents/top-up` |
+| `402 payment_method_required` | No Revolut method connected | `POST /agents/connect-payment`, open the `connect_url` |
+| `402 search_allowance_exhausted` | The look-to-book allowance is used up | Book a flight (resets it) or `POST /agents/top-up` to buy a block |
+| `403 Fund your prepaid API balance before using flight search` | The key exists but public search is not activated on the account | Check `agents/me`, then `POST /agents/top-up` |
 | `410` on `setup-payment` / `hosted-checkout` | Retired with Stripe on 2026-09-08 | Call `POST /agents/connect-payment` and open the `connect_url` |
 
 ## Search flags

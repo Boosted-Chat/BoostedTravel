@@ -5,7 +5,7 @@
  * All search runs server-side at letsfg.co — no local browsers or Python required.
  * Authenticate once: `letsfg auth` (zero-amount card setup, nothing charged) sets
  * LETSFG_BEARER_TOKEN,
- * or use a Developer API key (LETSFG_API_KEY) for prepaid credits.
+ * or use a Developer API key (LETSFG_API_KEY): look-to-book search, plus hotels.
  *
  * Usage in Claude Desktop / Cursor config:
  * {
@@ -346,12 +346,13 @@ const TOOLS = [
   {
     name: 'unlock_flight_offer',
     description:
-      '[Developer API only] Confirm live price with the airline and reserve the offer for 30 minutes.\n\n' +
-      'NOT part of the agent flow and NOT needed before book_flight. It requires LETSFG_API_KEY (the paid, ' +
-      'prepaid Developer API) and refuses to run on a Bearer token, because the PFS unlock endpoint does not ' +
-      'exist — calling it that way used to 404.\n\n' +
-      'If you authenticated with `letsfg auth`, go straight from search_flights to book_flight.\n\n' +
-      'Requires a Developer API key. Legacy path — not idempotent.',
+      'RETIRED 2026-09-08 — DO NOT CALL. The endpoint answers 410 Gone and this tool now refuses ' +
+      'locally.\n\n' +
+      'There is no unlock step on any lane. Go straight from search_flights to book_flight: the ' +
+      'fare is HELD on the connected payment method and captured only once a real airline PNR ' +
+      'exists, which is what unlock existed to protect against. A fare that moves at checkout ' +
+      'becomes a question you accept or decline, not a surprise charge.\n\n' +
+      'Kept listed only so a model that learned the old flow is told what to do instead.',
     inputSchema: {
       type: 'object',
       required: ['offer_id'],
@@ -711,21 +712,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
     }
 
     case 'unlock_flight_offer': {
-      // There is no PFS unlock endpoint — /api/unlock 404s. Routing Bearer-token
-      // callers there sent them into a dead end and told them it was a required
-      // step. Refuse with a pointer instead of producing a 404 they have to
-      // interpret.
-      if (!API_KEY) {
-        return JSON.stringify({
-          error: 'wrong_tool',
-          detail:
-            'unlock_flight_offer belongs to the paid Developer API and needs LETSFG_API_KEY. ' +
-            'On a PFS Bearer token there is no unlock step: call book_flight directly after ' +
-            'search_flights. It returns either a confirmed order or a direct booking link.',
-        }, null, 2);
-      }
-      const result = await apiRequest('POST', '/developers/api/v1/bookings/unlock', { offer_id: args.offer_id });
-      return JSON.stringify(result, null, 2);
+      // RETIRED 2026-09-08. Refused HERE rather than forwarded, so the model gets one sentence
+      // it can act on instead of a 410 body to interpret — and so no traffic is spent on a route
+      // that cannot succeed.
+      return JSON.stringify({
+        error: 'retired',
+        detail: 'unlock_flight_offer was retired on 2026-09-08 and the endpoint answers 410 Gone. There is no unlock step on any lane: call book_flight directly after search_flights. The fare is HELD on the connected payment method and captured only once a real airline PNR exists, which is what unlock existed to protect against; if the fare moves at checkout you are asked to accept or decline it.',
+        next: 'book_flight',
+      }, null, 2);
     }
 
     case 'book_flight': {

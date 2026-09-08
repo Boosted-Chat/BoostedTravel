@@ -39,7 +39,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -324,7 +324,7 @@ class LetsFG:
 
     Auth options:
       - PFS Bearer token (free search): run `letsfg auth` once, or set LETSFG_BEARER_TOKEN.
-      - Developer API key (prepaid credits): set LETSFG_API_KEY or pass api_key=.
+      - Developer API key (look-to-book search, plus hotels): set LETSFG_API_KEY or pass api_key=.
 
     Pricing:
       - Search: FREE (unlimited, requires Bearer token or API key)
@@ -582,21 +582,28 @@ class LetsFG:
 
     def unlock(self, offer_id: str) -> UnlockResult:
         """
-        Unlock a flight offer — confirms live price, reveals direct booking URL.
+        RETIRED 2026-09-08. Raises instead of calling the server.
 
-        Developer API only, legacy — there is no unlock endpoint on a PFS
-        Bearer token, so PFS callers book directly.
-        Required before booking.
+        There is no unlock step on any lane. Unlock existed to confirm a live price before
+        charging; booking now HOLDS the fare on the connected payment method and captures only
+        once a real airline PNR exists, so a fare that moved cannot become a charge for a ticket
+        you did not get. If it moves at checkout you get a `price_change` question to accept or
+        decline instead.
 
-        Args:
-            offer_id: The offer ID from search results.
+        Kept as a method, and raising locally rather than making the request, so an older caller
+        gets one clear sentence at the line that is actually wrong — not a 410 body to decode, and
+        not an AttributeError somewhere else.
 
-        Returns:
-            UnlockResult with confirmed price and status.
+        Raises:
+            LetsFGError: always.
         """
-        self._require_api_key()
-        data = self._post("/api/v1/bookings/unlock", {"offer_id": offer_id})
-        return UnlockResult.from_dict(data)
+        raise LetsFGError(
+            "unlock() was retired on 2026-09-08 and the endpoint answers 410 Gone. There is no "
+            "unlock step: call book() directly. The fare is held on the connected payment method "
+            "and captured only against a real airline PNR. "
+            "See https://letsfg.co/developers/api/docs",
+            410,
+        )
 
     def book(
         self,
@@ -620,7 +627,10 @@ class LetsFG:
         the link to the user, don't retry the same offer.
 
         Falls back to the Developer API (LETSFG_API_KEY) if no Bearer token is
-        present. That path requires unlock() first and returns a BookingResult.
+        present. That path needs `search_id` as well (an offer is bookable only
+        inside the search that produced it), takes NO unlock step, and returns
+        the 202 dict: {ok, booking_id, state, held, charged: 0, poll_url}. Poll
+        get_booking(booking_id) until `terminal`, or use book_and_wait().
 
         IMPORTANT (Developer API path): Always provide an idempotency_key to
         prevent double-bookings if your agent retries this call. Use any unique
@@ -637,8 +647,9 @@ class LetsFG:
             idempotency_key: Unique key for this booking attempt (Developer API
                 only). If the same key is sent twice, the second call returns
                 the original booking instead of creating a duplicate.
-            search_id: Required for the PFS path — the search_id search_local()
-                returned. Ignored on the Developer API path.
+            search_id: REQUIRED on both paths — the search_id the search returned.
+                An offer can only be booked inside its own search. (Before
+                2026-09-08 the Developer API path ignored this.)
 
         Returns:
             A dict on the PFS path, or a BookingResult on the Developer API path.
@@ -663,24 +674,113 @@ class LetsFG:
             pass
 
         self._require_api_key()
+        if not search_id:
+            raise ValueError(
+                "search_id is required to book on the Developer API — pass the search_id from "
+                "search()'s result. An offer can only be booked inside the search that produced "
+                "it. (Before 2026-09-08 this argument was ignored on this path; the retired "
+                "/bookings/book route took an offer_id alone.)"
+            )
         pax_list = []
         for p in passengers:
             if isinstance(p, Passenger):
                 pax_list.append(p.to_dict())
             else:
                 pax_list.append(p)
+        if contact_phone and pax_list and not pax_list[0].get("phone_number"):
+            pax_list[0] = {**pax_list[0], "phone_number": contact_phone}
 
         body: dict[str, Any] = {
+            "search_id": search_id,
             "offer_id": offer_id,
-            "booking_type": "flight",
             "passengers": pax_list,
             "contact_email": contact_email,
-            "contact_phone": contact_phone,
         }
         if idempotency_key:
             body["idempotency_key"] = idempotency_key
-        data = self._post("/api/v1/bookings/book", body)
-        return BookingResult.from_dict(data)
+        # 202 + booking_id. The booking itself takes 4-11 minutes; poll get_booking().
+        return self._post("/api/v1/flights/book", body)
+
+    def get_booking(self, booking_id: str) -> dict:
+        """
+        Poll a Developer API flight booking.
+
+        Poll every few seconds until `terminal` is true. The poll is ALSO how LetsFG knows you are
+        still there, which is what keeps a booking paused on a question alive - so do not back off
+        to minutes.
+
+        States: authorised, card_issued, booking_in_progress, awaiting_settlement, then
+        completed (with `pnr` and `charged_amount`), failed (hold released, nothing charged) or
+        needs_attention (a human at LetsFG is on it - do not book again).
+
+        While booking_in_progress, `question` may carry a seat map, a paid extra or a fare
+        increase; answer it with answer_booking() within its window.
+        """
+        self._require_api_key()
+        return self._get(f"/api/v1/flights/bookings/{booking_id}")
+
+    def answer_booking(self, booking_id: str, round: int, *, seats: list[dict] | None = None,
+                       confirm: bool = False, skip: bool = False) -> dict:
+        """
+        Answer the open `question` on a booking.
+
+        Echo the question's `round`. A stale round is refused with 409 rather than guessed at, so
+        an answer to an old question can never be applied to a new one.
+
+        Seat question: seats=[...] to choose, or skip=True.
+        Price change or paid extra: confirm=True to accept, skip=True to decline. Declining an
+        extra still completes the booking, without it.
+        """
+        self._require_api_key()
+        body: dict[str, Any] = {"round": round}
+        if seats is not None:
+            body["seats"] = seats
+        if confirm:
+            body["confirm"] = True
+        if skip:
+            body["skip"] = True
+        return self._post(f"/api/v1/flights/bookings/{booking_id}/answer", body)
+
+    def book_and_wait(self, offer_id: str, passengers: list, contact_email: str,
+                      search_id: str, *, contact_phone: str = "", idempotency_key: str = "",
+                      poll_seconds: float = 5.0, timeout_seconds: float = 900.0,
+                      on_question: Callable[[dict], dict] | None = None) -> dict:
+        """
+        Book and poll to a terminal state. Mirrors book_hotel_and_wait().
+
+        Blocks for as long as the booking takes (4-11 minutes typically), so use book() +
+        get_booking() instead if your caller has a request timeout.
+
+        `on_question` is called with the question dict and must return the kwargs for
+        answer_booking() (e.g. {"confirm": True}). Without it, a fare increase is ACCEPTED and a
+        paid extra is DECLINED - the conservative reading of "the traveller asked for this
+        flight", and the same default the docs describe.
+        """
+        import time as _time
+
+        started = self.book(offer_id=offer_id, passengers=passengers, contact_email=contact_email,
+                            contact_phone=contact_phone, idempotency_key=idempotency_key,
+                            search_id=search_id)
+        if not isinstance(started, dict) or not started.get("ok"):
+            return started  # a refusal: nothing was charged
+
+        booking_id = started["booking_id"]
+        deadline = _time.monotonic() + timeout_seconds
+        while _time.monotonic() < deadline:
+            _time.sleep(poll_seconds)
+            state = self.get_booking(booking_id)
+            question = state.get("question")
+            if question:
+                if on_question is not None:
+                    kwargs = on_question(question)
+                else:
+                    kwargs = ({"skip": True} if question.get("kind") == "extra"
+                              else {"confirm": True})
+                self.answer_booking(booking_id, question["round"], **kwargs)
+                continue
+            if state.get("terminal"):
+                return state
+        return self.get_booking(booking_id)
 
     # ── Hotels ────────────────────────────────────────────────────────────────
     #

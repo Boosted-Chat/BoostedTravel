@@ -54,10 +54,11 @@ curl https://letsfg.co/developers/api/v1/agents/me \
 
 These fields matter most:
 
-- `payment_ready`
+- `payment.connected` (a Revolut method is saved; `payment_ready` is the legacy alias)
 - `access_granted`
 - `developer_api.api_access_enabled`
-- `developer_api.balance_cents`
+- `developer_api.flight_search.searches_remaining` — what actually gates search
+- `developer_api.balance_cents` — only buys blocks past the free allowance
 - `developer_api.minimum_top_up_cents`
 - `developer_api.auto_refill_enabled`
 
@@ -66,9 +67,10 @@ These fields matter most:
 Before the first production search for a key, assert all of the following:
 
 - the request includes `X-API-Key`
-- `payment_ready` is `true`
+- `payment.connected` is `true` (a Revolut method is saved)
 - `developer_api.api_access_enabled` is `true`
-- `developer_api.balance_cents` is greater than `0`
+- `developer_api.flight_search.searches_remaining` is greater than `0` (balance only matters once
+  the free look-to-book allowance runs out)
 - `origin`, `destination`, and `date_from` are present
 - the requested `limit` is between `1` and `200`
 

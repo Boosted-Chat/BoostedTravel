@@ -211,7 +211,7 @@ To avoid unexpected updates:
 | `resolve_location` | City name → IATA code | FREE | None (read-only) |
 | `book_flight` | Start a real booking: fare held on the connected card, a LetsFG agent buys the ticket, captured on a real PNR | Ticket price (LetsFG's markup is inside the price) | Places a hold, creates the booking |
 | `get_flight_booking` | Poll a booking started by `book_flight` until `completed` / `failed` / `needs_attention` | FREE | None (read-only) |
-| `unlock_flight_offer` | **Developer API only** — confirm live price, reserve 30 min | 1% fee, min $3 | Confirms price |
+| `unlock_flight_offer` | **RETIRED 2026-09-08** — the tool refuses locally and the route answers `410 Gone` | — | Call `book_flight` directly |
 | `setup_payment` | **Developer API only** — attach a card to a paid prepaid account. Not how agents connect | FREE | Updates payment |
 | `get_agent_profile` | Usage stats & payment status | FREE | None (read-only) |
 

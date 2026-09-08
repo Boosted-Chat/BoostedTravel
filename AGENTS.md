@@ -144,7 +144,7 @@ curl https://letsfg.co/api/results/abc123 -H "Authorization: Bearer <your_token>
 ```
 POST /api/agent-book               # PFS — Bearer token, no unlock step; starts the booking
 POST /api/agent-book/status        # PFS — poll until completed / failed / needs_attention
-POST /api/v1/bookings/unlock       # Developer API only — 1% fee, min $3, then book
+POST /api/v1/flights/book          # Developer API — no unlock step, no fee
 POST /api/v1/bookings/book         # Developer API only
 ```
 
@@ -433,7 +433,7 @@ creds = LetsFG.register("my-agent", "agent@example.com")  # register inline
 ```
 
 ```bash
-letsfg setup-payment  # add a card once; charged 1% (min $3) per unlock
+# Connect a card once at letsfg.co/connect — nothing is charged to connect
 ```
 
 ## Resolve Locations Before Searching
@@ -603,7 +603,7 @@ This section documents the safety guarantees that make LetsFG safe for autonomou
 | `get_agent_profile` | None (read-only) | Free | Yes | Yes |
 | `book_offer` (PFS) | Holds the fare and starts a real booking | Price shown on the offer | **No** — a second call places a second hold | **No** — poll `/api/agent-book/status` instead |
 | `setup_payment` (Developer API) | Updates payment method | Free | Yes | Yes (last write wins) |
-| `unlock` (Developer API) | Charges fee | 1% (min $3) | **No** — charges fee each time | **No** |
+| `unlock` | **RETIRED 2026-09-08** — answers `410 Gone`, there is no unlock step and no fee | — | — | — |
 
 ### Don't Double-Book
 
@@ -688,7 +688,7 @@ search_and_book(
 
 Searching is free. Booking goes through `POST /api/agent-book`: the price shown
 on the offer is held on the connected card and captured only once a real PNR
-exists — no separate LetsFG fee. The 1%-of-ticket unlock fee (min $3) applies
+exists — no separate LetsFG fee. The retired unlock fee (1% of ticket, min $3) applies
 only on the paid Developer API.
 
 ### Search Wide, Book Once

@@ -32,8 +32,11 @@ describe('LetsFG class', () => {
   it('exposes expected methods', () => {
     const client = new LetsFG();
     assert.equal(typeof client.search, 'function');
-    assert.equal(typeof client.unlock, 'function');
+    assert.equal(typeof client.unlock, 'function');   // kept, but retired — see below
     assert.equal(typeof client.book, 'function');
+    assert.equal(typeof client.getBooking, 'function');
+    assert.equal(typeof client.answerBooking, 'function');
+    assert.equal(typeof client.bookAndWait, 'function');
     assert.equal(typeof client.resolveLocation, 'function');
     assert.equal(typeof client.me, 'function');
     assert.equal(typeof client.setupPayment, 'function');
@@ -79,13 +82,31 @@ describe('register()', () => {
 // ── Input validation — auth guard ─────────────────────────────────────────
 
 describe('auth guard', () => {
-  it('unlock throws AuthenticationError when no API key', async () => {
-    const client = new LetsFG({ apiKey: '' });
+  it('unlock is retired: it throws locally and never reaches the network', async () => {
+    // Retired 2026-09-08. It must throw for a caller WITH a key too — the point is that no
+    // request is made at all, so the failure cannot be mistaken for an auth problem or a
+    // transient 410 worth retrying.
+    const client = new LetsFG({ apiKey: 'letsfg_valid_looking_key' });
     await assert.rejects(
       () => client.unlock('offer_123'),
       (err: unknown) => {
-        assert.ok(err instanceof AuthenticationError);
-        assert.equal((err as AuthenticationError).errorCode, ErrorCode.AUTH_INVALID);
+        assert.ok(err instanceof LetsFGError);
+        assert.match((err as LetsFGError).message, /retired|410/i);
+        assert.match((err as LetsFGError).message, /book\(\)/);
+        return true;
+      },
+    );
+  });
+
+  it('book on the Developer API refuses without a searchId rather than calling the old route', async () => {
+    // Before 2026-09-08 searchId was ignored on this path and /bookings/book took an offer_id
+    // alone. That route is gone; an offer is bookable only inside the search that produced it.
+    const client = new LetsFG({ apiKey: 'letsfg_valid_looking_key' });
+    await assert.rejects(
+      () => client.book('off_1', [{ given_name: 'A' } as never], 'a@b.c'),
+      (err: unknown) => {
+        assert.ok(err instanceof LetsFGError);
+        assert.match((err as LetsFGError).message, /searchId is required/);
         return true;
       },
     );
