@@ -14,7 +14,7 @@
 > See <https://letsfg.co/for-agents>.
 
 <div class="docs-callout">
-  <strong>Paid search rule:</strong> the public developer API search endpoint consumes prepaid balance. Use local search when you want broad free exploration, and use the public API when you want managed cloud search behind the website-owned contract.
+  <strong>Search billing:</strong> the public developer API is <strong>look-to-book</strong>, not per call — 200 searches are free after every booking you make, and booking resets the counter. Only past that allowance do searches cost anything (blocks of 500 for $5.00 from prepaid balance). A search that returns no offers never counts.
 </div>
 
 ## Endpoints you will use
@@ -23,17 +23,17 @@
 |----------|--------|---------|---------|
 | `/flights/locations/{query}` | GET | Resolve a city, airport, or metro area to IATA codes | No |
 | `/flights/parse-query` | POST | Parse a natural language query into search params | No |
-| `/flights/search` | POST | Run a single-destination paid search (blocking, 8–10 s to first results) | **1 credit** |
-| `/flights/search/async` | POST | Start a search in background, returns search_id immediately | **1 credit** |
+| `/flights/search` | POST | Run a single-destination search (blocking, 8–10 s to first results) | **1 search** |
+| `/flights/search/async` | POST | Start a search in background, returns search_id immediately | **1 search** |
 | `/flights/results/{search_id}` | GET | Poll results of an async search | No |
-| `/flights/discover` | POST | Indicative prices for up to 20 destinations — single call, single credit | **1 credit** |
-| `/flights/multi-search` | POST | Full search for N destinations in parallel | **1 credit per destination** |
+| `/flights/discover` | POST | Indicative prices for up to 20 destinations — single call | **1 search** |
+| `/flights/multi-search` | POST | Full search for N destinations in parallel | **1 search per destination** |
 | `/flights/providers` | GET | Inspect the provider mix exposed through the public API | No |
 
-> **Billing rule: every destination = one search credit.**  
-> `/flights/multi-search` with 10 destinations charges 10 credits — same as calling
+> **Billing rule: every destination counts as one search against the allowance.**  
+> `/flights/multi-search` with 10 destinations counts as 10 searches — same as calling
 > `/flights/search` 10 times. There is no bundle discount.
-> Use `/flights/discover` for cheap discovery (1 credit total), then `/flights/search`
+> Use `/flights/discover` for cheap discovery (1 search total), then `/flights/search`
 > on the destination you want to book. Check your balance at `GET /agents/me` before running large batches.
 
 ## Resolve locations first
@@ -269,7 +269,7 @@ outbound departure to a time window. Applied server-side before results are retu
 ## Parse natural language queries
 
 `POST /flights/parse-query` converts free-text input into structured search params —
-free, no credit consumed.
+free, no allowance consumed.
 
 ```bash
 curl -X POST https://letsfg.co/developers/api/v1/flights/parse-query \
@@ -285,10 +285,10 @@ that are still missing. Pass the resolved fields directly to `/flights/search`.
 Use `"mode": "clarify"` to get only the list of missing fields without a full parse
 — useful for building a step-by-step question flow.
 
-## Discovery search — 20 destinations, 1 credit
+## Discovery search — 20 destinations, 1 search
 
 `POST /flights/discover` is built for discovery feeds. It checks indicative prices for up to 20 destinations
-from one origin in a single API call, billed as **one search credit** for the whole batch.
+from one origin in a single API call, counted as **one search** against your allowance for the whole batch.
 Results arrive in 2–5 seconds.
 
 ```bash
@@ -323,7 +323,7 @@ Response is sorted cheapest-first:
     "cheapest_price": 89.00
   },
   "data_note": "Indicative prices. Run POST /flights/search on your chosen destination for final accurate pricing.",
-  "billed_as": "1 search credit for the full batch"
+  "billed_as": "1 search for the full batch"
 }
 ```
 
@@ -333,16 +333,16 @@ on the destination the user selects before showing a booking price or CTA —
 the full search runs more data sources and will often find better prices.
 
 **Recommended discovery flow:**
-1. `POST /flights/discover` — rank 20 destinations, 1 credit
+1. `POST /flights/discover` — rank 20 destinations, 1 search
 2. Show user the top 3–5 cheapest options
 3. User picks a destination
-4. `POST /flights/search` on that destination — full accurate results, 1 credit
+4. `POST /flights/search` on that destination — full accurate results, 1 search
 5. Show offers and booking links
 
 ## Multi-destination full search
 
 `POST /flights/multi-search` fires N destinations in parallel and returns all results
-in one call. Each destination is billed as one search credit.
+in one call. Each destination counts as one search against your allowance.
 
 ```json
 {
@@ -355,7 +355,7 @@ in one call. Each destination is billed as one search credit.
 ```
 
 Maximum 10 destinations per call. `summary.charged_searches` in the response
-shows exactly how many credits were consumed. `departure_time_from`/`to` apply
+shows exactly how many searches were counted. `departure_time_from`/`to` apply
 to all destinations in the batch.
 
 ## Async search with polling
@@ -376,7 +376,7 @@ if you see them, honour them the same way.
 
 ## Sandbox — zero-cost testing
 
-Test your integration without burning credits.
+Test your integration without consuming allowance.
 See [Sandbox Environment](api-sandbox.md) for the full guide.
 
 ## Recommended production flow

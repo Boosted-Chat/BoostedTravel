@@ -73,8 +73,8 @@ The live public schema currently documents these groups of endpoints:
   — see [Booking flights](api-booking.md)
 - NL query parsing (`/flights/parse-query` — free, Gemini-powered)
 - flight search, location resolution, and provider inspection
-- discovery search — indicative prices for up to 20 destinations in one call (`/flights/discover` — 1 credit)
-- parallel full search for N destinations (`/flights/multi-search` — 1 credit per destination)
+- discovery search — indicative prices for up to 20 destinations in one call (`/flights/discover` — 1 search)
+- parallel full search for N destinations (`/flights/multi-search` — 1 search per destination)
 - async search with polling (`/flights/search/async` + `/flights/results/{id}`)
 - sandbox equivalents of all flight endpoints (free, fake data, same schema — for integration testing)
 - hotels: city resolution, search, asynchronous booking with polling, and cancellation (`/hotels/destinations`, `/hotels/search`, `/hotels/book`, `/hotels/booking/{job_id}`, `/hotels/cancel`) — see [Hotels](hotels.md). These require a payment method on file for **every** call, search included, and booking charges a 5% non-refundable reservation fee.
@@ -120,7 +120,7 @@ Before you send search traffic, make sure `GET /agents/me` shows:
     <a class="docs-resource-card" href="api-sandbox/">
         <p class="docs-card-kicker">Testing</p>
         <h3>Sandbox environment</h3>
-        <p>Test your integration for free — same schema, realistic fake data, zero credits charged.</p>
+        <p>Test your integration for free — same schema, realistic fake data, no allowance consumed.</p>
     </a>
 
     <a class="docs-resource-card" href="api-polling/">

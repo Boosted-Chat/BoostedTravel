@@ -445,7 +445,7 @@ Agent flow:
 from letsfg import (
     LetsFGError,           # Base error
     AuthenticationError,    # Invalid API key (401)
-    PaymentRequiredError,   # Subscription/credits needed (402)
+    PaymentRequiredError,   # No connected method, or allowance exhausted (402)
     OfferExpiredError,      # Search result too old to book (410)
     ValidationError,        # Bad parameters (400)
 )

@@ -55,7 +55,7 @@ Response arrives in under a second:
 ```
 
 The request body is identical to `POST /flights/search` — same fields, same
-billing (one credit charged on completion).
+billing (one search counted on completion).
 
 ## Poll for results
 

@@ -78,9 +78,9 @@ always returns the same set of offers, so your tests are reproducible across run
 | Behaviour | Live | Sandbox |
 |---|---|---|
 | Connectors fired | Yes (hundreds) | No |
-| Credits charged | Yes (1 per search) | No |
+| Counts against your allowance | Yes (1 search) | No |
 | Response time | 8–10 s to first results | < 1 s |
-| `booking_url` | Real airline link | Placeholder |
+| `booking_url` | A letsfg.co page for that offer | Placeholder |
 | `parse-query` NL accuracy | Full Gemini parse | Stub (returns missing fields) |
 | `total_results` | Real count | Fake large number (~800–1 800) |
 
@@ -115,7 +115,7 @@ curl -X POST https://letsfg.co/developers/api/v1/sandbox/flights/multi-search \
 ```
 
 All destinations run in under a second. `charged_searches: 0` in the summary
-confirms no credits were used.
+confirms no allowance was used.
 
 ## Typical integration workflow
 
@@ -130,7 +130,7 @@ confirms no credits were used.
 6. Credits are only consumed by production searches.
 
 ```bash
-# Step 4 — free, no credits, no card needed
+# Step 4 — free, no allowance consumed, no card needed
 curl https://letsfg.co/developers/api/v1/agents/me \
   -H "X-API-Key: letsfg_your_api_key"
 ```

@@ -206,7 +206,7 @@ async function searchWithPolling(params: object, apiKey: string) {
 
 ## Caching
 
-Cache search results to reduce API credit usage. Prices are stable for 5-15 minutes.
+Cache search results to reduce how fast you use your search allowance. Prices are stable for 5-15 minutes.
 
 ```python
 import hashlib, json, time
