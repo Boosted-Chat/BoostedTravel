@@ -207,11 +207,12 @@ best = None
 for date in dates:
     result = bt.search("LON", "BCN", date)
     if result.offers and (best is None or result.cheapest.price < best[1].price):
-        best = (date, result.cheapest)
+        # keep the result too: an offer is bookable only inside the search that produced it
+        best = (date, result.cheapest, result.search_id)
 
 # Book only the winner — there is no unlock step
 booking = bt.book(best[1].id, passengers=[{...}], contact_email="you@example.com",
-                  search_id=best[1].search_id)
+                  search_id=best[2])
 ```
 
 ### Filter Before Booking
