@@ -1,6 +1,6 @@
 {
   "name": "letsfg",
-  "version": "2026.5.72",
+  "version": "2026.5.73",
   "description": "Flights and hotels for AI agents. Server-side engine covers hundreds of airlines; hotels are real bookable inventory with free cancellation and pay-later terms. Includes open-source ranking engine.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

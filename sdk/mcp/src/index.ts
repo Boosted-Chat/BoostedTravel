@@ -211,6 +211,117 @@ async function searchPFS(params: Record<string, unknown>): Promise<Record<string
 
 // ── API Client ──────────────────────────────────────────────────────────
 
+// A booking pauses on the airline's own seat map, on a paid extra the run has just
+// priced, or on a fare that moved. Seats and extras arrive from DIFFERENT collections
+// and each clears as it is answered, so a booking can be waiting on BOTH - poll both.
+// A price change travels on the extras channel carrying a `price_change` field.
+// Mirrors the hosted MCP's _open_question (api/routers/mcp.py).
+type BookingQuestion = {
+  kind: 'seat' | 'extra';
+  question?: string;
+  round?: unknown;
+  expires_at_ms?: unknown;
+  seconds_remaining: number | null;
+  [k: string]: unknown;
+};
+
+/** The free seats a model can actually put to a traveller, cheapest first.
+ *
+ * A price of null is NOT free. Seats have harvested unpriced from sellers that
+ * charge 26-50 EUR for them, and a traveller picking a "free" seat and being
+ * charged is the failure this refuses to enable: unpriced seats are listed
+ * separately and labelled as such, never quoted at zero.
+ */
+function seatOptions(seatMap: unknown, limit = 40): Record<string, unknown> {
+  const rowsRaw = Array.isArray(seatMap)
+    ? seatMap
+    : ((seatMap as Record<string, unknown>)?.seats ?? (seatMap as Record<string, unknown>)?.rows ?? []);
+  const cells: Record<string, unknown>[] = [];
+  for (const r of (Array.isArray(rowsRaw) ? rowsRaw : [])) {
+    if (r && typeof r === 'object' && !Array.isArray(r) && (r as Record<string, unknown>).d) {
+      cells.push(r as Record<string, unknown>);
+    } else if (Array.isArray(r)) {
+      for (const c of r) {
+        if (c && typeof c === 'object' && (c as Record<string, unknown>).d) cells.push(c as Record<string, unknown>);
+      }
+    }
+  }
+  const free = cells.filter((c) => ['free', 'available', ''].includes(String(c.state ?? '').toLowerCase()));
+  const priced = free
+    .filter((c) => typeof c.price === 'number')
+    .sort((a, b) => (a.price as number) - (b.price as number));
+  const unpriced = free.filter((c) => typeof c.price !== 'number');
+  const out: Record<string, unknown> = { available_count: free.length };
+  if (priced.length) {
+    const ccy = priced[0].ccy ?? '';
+    out.cheapest_available = priced.slice(0, limit).map((c) => ({
+      seat: c.d,
+      price: c.price,
+      currency: c.ccy ?? ccy,
+    }));
+  }
+  if (unpriced.length) {
+    out.price_not_shown = unpriced.slice(0, limit).map((c) => c.d);
+    out.price_not_shown_note =
+      "The seller's page did not attach a price to these seats. That does NOT mean free - tell " +
+      'the traveller the price is not shown rather than quoting zero.';
+  }
+  return out;
+}
+
+async function openBookingQuestion(bookingRef: string): Promise<BookingQuestion | null> {
+  for (const kind of ['seat', 'extra'] as const) {
+    let d: Record<string, unknown>;
+    try {
+      const resp = await fetch(`${BASE_URL}/api/booking-payment/${kind}`, {
+        method: 'POST',
+        headers: letsfgHeaders({ json: true }),
+        body: JSON.stringify({ intent: bookingRef }),
+      });
+      if (!resp.ok) continue;
+      d = (await resp.json()) as Record<string, unknown>;
+    } catch {
+      // A question poll that fails must never turn a live booking status into an
+      // error - the state we already have is still worth returning.
+      continue;
+    }
+    if (!d?.open) continue;
+    const exp = Number(d.expires_at_ms);
+    const out: BookingQuestion = {
+      kind,
+      round: d.round,
+      expires_at_ms: d.expires_at_ms,
+      // SECONDS, because that is the number worth telling a person.
+      seconds_remaining: Number.isFinite(exp) ? Math.round((exp - Date.now()) / 1000) : null,
+      charge: d.charge,
+    };
+    if (kind === 'seat') {
+      out.seat_map = d.map;
+      out.options = seatOptions(d.map);
+      out.ask_the_traveller =
+        "The booking is paused at the airline's own seat map. Offer them the seats in " +
+        '`options` with their prices and say how long they have. Do not pick for them unless ' +
+        'they have already told you what they want.';
+    } else {
+      const pc = (d.price_change ?? {}) as Record<string, unknown>;
+      if (Object.keys(pc).length) {
+        out.question = 'price_change';
+        out.price_change = pc;
+        out.ask_the_traveller =
+          'The fare moved before the ticket was issued. Tell them the old and new totals and ' +
+          'ask whether to go ahead at the new price. Nothing extra is charged unless they say yes.';
+      } else {
+        out.extra = d.extra;
+        out.ask_the_traveller =
+          'The booking is paused at a paid extra the seller has just priced. Tell them what it ' +
+          'is and what it costs, and ask whether to add it.';
+      }
+    }
+    return out;
+  }
+  return null;
+}
+
 async function apiRequest(method: string, path: string, body?: Record<string, unknown>): Promise<unknown> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method,
@@ -343,24 +454,12 @@ const TOOLS = [
       },
     },
   },
-  {
-    name: 'unlock_flight_offer',
-    description:
-      'RETIRED 2026-09-08 — DO NOT CALL. The endpoint answers 410 Gone and this tool now refuses ' +
-      'locally.\n\n' +
-      'There is no unlock step on any lane. Go straight from search_flights to book_flight: the ' +
-      'fare is HELD on the connected payment method and captured only once a real airline PNR ' +
-      'exists, which is what unlock existed to protect against. A fare that moves at checkout ' +
-      'becomes a question you accept or decline, not a surprise charge.\n\n' +
-      'Kept listed only so a model that learned the old flow is told what to do instead.',
-    inputSchema: {
-      type: 'object',
-      required: ['offer_id'],
-      properties: {
-        offer_id: { type: 'string', description: "Offer ID from search results (off_xxx)" },
-      },
-    },
-  },
+  // unlock_flight_offer was REMOVED from this list on 2026-09-08 and is NOT in the hosted
+  // MCP's list either. A tool in the list is a CLAIM a model chooses from, and one called
+  // "unlock" invites it to believe booking needs a step that no longer exists. Relabelling it
+  // RETIRED was not enough - the entry itself was the invitation. The handler below still
+  // answers the name with the replacement, so a client built against the old schema gets a
+  // sentence rather than an unknown-tool error.
   {
     name: 'book_flight',
     description:
@@ -419,6 +518,36 @@ const TOOLS = [
         booking_ref: { type: 'string', description: 'The booking_ref book_flight returned' },
       },
       required: ['booking_ref'],
+    },
+  },
+  {
+    name: 'answer_booking_question',
+    description:
+      'Answer the question a paused booking is waiting on. get_flight_booking returns ' +
+      '`awaiting_choice` when the booking agent has stopped mid-checkout holding a cart: at the ' +
+      "airline's own seat map, at a paid extra it has just priced, or at a fare that moved.\n\n" +
+      'NOTHING PROGRESSES UNTIL YOU ANSWER, and the cart expires. Put the question to the ' +
+      'traveller with the options and the time left, then send their answer here.\n\n' +
+      '  kind "seat"   -> seats: [{ d: "12A" }, ...] from the map you were shown, or skip: true\n' +
+      '  kind "extra"  -> confirm: true to take it (a bag, or a moved fare), or confirm: false / ' +
+      'skip: true to decline\n\n' +
+      'Always pass the `round` from `awaiting_choice` - it says WHICH question you are ' +
+      'answering. A return trip pauses twice, and an answer without it could seat the wrong leg.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        booking_ref: { type: 'string', description: 'The booking_ref book_flight returned' },
+        kind: { type: 'string', enum: ['seat', 'extra'], description: "From awaiting_choice.kind" },
+        round: { type: 'number', description: 'From awaiting_choice.round. Required.' },
+        seats: {
+          type: 'array',
+          description: 'kind "seat" only: the chosen seats, e.g. [{ "d": "12A" }].',
+          items: { type: 'object' },
+        },
+        confirm: { type: 'boolean', description: 'kind "extra" only: take it (true) or decline (false).' },
+        skip: { type: 'boolean', description: 'Decline outright — no seat, no extra.' },
+      },
+      required: ['booking_ref', 'kind', 'round'],
     },
   },
   {
@@ -772,8 +901,93 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
           detail: 'Pass the booking_ref that book_flight returned.',
         }, null, 2);
       }
-      const result = await apiRequest('POST', '/api/agent-book/status', { booking_ref: ref });
+      const result = await apiRequest('POST', '/api/agent-book/status', { booking_ref: ref }) as Record<string, unknown>;
+
+      // A PAUSE IS NOT A STALL. `booking_in_progress` also covers a run that has
+      // STOPPED holding a cart at the airline's seat map, at a paid extra, or at a
+      // fare that moved - and the live-state message tells you to poll again in
+      // 20-30 s, which is the opposite of what to do. Until 2026-09-08 this package
+      // shipped exactly that: a booking that needed an answer sat unanswered until
+      // the cart expired, with the traveller's money held the whole time.
+      if (result && !result.error && result.state === 'booking_in_progress') {
+        const question = await openBookingQuestion(ref);
+        if (question) {
+          result.awaiting_choice = question;
+          // OVERWRITE, not append - the poll-again sentence must not survive in the
+          // same payload as this instruction.
+          result.message =
+            `PAUSED - the booking is waiting for the traveller's answer about the ` +
+            `${question.question === 'price_change' ? 'price change' : question.kind}. ` +
+            `Nothing progresses until you answer.`;
+          result.next_step =
+            '1. Put awaiting_choice to the traveller now, with the options and the time left. ' +
+            '2. Send their answer with answer_booking_question, passing awaiting_choice.round. ' +
+            '3. Then carry on polling this tool.';
+        }
+      }
       return JSON.stringify(result, null, 2);
+    }
+
+    case 'answer_booking_question': {
+      const ref = String(args.booking_ref || '').trim();
+      const kind = String(args.kind || '').trim().toLowerCase();
+      if (!ref || (kind !== 'seat' && kind !== 'extra')) {
+        return JSON.stringify({
+          error: true,
+          detail: "booking_ref and kind ('seat' or 'extra') are required.",
+        }, null, 2);
+      }
+      // The round is not defaulted. It says WHICH question is being answered, and a
+      // return trip pauses twice - guessing it is how the wrong leg gets seated.
+      if (typeof args.round !== 'number') {
+        return JSON.stringify({
+          error: true,
+          detail:
+            'round is required - it is the number get_flight_booking gave you in ' +
+            'awaiting_choice.round, and it says WHICH question you are answering.',
+        }, null, 2);
+      }
+      const payload: Record<string, unknown> = { intent: ref, round: args.round };
+      if (args.skip === true) {
+        payload.skip = true;
+      } else if (kind === 'seat') {
+        if (!Array.isArray(args.seats) || args.seats.length === 0) {
+          return JSON.stringify({
+            error: true,
+            detail:
+              'seats is required unless skip is true. Each entry names a designator from the ' +
+              'seat_map you were shown, e.g. [{ "d": "12A" }].',
+          }, null, 2);
+        }
+        payload.seats = args.seats;
+      } else {
+        payload.confirm = args.confirm === true;
+      }
+      const resp = await fetch(`${BASE_URL}/api/booking-payment/${kind}`, {
+        method: 'POST',
+        headers: letsfgHeaders({ json: true }),
+        body: JSON.stringify(payload),
+      });
+      const data = await readJson(resp, `/api/booking-payment/${kind}`) as Record<string, unknown>;
+      if (!resp.ok) {
+        // The commonest refusal is a stale round or an expired cart, and both mean
+        // the same thing here: stop answering, keep watching.
+        return JSON.stringify({
+          error: true,
+          status_code: resp.status,
+          detail: data?.error || data?.detail || 'refused',
+          next_step:
+            'Poll get_flight_booking again - the question may have expired or already been ' +
+            'answered, and the booking carries on either way.',
+        }, null, 2);
+      }
+      return JSON.stringify({
+        ok: true,
+        kind,
+        round: args.round,
+        recorded: data,
+        next_step: 'Keep polling get_flight_booking every 20-30 s until the state is terminal.',
+      }, null, 2);
     }
 
     case 'resolve_hotel_city': {
