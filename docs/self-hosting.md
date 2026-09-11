@@ -18,12 +18,14 @@ pip install fastapi uvicorn httpx
 ### Server (`server.py`)
 
 ```python
+import os
+
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="LetsFG Proxy")
-LETSFG_API_KEY = "letsfg_your_api_key"
+LETSFG_API_KEY = os.environ["LETSFG_API_KEY"]  # never commit the key itself
 LETSFG_BASE = "https://letsfg.co/developers/api/v1"
 
 
@@ -59,6 +61,7 @@ async def health():
 ### Run
 
 ```bash
+export LETSFG_API_KEY="<your-api-key>"
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 

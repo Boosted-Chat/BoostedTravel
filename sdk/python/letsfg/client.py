@@ -6,9 +6,10 @@ Search is free. Booking adds no booking fee and no transaction fee: our margin i
 already included in the price on every offer, so the amount you were shown is the
 amount charged.
 
+    import os
     from letsfg import LetsFG
 
-    bt = LetsFG(api_key="letsfg_...")
+    bt = LetsFG(api_key=os.environ["LETSFG_API_KEY"])
 
     # One-time: connect a payment method. Nothing is charged to connect.
     # (setup_payment() was retired with Stripe on 2026-09-08 and now raises.)

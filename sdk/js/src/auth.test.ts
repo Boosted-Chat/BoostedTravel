@@ -37,9 +37,9 @@ describe('getBearerToken / saveToken', () => {
   });
 
   it('returns LETSFG_BEARER_TOKEN env var immediately, without touching the config file', async () => {
-    process.env.LETSFG_BEARER_TOKEN = 'env-token-123';
+    process.env.LETSFG_BEARER_TOKEN = 'example-env-token';
     const { getBearerToken } = await import('./auth.js');
-    assert.equal(getBearerToken(), 'env-token-123');
+    assert.equal(getBearerToken(), 'example-env-token');
   });
 
   it('round-trips a saved token through the config file', async () => {
@@ -61,7 +61,7 @@ describe('the retired Stripe lanes', () => {
     // Stripe credential. An old caller deserves the reason, not a raw 410.
     const { verifyPaymentMethod, BearerTokenError } = await import('./auth.js');
     await assert.rejects(
-      () => verifyPaymentMethod({ cardToken: 'tok_test' }),
+      () => verifyPaymentMethod({ cardToken: 'tok_xxxx' }),
       (e: unknown) => {
         assert.ok(e instanceof BearerTokenError);
         assert.match((e as Error).message, /retired/i);
@@ -86,17 +86,17 @@ describe('refreshAccessToken', () => {
       tokenBody = String(init?.body ?? '');
       return {
         status: 200,
-        json: async () => ({ access_token: 'new-access', refresh_token: 'r2', expires_in: 3600 }),
+        json: async () => ({ access_token: 'example-new-access', refresh_token: 'r2', expires_in: 3600 }),
       } as Response;
     }) as typeof fetch;
 
     try {
       const token = await refreshAccessToken();
-      assert.equal(token, 'new-access');
+      assert.equal(token, 'example-new-access');
       // spec encoding, not JSON
       assert.match(tokenBody, /grant_type=refresh_token/);
       assert.match(tokenBody, /refresh_token=r1/);
-      assert.equal(getBearerToken(), 'new-access');
+      assert.equal(getBearerToken(), 'example-new-access');
       // the rotated token must replace the used one, or the next refresh 400s
       const { refreshAccessToken: again } = await import('./auth.js');
       globalThis.fetch = (async (url: string, init?: RequestInit) => {

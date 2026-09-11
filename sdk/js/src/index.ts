@@ -13,7 +13,7 @@
  * const flights = await bt.search('GDN', 'BER', '2026-03-03');
  *
  * // Developer API (look-to-book search: 200 free after every booking)
- * const bt2 = new LetsFG({ apiKey: 'letsfg_...' });
+ * const bt2 = new LetsFG({ apiKey: process.env.LETSFG_API_KEY });
  * const flights2 = await bt2.search('LHR', 'JFK', '2026-04-15');
  * ```
  */

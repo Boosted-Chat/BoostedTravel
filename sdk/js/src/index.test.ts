@@ -25,7 +25,7 @@ describe('LetsFG class', () => {
   });
 
   it('instantiates with explicit config', () => {
-    const client = new LetsFG({ apiKey: 'letsfg_test', timeout: 5000 });
+    const client = new LetsFG({ apiKey: 'letsfg_xxxx', timeout: 5000 });
     assert.ok(client instanceof LetsFG);
   });
 
@@ -86,7 +86,7 @@ describe('auth guard', () => {
     // Retired 2026-09-08. It must throw for a caller WITH a key too — the point is that no
     // request is made at all, so the failure cannot be mistaken for an auth problem or a
     // transient 410 worth retrying.
-    const client = new LetsFG({ apiKey: 'letsfg_valid_looking_key' });
+    const client = new LetsFG({ apiKey: 'letsfg_xxxx_valid_looking_key' });
     await assert.rejects(
       () => client.unlock('offer_123'),
       (err: unknown) => {
@@ -101,7 +101,7 @@ describe('auth guard', () => {
   it('book on the Developer API refuses without a searchId rather than calling the old route', async () => {
     // Before 2026-09-08 searchId was ignored on this path and /bookings/book took an offer_id
     // alone. That route is gone; an offer is bookable only inside the search that produced it.
-    const client = new LetsFG({ apiKey: 'letsfg_valid_looking_key' });
+    const client = new LetsFG({ apiKey: 'letsfg_xxxx_valid_looking_key' });
     await assert.rejects(
       () => client.book('off_1', [{ given_name: 'A' } as never], 'a@b.c'),
       (err: unknown) => {

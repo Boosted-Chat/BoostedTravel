@@ -186,13 +186,21 @@ Window {
                 + " error=\"" + p.authError + "\"")
   }
 
+  // Fake credentials for the two persistence checks below. They only ever reach
+  // the sandbox HOME that run.py creates; nothing sends them to a server.
+  readonly property var fakeCredentials: ({
+    roundtrip: "letsfg_roundtrip_test_token",
+    renewedAccess: "lfg_at_renewed_preview_token",
+    rotatedRefresh: "lfg_rt_rotated_preview_token"
+  })
+
   // Round-trip check: write a token the way a real connect would, so the
   // next launch can prove it is remembered.
   function debugSaveToken(): void {
     if (!panelLoader.item) return
     var p = panelLoader.item
     p.tokenStatus = p.session.adoptTokens({
-      ok: true, token: "letsfg_roundtrip_test_token", refreshToken: "",
+      ok: true, token: fakeCredentials.roundtrip, refreshToken: "",
       expiresAt: Math.floor(Date.now() / 1000) + 80 * 86400
     }, "", "own")
     p.persistSession()
@@ -206,7 +214,7 @@ Window {
     if (!panelLoader.item) return
     var p = panelLoader.item
     p.tokenStatus = p.session.adoptTokens({
-      ok: true, token: "lfg_at_renewed_preview_token", refreshToken: "lfg_rt_rotated_preview_token",
+      ok: true, token: fakeCredentials.renewedAccess, refreshToken: fakeCredentials.rotatedRefresh,
       expiresAt: Math.floor(Date.now() / 1000) + 3600
     }, "lfg_client_preview_0000", "cli")
     p.persistSession()
