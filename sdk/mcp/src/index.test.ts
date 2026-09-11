@@ -164,10 +164,16 @@ describe('MCP server — tools/list', () => {
     assert.ok(Array.isArray(tools), 'tools should be an array');
 
     const toolNames = tools.map(t => t.name);
-    const requiredTools = ['search_flights', 'resolve_location', 'unlock_flight_offer', 'book_flight'];
+    // get_flight_booking and answer_booking_question are how a booking this package
+    // starts is followed to its PNR, and answered when it pauses at a seat map,
+    // a paid extra or a price change.
+    const requiredTools = ['search_flights', 'resolve_location', 'book_flight', 'get_flight_booking', 'answer_booking_question'];
     for (const name of requiredTools) {
       assert.ok(toolNames.includes(name), `missing required tool: ${name}`);
     }
+    // Retired 2026-09-08 and delisted: a tool in the list is a claim a model chooses
+    // from, and one called "unlock" says booking needs a step that no longer exists.
+    assert.ok(!toolNames.includes('unlock_flight_offer'), 'unlock_flight_offer is retired and must not be listed');
   });
 
   it('each tool has name, description, and inputSchema', async () => {
@@ -206,6 +212,33 @@ describe('MCP server — tools/list', () => {
     const props = inputSchema.properties as Record<string, unknown>;
     assert.ok(props.departure_time_from, 'departure_time_from should exist in schema');
     assert.ok(props.departure_time_to, 'departure_time_to should exist in schema');
+  });
+});
+
+describe('MCP server — retired unlock_flight_offer', () => {
+  let proc: ChildProcessWithoutNullStreams;
+
+  before(() => { proc = spawnServer(); });
+  after(() => { proc.kill(); });
+
+  it('still answers the old name, pointing at book_flight', async () => {
+    // Delisted, but an agent holding an old tool list can still call it. It must
+    // get the replacement, not an error it has to interpret.
+    sendMessage(proc, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+      protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' },
+    }});
+    await readNextMessage(proc);
+
+    sendMessage(proc, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+      name: 'unlock_flight_offer', arguments: { offer_id: 'off_1' },
+    }});
+    const response = await readNextMessage(proc);
+
+    const result = response.result as { content: Array<{ text: string }>; isError?: boolean };
+    assert.ok(!result.isError, 'the retired name is answered, not thrown');
+    const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    assert.equal(body.error, 'retired');
+    assert.equal(body.next, 'book_flight');
   });
 });
 

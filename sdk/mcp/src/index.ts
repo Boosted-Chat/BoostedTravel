@@ -279,7 +279,7 @@ async function openBookingQuestion(bookingRef: string): Promise<BookingQuestion 
         body: JSON.stringify({ intent: bookingRef }),
       });
       if (!resp.ok) continue;
-      d = (await resp.json()) as Record<string, unknown>;
+      d = await readJson(resp, `/api/booking-payment/${kind}`);
     } catch {
       // A question poll that fails must never turn a live booking status into an
       // error - the state we already have is still worth returning.
