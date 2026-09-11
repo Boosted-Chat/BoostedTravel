@@ -1,0 +1,30 @@
+name: Plugin Security Scan
+
+# HOL plugin-scanner: the security baseline the Awesome AI Plugins catalog
+# (hashgraph-online/awesome-ai-plugins) holds listed repos to. Configured as its
+# SCANNER_GUIDE.md asks: read-only token, no persisted checkout credentials, and
+# every action pinned to a commit SHA (Dependabot keeps the pins current).
+# Fails on any high-severity finding or a score under 80.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: HOL plugin-scanner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: hashgraph-online/ai-plugin-scanner-action@caba2e96aa8ad2feb6cf6fca52442b52e22e779f  # v1.2.635
+        with:
+          plugin_dir: "."
+          min_score: 80
+          fail_on_severity: high
